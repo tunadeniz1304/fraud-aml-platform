@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Secrets & runtime artifacts must not ride along in the image
+.env
+logs/
+data/chromadb/
+*.db
+*.sqlite3
+.git/

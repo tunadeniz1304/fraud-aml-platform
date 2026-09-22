@@ -1,0 +1,12 @@
+services:
+  fraud-agent:
+    build: .
+    container_name: fraud-agent
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data          # persist SQLite + ChromaDB between runs
+      - ./logs:/app/logs
+    env_file:
+      - .env
+    restart: unless-stopped
