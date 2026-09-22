@@ -1,0 +1,101 @@
+[
+  {
+    "transaction_id": "TX-1001",
+    "ts": "2026-09-22T14:30:00",
+    "customer_id": "CUST-0001",
+    "amount": 2000,
+    "currency": "TRY",
+    "device_id": "DEV-9F2A-11",
+    "location": "İstanbul",
+    "country": "TR",
+    "purpose": "Salary payment"
+  },
+  {
+    "transaction_id": "TX-1002",
+    "ts": "2026-09-22T02:15:00",
+    "customer_id": "CUST-0001",
+    "amount": 75000,
+    "currency": "TRY",
+    "device_id": "DEV-77D0-99",
+    "location": "Lagos",
+    "country": "NG",
+    "purpose": "Refund"
+  },
+  {
+    "transaction_id": "TX-1003",
+    "ts": "2026-09-22T10:05:00",
+    "customer_id": "CUST-0002",
+    "amount": 1200,
+    "currency": "TRY",
+    "device_id": "DEV-11AA-22",
+    "location": "Ankara",
+    "country": "TR",
+    "purpose": "Invoice payment"
+  },
+  {
+    "transaction_id": "TX-1004",
+    "ts": "2026-09-22T23:58:00",
+    "customer_id": "CUST-0002",
+    "amount": 90000,
+    "currency": "EUR",
+    "device_id": "DEV-33CC-10",
+    "location": "Berlin",
+    "country": "DE",
+    "purpose": "Investment"
+  },
+  {
+    "transaction_id": "TX-1005",
+    "ts": "2026-09-22T12:40:00",
+    "customer_id": "CUST-0003",
+    "amount": 500,
+    "currency": "TRY",
+    "device_id": "DEV-88CC-11",
+    "location": "İzmir",
+    "country": "TR",
+    "purpose": "Shopping"
+  },
+  {
+    "transaction_id": "TX-1006",
+    "ts": "2026-09-22T19:22:00",
+    "customer_id": "CUST-0003",
+    "amount": 4000,
+    "currency": "TRY",
+    "device_id": "DEV-9A9A-00",
+    "location": "Aydın",
+    "country": "TR",
+    "purpose": "Family transfer"
+  },
+  {
+    "transaction_id": "TX-1007",
+    "ts": "2026-09-22T11:20:00",
+    "customer_id": "CUST-0004",
+    "amount": 3200,
+    "currency": "TRY",
+    "device_id": "DEV-BB44-77",
+    "location": "Bursa",
+    "country": "TR",
+    "purpose": "Business"
+  },
+  {
+    "transaction_id": "TX-1008",
+    "ts": "2026-09-22T03:45:00",
+    "customer_id": "CUST-0005",
+    "amount": 50000,
+    "currency": "TRY",
+    "device_id": "DEV-FF99-12",
+    "location": "Dubai",
+    "country": "AE",
+    "purpose": "Gift"
+  },
+  {
+    "transaction_id": "TX-1009",
+    "ts": "2026-09-22T14:31:00",
+    "customer_id": "CUST-0001",
+    "amount": 2600,
+    "currency": "TRY",
+    "device_id": "DEV-3C81-55",
+    "location": "İstanbul",
+    "country": "TR",
+    "purpose": "Peer transfer"
+  }
+]

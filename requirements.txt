@@ -1,0 +1,21 @@
+# --- Runtime: event-driven fraud detection -------------------------------
+# Event bus / risk engine / standard-library only for simulation.
+
+# --- Vectors & embeddings (local ONNX MiniLM, no API key) ----------------
+chromadb>=1.5.9
+
+# --- LLM analysis (real providers; keys from .env) -----------------------
+openai>=2.54.0
+anthropic>=0.97.0
+python-dotenv>=1.0.1
+
+# --- API / dashboard ------------------------------------------------------
+fastapi>=0.141.1
+uvicorn>=0.34.0
+pydantic>=2.13.5
+pydantic-settings>=2.14.1
+
+# --- Tests ----------------------------------------------------------------
+pytest>=8.3.4
+pytest-asyncio>=0.24.0
+httpx>=0.28.1

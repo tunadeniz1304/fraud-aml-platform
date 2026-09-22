@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Logs
+logs/
+*.log
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Local vector database & relational database
+data/chromadb/
+*.db
+*.sqlite3
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
