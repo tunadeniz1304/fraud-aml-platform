@@ -19,7 +19,8 @@ from app import config
 from app.agents.action_agent import ActionAgent
 from app.agents.context_analyst import ContextAnalyst
 from app.agents.transaction_monitor import TransactionMonitor
-from app.api.dashboard import app, state
+from app.api.dashboard import app
+from app.api.state import state
 from app.core.account_store import AccountStore
 from app.core.behavior_store import BehaviorStore
 from app.core.event_bus import EventBus

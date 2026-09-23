@@ -12,8 +12,11 @@ import logging
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, status
+from fastapi.responses import HTMLResponse
 
 from app import config
+from app.api.admin import router as admin_router
+from app.api.frontend import render as render_frontend
 from app.api.schemas import (
     AccountOut,
     AnalyzedTransactionOut,
@@ -22,33 +25,22 @@ from app.api.schemas import (
     PipelineStatusOut,
     TransactionIn,
 )
+from app.api.state import state
 
 logger = logging.getLogger("fraud.dashboard")
 
-
-class PipelineState:
-    """Holds mutable references to the live pipeline components."""
-
-    def __init__(self) -> None:
-        self.monitor: Any = None
-        self.analyst: Any = None
-        self.action: Any = None
-        self.store: Any = None
-        self.vector: Any = None
-        self.bus: Any = None
-
-    @property
-    def wired(self) -> bool:
-        return self.monitor is not None and self.action is not None
-
-
-state = PipelineState()
 
 app = FastAPI(
     title="Siber Güvenlik ve Fraud Ajanı — Dashboard",
     version="1.0.0",
     description="Gerçek zamanlı dolandırıcılık analiz ajanı için durum izleme API'si.",
 )
+app.include_router(admin_router)
+
+
+@app.get("/", response_class=HTMLResponse, tags=["ui"])
+async def index() -> str:
+    return render_frontend()
 
 
 @app.get("/api/health", tags=["system"])
