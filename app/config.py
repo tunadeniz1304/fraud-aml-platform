@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     weight_location: float = 0.20
     weight_time: float = 0.10
     weight_velocity: float = 0.10
+
+    # Country codes treated as elevated risk even without other signals.
+    high_risk_countries: str = "NG,AE,RU,UA,KP,IR,SY,CU"
     weight_semantic: float = 0.00
 
     # Semantic (vector) anomaly contribution is added on top of the weighted

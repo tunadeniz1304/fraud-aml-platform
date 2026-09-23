@@ -17,7 +17,7 @@ from typing import Any
 from app import config
 from app.core.behavior_store import BehaviorStore
 from app.core.event_bus import EventBus
-from app.core.risk_engine import compute_risk
+from app.core.risk_engine import _country_score, compute_risk, explain_factors
 from app.llm import LLMClient
 
 logger = logging.getLogger("fraud.analyst")
@@ -105,6 +105,8 @@ class ContextAnalyst:
             "risk_score_rule": base,
             "semantic_distance": round(distance, 4) if distance is not None else None,
             "risk_factors": factors_dict,
+            "risk_explanation": explain_factors(factors),
+            "high_risk_country": _country_score(tx.get("country", "")) == 1.0,
         }
 
         verdict = None

@@ -57,6 +57,25 @@ class TestSchemas:
             )
 
 
+class TestRiskExplain:
+    def test_explain_defaults_empty(self):
+        from app.core.risk_engine import RiskFactors, explain_factors
+        empty = RiskFactors(amount=0.0, device=0.0, location=0.0, time=0.0, velocity=0.0)
+        assert explain_factors(empty) == []
+
+    def test_explain_weights_dominant_signals(self):
+        from app.core.risk_engine import RiskFactors, explain_factors
+        f = RiskFactors(amount=0.9, device=1.0, location=0.0, time=0.0, velocity=0.0)
+        out = explain_factors(f)
+        assert out[0] == "bilinmeyen cihaz"
+        assert "tutar ortalamanın üzerinde" in out
+
+    def test_country_score(self):
+        from app.core.risk_engine import _country_score
+        assert _country_score("NG") == 1.0
+        assert _country_score("TR") == 0.0
+
+
 class TestAdminStore:
     def test_status_transition_and_audit(self, store):
         # Manual operator unblock: BLOKE -> AKTIF, with audit row.

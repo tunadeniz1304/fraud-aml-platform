@@ -56,6 +56,8 @@ class AnalyzedTransactionOut(BaseModel):
     risk_score_rule: float | None = None
     semantic_distance: float | None = None
     risk_factors: RiskFactorsOut | None = None
+    risk_explanation: list[str] = Field(default_factory=list)
+    high_risk_country: bool = False
     llm: dict[str, Any] | None = None
 
 

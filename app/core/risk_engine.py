@@ -67,6 +67,29 @@ def _velocity_score(events_last_hour: int) -> float:
     return min(1.0, events_last_hour / config.HIGH_VELOCITY_PER_HOUR)
 
 
+def _country_score(country: str) -> float:
+    """Elevated risk for sanctions/high-fraud country codes."""
+    codes = {
+        c.strip().upper()
+        for c in config.settings.high_risk_countries.split(",")
+        if c.strip()
+    }
+    return 1.0 if country.upper() in codes else 0.0
+
+
+def explain_factors(factors: RiskFactors) -> list[str]:
+    """Human-readable, weighted explanation of the dominant risk signals."""
+    named = [
+        (factors.amount, "tutar ortalamanın üzerinde"),
+        (factors.device, "bilinmeyen cihaz"),
+        (factors.location, "alışılmadık lokasyon"),
+        (factors.time, "alışılmadık saat"),
+        (factors.velocity, "yüksek işlem sıklığı"),
+    ]
+    return [label for value, label in sorted(named, reverse=True) if value > 0]
+
+
+
 def compute_risk(
     *,
     amount: float,
