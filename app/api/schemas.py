@@ -61,6 +61,8 @@ class AnalyzedTransactionOut(BaseModel):
     peer_group_avg: float | None = None
     peer_amount_ratio: float | None = None
     microcluster: float = 0.0
+    mule_score: float = 0.0
+    mule_signals: list[str] = Field(default_factory=list)
     llm: dict[str, Any] | None = None
 
 

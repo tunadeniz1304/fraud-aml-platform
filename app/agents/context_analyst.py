@@ -18,6 +18,7 @@ from app import config
 from app.core.aggregates import MicroclusterDetector, OnlineStats
 from app.core.behavior_store import BehaviorStore
 from app.core.event_bus import EventBus
+from app.core.mule_graph import DeviceMuleGraph, mule_explain
 from app.core.risk_engine import _country_score, compute_risk, explain_factors
 from app.llm import LLMClient
 
@@ -46,6 +47,7 @@ class ContextAnalyst:
         self.vector = behavior_store
         self.llm = llm
         self.microcluster = MicroclusterDetector()
+        self.mule_graph = DeviceMuleGraph()
         self.stats = OnlineStats()
         self.bus.subscribe(self.MONITORED, self._on_monitored)
 
@@ -97,6 +99,14 @@ class ContextAnalyst:
         self._recent.setdefault(customer_id, []).append(ts)
 
         micro = self.microcluster.update(tx, ts.timestamp() * 1000)
+        mule_ts = ts.timestamp() * 1000
+        mule_scores = self.mule_graph.update(tx, mule_ts)
+        mule = min(
+            1.0,
+            0.5 * mule_scores["shared_device"]
+            + 0.3 * mule_scores["shared_beneficiary"]
+            + 0.2 * mule_scores["fanout"],
+        )
 
         factors = compute_risk(
             amount=float(tx["amount"]),
@@ -113,7 +123,9 @@ class ContextAnalyst:
         if self.vector is not None:
             distance = self.vector.semantic_distance(tx)
         base = round(factors.score, 4)
-        final = round(min(1.0, self._merge_semantic(base, distance) + micro * 0.25), 4)
+        final = round(
+            min(1.0, self._merge_semantic(base, distance) + micro * 0.25 + mule * 0.2), 4
+        )
         self.stats.update(final)
 
         factors_dict = {
@@ -137,6 +149,9 @@ class ContextAnalyst:
                 round(float(tx["amount"]) / peer_avg, 3) if peer_avg > 0 else None
             ),
             "microcluster": round(micro, 3),
+            "mule_score": round(mule, 3),
+            "mule_signals": mule_explain(mule_scores),
+            "mule_scores": mule_scores,
         }
 
         verdict = None

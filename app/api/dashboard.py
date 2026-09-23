@@ -25,6 +25,7 @@ from app.api.schemas import (
     PipelineStatusOut,
     TransactionIn,
 )
+from app.api.security import install as install_security
 from app.api.state import state
 
 logger = logging.getLogger("fraud.dashboard")
@@ -35,6 +36,7 @@ app = FastAPI(
     version="1.0.0",
     description="Gerçek zamanlı dolandırıcılık analiz ajanı için durum izleme API'si.",
 )
+install_security(app)
 app.include_router(admin_router)
 
 
