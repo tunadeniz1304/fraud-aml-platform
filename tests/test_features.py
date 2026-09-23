@@ -28,6 +28,32 @@ class TestStreamSimulator:
         assert len(monitor.monitored) == 9
 
 
+class TestEventBusIsolation:
+    async def test_failing_subscriber_does_not_block_others(self, bus):
+        received = []
+
+        def boom(payload):
+            raise RuntimeError("subscriber exploded")
+
+        async def record(payload):
+            received.append(payload["k"])
+
+        bus.subscribe("t", boom)
+        bus.subscribe("t", record)
+        await bus.publish("t", {"k": 1})  # must not raise
+        assert received == [1]
+
+    async def test_subscriber_can_raise_without_breaking_publisher(self, bus):
+        async def boom(payload):
+            raise ValueError("async boom")
+
+        bus.subscribe("t", boom)
+        # Second publish to the same bus still works.
+        await bus.publish("t", {})
+        await bus.publish("t", {})
+        assert True
+
+
 class TestSchemas:
     def test_invalid_amount_rejected(self):
         import pytest

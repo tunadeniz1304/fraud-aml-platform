@@ -141,12 +141,22 @@ class ContextAnalyst:
 
         verdict = None
         if self.llm is not None and self.llm.enabled:
-            verdict = self.llm.analyze(
-                transaction=tx,
-                profile=profile,
-                risk_factors=factors_dict,
-                semantic_distance=distance,
-            )
+            try:
+                verdict = self.llm.analyze(
+                    transaction=tx,
+                    profile=profile,
+                    risk_factors=factors_dict,
+                    semantic_distance=distance,
+                )
+            except Exception as exc:
+                # A provider outage / malformed reply must degrade to a
+                # rule-only verdict, never kill the event stream.
+                logger.error(
+                    "[Analyst][LLM] %s analizi başarısız oldu (%s) — kural motoru kullanıldı",
+                    tx["transaction_id"], exc,
+                )
+                analyzed["llm_error"] = str(exc)
+                verdict = None
             if verdict:
                 analyzed["llm"] = verdict
                 self.llm_verdicts.append(verdict)
