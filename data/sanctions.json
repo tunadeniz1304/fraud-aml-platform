@@ -1,0 +1,82 @@
+[
+  {
+    "id": "SDN-0001",
+    "name": "Viktor Melnikov",
+    "aliases": ["Viktor A. Melnikov", "VIKTOR MELNIKOFF"],
+    "country": "RU",
+    "program": "Global Magnitsky",
+    "pep": true
+  },
+  {
+    "id": "SDN-0002",
+    "name": "IRGC Front Ltd",
+    "aliases": ["IRGC Front Limited", "Front Trading House"],
+    "country": "IR",
+    "program": "IRGC",
+    "pep": false
+  },
+  {
+    "id": "SDN-0003",
+    "name": "Al-Bayt Coffee Trading",
+    "aliases": ["AL BAYT COFFEE", "Al Bayt Trading"],
+    "country": "SY",
+    "program": "Syria Sanctions",
+    "pep": false
+  },
+  {
+    "id": "SDN-0004",
+    "name": "Nile Union Asset Management",
+    "aliases": ["Nile Union Assets", "NUAM"],
+    "country": "SD",
+    "program": "Sudan Sanctions",
+    "pep": false
+  },
+  {
+    "id": "PEP-0001",
+    "name": "Hasan Abadi",
+    "aliases": ["Hasan al-Abadi", "H. Abadi"],
+    "country": "IR",
+    "program": "PEP List",
+    "pep": true
+  },
+  {
+    "id": "PEP-0002",
+    "name": "Olga Fedorova",
+    "aliases": ["Olga V. Fedorova", "FEDOROVA OLGA"],
+    "country": "RU",
+    "program": "PEP List",
+    "pep": true
+  },
+  {
+    "id": "SDN-0005",
+    "name": "Karadeniz Shipping Co",
+    "aliases": ["Karadeniz Denizcilik", "KDC Shipping"],
+    "country": "UA",
+    "program": "Ukraine-Related Sanctions",
+    "pep": false
+  },
+  {
+    "id": "SDN-0006",
+    "name": "Borzoi Mining Group",
+    "aliases": ["Borzoi Mineração", "BORZOI MNG"],
+    "country": "VE",
+    "program": "Venezuela Sanctions",
+    "pep": false
+  },
+  {
+    "id": "PEP-0003",
+    "name": "Lee Myung-soo",
+    "aliases": ["Lee Myung Su", "L. Myungsoo"],
+    "country": "KR",
+    "program": "PEP List",
+    "pep": true
+  },
+  {
+    "id": "SDN-0007",
+    "name": "Atlas Commodities Intl",
+    "aliases": ["Atlas Commodities International", "ACI"],
+    "country": "RU",
+    "program": "Global Magnitsky",
+    "pep": false
+  }
+]

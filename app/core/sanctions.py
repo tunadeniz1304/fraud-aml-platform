@@ -1,0 +1,96 @@
+"""Yaptırım (sanction) listesi taraması.
+
+``data/sanctions.json`` içinde tutulan kurgusal OFAC-tarzı yaptırım ve PEP
+(önemli siyasi kişi) kayıtlarına karşı isim eşleştirmesi yapar. Müşteri
+işlemlerindeki ``name`` alanları bu liste ile karşılaştırılarak yaptırımlı bir
+kişi/kurumla olası bir isim çakışması varsa aday kayıt(lar) döndürülür.
+
+Modül saf ve import-safe'dir: içe aktarım hiçbir yan etki üretmez; dosya
+yalnızca ``load()`` çağrıldığında okunur. Eşleştirme bağımlılıksızdır ve
+deterministiktir — harici bulanık eşleştirme kütüphanesi kullanılmaz.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from app import config
+
+# Varsayılan veri dosyası: ``app/config.py`` içinde tanımlı ``DATA_DIR``.
+DEFAULT_SANCTIONS_PATH = config.DATA_DIR / "sanctions.json"
+
+
+def _normalise(text: str) -> str:
+    """Metni büyük/küçük harf duyarsız karşılaştırmaya hazırlar.
+
+    Büyük/küçük harf (casefold) ve fazladan boşluklar tek boşluğa indirilir —
+    "Viktor  Melnikov" ile "VIKTOR melnikov" aynı normal biçimi üretir.
+    """
+    return " ".join(text.casefold().split())
+
+
+def _tokens(text: str) -> set[str]:
+    """Normalize edilmiş metnin kelime kümesini döndürür."""
+    return set(_normalise(text).split())
+
+
+class SanctionScreener:
+    """Yaptırım listesine karşı isim taraması yapan sınıf.
+
+    Bir kayıt, sorgu (``name``) aşağıdaki durumlarda onunla eşleşir:
+
+    - sorgu, kayıt adının ya da herhangi bir takma adının (alias) alt dizesi
+      (normalize edilmiş haliyle içinde geçer), VEYA
+    - sorgunun tüm kelimeleri, adın ya da bir takma adın kelime kümesinde
+      birebir (tam kelime) bulunur.
+
+    Alt dize eşleşmesi "Melnikov" -> "Viktor Melnikov" gibi kısmi isimleri
+    yakalar; tam-kelime eşleşmesi ise "Kara" sorgusunun "Karadeniz" içinde
+    yanlışlıkla eşleşmesini önler.
+    """
+
+    def __init__(self, path: str | Path | None = None) -> None:
+        """``path`` verilmemişse varsayılan ``data/sanctions.json`` kullanılır."""
+        self.path: Path = Path(path) if path else DEFAULT_SANCTIONS_PATH
+        self._records: list[dict] = []
+
+    def load(self) -> "SanctionScreener":
+        """JSON dosyasını okuyup kayıtları yükler; kendisini döndürür.
+
+        Dosya yoksa ``FileNotFoundError`` doğal olarak fırlar. Zincirleme
+        çağrı için akıcı (fluent) kullanım sunar: ``screener.load().find(...)``.
+        """
+        with self.path.open("r", encoding="utf-8") as fh:
+            self._records = json.load(fh)
+        return self
+
+    def _matches(self, query: str, target: str) -> bool:
+        """Tek bir hedef ad/takma ad için eşleşme kontrolü."""
+        q = _normalise(query)
+        t = _normalise(target)
+        if not q or not t:
+            return False
+        if q in t:
+            return True
+        query_tokens = _tokens(query)
+        return bool(query_tokens) and query_tokens.issubset(t.split())
+
+    def find_candidates(self, name: str | None) -> list[dict]:
+        """``name`` ile eşleşen kayıtların listesini dosya sırasıyla döndürür.
+
+        Boş/``None`` sorgu için ``[]`` döner; kayıt yüklenmeden önce de tutarlı
+        (deterministik) bir sonuç verir.
+        """
+        if not name:
+            return []
+        return [
+            record
+            for record in self._records
+            if self._matches(name, record["name"])
+            or any(self._matches(name, alias) for alias in record.get("aliases", []))
+        ]
+
+    def name_matches(self, name: str | None) -> bool:
+        """``name`` ile en az bir kayıt eşleşiyorsa ``True`` döndürür."""
+        return bool(self.find_candidates(name))

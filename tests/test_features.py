@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
@@ -52,6 +53,79 @@ class TestEventBusIsolation:
         await bus.publish("t", {})
         await bus.publish("t", {})
         assert True
+
+
+class TestIngestHardening:
+    def test_control_chars_stripped(self):
+        tx = TransactionIn(
+            transaction_id="TX-\x1b[31mINJECTED",
+            ts="2026-09-22T14:30:00",
+            customer_id="C-1",
+            amount=10,
+            currency="TRY",
+            device_id="D1",
+            location="Lokasyon",
+            purpose="Salary",
+        )
+        assert "\x1b" not in tx.transaction_id
+        assert "\x1b" not in tx.purpose
+
+    def test_amount_cap_rejects_absurd_values(self):
+        import pytest
+        with pytest.raises(ValidationError):
+            TransactionIn(
+                transaction_id="TX-X",
+                ts="2026-09-22T14:30:00",
+                customer_id="C1",
+                amount=1e12,
+                currency="TRY",
+                device_id="D1",
+                location="İstanbul",
+            )
+
+    def test_channel_enum_rejects_unknown(self):
+        import pytest
+        with pytest.raises(ValidationError):
+            TransactionIn(
+                transaction_id="TX-X",
+                ts="2026-09-22T14:30:00",
+                customer_id="C1",
+                amount=10,
+                currency="TRY",
+                device_id="D1",
+                location="İstanbul",
+                channel="usb",
+            )
+
+    def test_new_optional_fields_accepted(self):
+        tx = TransactionIn(
+            transaction_id="TX-X",
+            ts="2026-09-22T14:30:00",
+            customer_id="C1",
+            amount=10,
+            currency="TRY",
+            device_id="D1",
+            location="İstanbul",
+            beneficiary_id="BEN-1",
+            ip_address="88.241.10.5",
+            channel="mobile",
+        )
+        assert tx.beneficiary_id == "BEN-1"
+        assert tx.ip_address == "88.241.10.5"
+
+
+class TestDriftInjection:
+    async def test_drift_inflates_late_amounts(self, bus):
+        sim = TransactionStreamSimulator(path=None, drift_scale=1.0, seed=1)
+        seen = [t async for t in sim(bus)]
+        assert len(seen) == 9
+        assert seen[-1]["drift_scale"] == pytest.approx(1.0)
+        assert seen[-1]["amount"] > seen[0]["amount"]
+
+    async def test_no_drift_by_default(self, bus):
+        sim = TransactionStreamSimulator()
+        seen = [t async for t in sim(bus)]
+        assert not any("drift_scale" in t for t in seen)
 
 
 class TestSchemas:
