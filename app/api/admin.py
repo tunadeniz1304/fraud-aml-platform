@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, HTTPException, Query, status
+from fastapi.responses import PlainTextResponse
 
 from app.api.state import state
 from app.api.schemas import AccountOut, AuditRowOut
@@ -61,3 +62,22 @@ async def audit(limit: int = Query(50, ge=1, le=1000)) -> list[AuditRowOut]:
     if state.store is None:
         return []
     return [AuditRowOut(**r) for r in state.store.list_audit(limit=limit)]
+
+
+@router.get("/audit/export", response_class=PlainTextResponse)
+async def export_audit() -> str:
+    """RFC-4180 CSV dump of the audit log (compliance export)."""
+    cols = ("id", "created_at", "transaction_id", "customer_id", "risk_score", "decision", "reason")
+
+    def row(values) -> str:
+        return ",".join(
+            f'"{str(v).replace(chr(34), chr(34) * 2)}"' for v in values
+        )
+
+    if state.store is None:
+        return row(cols) + "\n"
+    rows = state.store.list_audit(limit=5000)
+    lines = [row(cols)]
+    for r in rows:
+        lines.append(row(tuple(r[k] for k in cols)))
+    return "\n".join(lines) + "\n"

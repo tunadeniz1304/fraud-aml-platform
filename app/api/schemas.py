@@ -58,6 +58,8 @@ class AnalyzedTransactionOut(BaseModel):
     risk_factors: RiskFactorsOut | None = None
     risk_explanation: list[str] = Field(default_factory=list)
     high_risk_country: bool = False
+    peer_group_avg: float | None = None
+    peer_amount_ratio: float | None = None
     llm: dict[str, Any] | None = None
 
 

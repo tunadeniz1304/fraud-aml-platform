@@ -75,6 +75,38 @@ class TestRiskExplain:
         assert _country_score("NG") == 1.0
         assert _country_score("TR") == 0.0
 
+    def test_peer_group_baseline(self):
+        from app.agents.context_analyst import ContextAnalyst
+        records = [
+            {"customer_id": "A", "home_city": "İstanbul", "avg_amount": 2000},
+            {"customer_id": "B", "home_city": "İstanbul", "avg_amount": 3000},
+            {"customer_id": "C", "home_city": "Ankara", "avg_amount": 9000},
+        ]
+        a = records[0]
+        assert ContextAnalyst._peer_avg(records, a) == 3000.0
+        # No peers in group -> own average.
+        c = records[2]
+        assert ContextAnalyst._peer_avg(records, c) == 9000.0
+
+    def test_csv_export_contains_header_and_rows(self, store):
+        import asyncio
+
+        store.append_audit(
+            transaction_id="TX-1", customer_id="C1", risk_score=0.9,
+            decision="BLOKE", reason="test",
+        )
+        from app.api.admin import export_audit
+        from app.api.state import state
+
+        state.store = store
+        try:
+            text = asyncio.run(export_audit())
+        finally:
+            state.store = None
+        assert '"id","created_at"' in text
+        assert '"BLOKE"' in text
+        assert '"TX-1"' in text
+
 
 class TestAdminStore:
     def test_status_transition_and_audit(self, store):

@@ -37,7 +37,8 @@ class ContextAnalyst:
         llm: LLMClient | None = None,
     ) -> None:
         self.bus = bus
-        self.customers = self._load_customers(customers_path or config.DATA_DIR / "customers.json")
+        self._records = self._load_records(customers_path or config.DATA_DIR / "customers.json")
+        self.customers = {r["customer_id"]: r for r in self._records}
         self._recent: dict[str, list[datetime]] = {}
         self.analyzed: list[dict[str, Any]] = []
         self.llm_verdicts: list[dict[str, Any]] = []
@@ -46,10 +47,27 @@ class ContextAnalyst:
         self.bus.subscribe(self.MONITORED, self._on_monitored)
 
     @staticmethod
+    def _load_records(path: Path) -> list[dict[str, Any]]:
+        with path.open("r", encoding="utf-8") as fh:
+            records = json.load(fh)
+        return records if isinstance(records, list) else [records]
+
+    @staticmethod
     def _load_customers(path: Path) -> dict[str, dict[str, Any]]:
         with path.open("r", encoding="utf-8") as fh:
             records = json.load(fh)
         return {record["customer_id"]: record for record in records}
+
+    @staticmethod
+    def _peer_avg(records: list[dict[str, Any]], record: dict[str, Any]) -> float:
+        """Average amount of other customers from the same home city (peer group)."""
+        city = record.get("home_city", "")
+        peers = [
+            r["avg_amount"]
+            for r in records
+            if r.get("home_city") == city and r["customer_id"] != record["customer_id"]
+        ]
+        return float(sum(peers) / len(peers)) if peers else float(record["avg_amount"])
 
     def _velocity_last_hour(self, customer_id: str, ts: datetime) -> int:
         cutoff = ts - timedelta(hours=1)
@@ -99,6 +117,7 @@ class ContextAnalyst:
             "time": round(factors.time, 3),
             "velocity": round(factors.velocity, 3),
         }
+        peer_avg = self._peer_avg(self._records, profile)
         analyzed = {
             **tx,
             "risk_score": final,
@@ -107,6 +126,10 @@ class ContextAnalyst:
             "risk_factors": factors_dict,
             "risk_explanation": explain_factors(factors),
             "high_risk_country": _country_score(tx.get("country", "")) == 1.0,
+            "peer_group_avg": round(peer_avg, 2),
+            "peer_amount_ratio": (
+                round(float(tx["amount"]) / peer_avg, 3) if peer_avg > 0 else None
+            ),
         }
 
         verdict = None
