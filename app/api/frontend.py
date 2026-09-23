@@ -29,8 +29,10 @@ th{color:var(--muted);}
 <div class="grid" id="statcards"></div>
 <h2>Hesap Durumları</h2>
 <table><tbody id="accounts"></tbody></table>
-<h2>Denetim Logu</h2>
+<h2>Denetim Logu <a href="/api/admin/audit/export" target="_blank" style="font-size:13px;margin-left:8px;">(CSV indir)</a></h2>
 <table><tbody id="audit"></tbody></table>
+<h2>Risk Dağılımı (Drift)</h2>
+<table><tbody id="stats"></tbody></table>
 <h2>Son Blokeler</h2>
 <table><tbody id="blocks"></tbody></table>
 <script>
@@ -39,7 +41,7 @@ async function j(u){const r=await fetch(api+u);if(!r.ok)throw new Error(r.status
 function esc(s){return (s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 async function refresh(){
   try{
-    const [s,acc,aud,blk]=await Promise.all([j('/api/status'),j('/api/admin/accounts'),j('/api/admin/audit?limit=25'),j('/api/blocks')]);
+    const [s,acc,aud,blk,st]=await Promise.all([j('/api/status'),j('/api/admin/accounts'),j('/api/admin/audit?limit=25'),j('/api/blocks'),j('/api/stats')]);
     document.getElementById('statcards').innerHTML=[
       ['İzlenen İşlem',s.total_monitored,''],['Analiz',s.analyzed,''],
       ['Bloke',s.blocked,'bad'],['Akışta',s.passed,'ok'],['LLM',s.llm_provider,'warn']]
@@ -52,6 +54,9 @@ async function refresh(){
     document.getElementById('blocks').innerHTML=blk.map(b=>
       `<tr><td>${esc(b.transaction_id)}</td><td>${esc(b.customer_id)}</td><td class="bad">${b.risk_score.toFixed(2)}</td>
        <td>${esc(b.reason)}</td></tr>`).join('');
+    document.getElementById('stats').innerHTML=Object.entries(st.histogram||{}).slice(0,12).map(([k,v])=>
+      `<tr><td>≈${esc(k)}</td><td>${v}</td></tr>`).join('')+
+      `<tr><td>n</td><td>${st.n}</td></tr><tr><td>ort</td><td>${st.mean}</td></tr><tr><td>std</td><td>${st.stdev}</td></tr>`;
   }catch(e){console.error(e);}
 }
 refresh();setInterval(refresh,2000);

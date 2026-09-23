@@ -24,6 +24,7 @@ from app.api.state import state
 from app.core.account_store import AccountStore
 from app.core.behavior_store import BehaviorStore
 from app.core.event_bus import EventBus
+from app.core.stream_simulator import TransactionStreamSimulator
 from app.llm import LLMClient
 
 logger = logging.getLogger("fraud.server")
@@ -67,7 +68,13 @@ async def build_pipeline() -> None:
     state.vector = vector
 
     # Feed the historical stream so the dashboard shows real decisions.
-    await feed_stream(bus, load_transactions())
+    mode = os.getenv("STREAM_MODE", "batch")
+    if mode == "stream":
+        simulator = TransactionStreamSimulator(rate_per_second=float(os.getenv("STREAM_RATE", "2")))
+        await simulator.run(bus)
+        logger.info("Akış modu: simülatör tamamlandı")
+    else:
+        await feed_stream(bus, load_transactions())
     logger.info(
         "Pipeline hazır: %d işlem analiz edildi, %d bloke",
         len(analyst.analyzed), len(action.blocked),

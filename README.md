@@ -86,11 +86,15 @@ docker compose up --build
 |-------|-----|----------|
 | GET | `/api/health` | Sağlık + aktif LLM sağlayıcısı |
 | GET | `/api/status` | Canlı pipeline özeti (monitored/analyzed/blocked/passed) |
+| GET | `/api/stats` | Online risk dağılımı + drift istatistikleri |
 | GET | `/api/transactions` | Analiz edilen transfer listesi |
 | GET | `/api/blocks` | Otonom bloke listesi |
 | GET | `/api/accounts` | Hesap durumları (`hesap_durumu`) |
 | GET | `/api/audit` | Denetim logu |
 | POST | `/api/transactions` | Yeni işlem ingest (Pydantic strict) |
+| GET | `/api/admin/accounts` | Tüm hesaplar (operatör konsolu) |
+| POST | `/api/admin/accounts/{id}/status` | Manuel durum değişikliği (AKTIF/BLOKE/INCELENIYOR) |
+| GET | `/api/admin/audit/export` | RFC-4180 CSV denetim dışa aktarımı |
 
 ## Klasör Yapısı
 
