@@ -88,6 +88,28 @@ class TestRiskExplain:
         c = records[2]
         assert ContextAnalyst._peer_avg(records, c) == 9000.0
 
+    def test_microcluster_burst(self):
+        from app.core.aggregates import MicroclusterDetector
+        d = MicroclusterDetector(threshold=3)
+        tx = {"customer_id": "C1", "beneficiary_id": "B9", "device_id": "D1"}
+        # Graded ramp: 1/3, 2/3, then full 1.0 at threshold.
+        assert abs(d.update(tx, 1000.0) - 1 / 3) < 1e-9
+        assert abs(d.update(tx, 2000.0) - 2 / 3) < 1e-9
+        assert abs(d.update(tx, 3000.0) - 1.0) < 1e-9
+        # Events older than the window are pruned -> score resets toward 1/3.
+        assert abs(d.update(tx, 10_000_000.0) - 1 / 3) < 1e-9
+
+    def test_online_stats_welford(self):
+        from app.core.aggregates import OnlineStats
+        s = OnlineStats()
+        for v in (10.0, 20.0, 30.0):
+            s.update(v)
+        assert s.n == 3
+        assert abs(s.mean - 20.0) < 1e-9
+        summ = s.summary()
+        assert summ["n"] == 3
+        assert "histogram" in summ
+
     def test_csv_export_contains_header_and_rows(self, store):
         import asyncio
 

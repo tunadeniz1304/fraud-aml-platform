@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from app import config
+from app.core.aggregates import MicroclusterDetector, OnlineStats
 from app.core.behavior_store import BehaviorStore
 from app.core.event_bus import EventBus
 from app.core.risk_engine import _country_score, compute_risk, explain_factors
@@ -44,6 +45,8 @@ class ContextAnalyst:
         self.llm_verdicts: list[dict[str, Any]] = []
         self.vector = behavior_store
         self.llm = llm
+        self.microcluster = MicroclusterDetector()
+        self.stats = OnlineStats()
         self.bus.subscribe(self.MONITORED, self._on_monitored)
 
     @staticmethod
@@ -93,6 +96,8 @@ class ContextAnalyst:
         velocity = self._velocity_last_hour(customer_id, ts)
         self._recent.setdefault(customer_id, []).append(ts)
 
+        micro = self.microcluster.update(tx, ts.timestamp() * 1000)
+
         factors = compute_risk(
             amount=float(tx["amount"]),
             avg_amount=float(profile["avg_amount"]),
@@ -108,7 +113,8 @@ class ContextAnalyst:
         if self.vector is not None:
             distance = self.vector.semantic_distance(tx)
         base = round(factors.score, 4)
-        final = round(self._merge_semantic(base, distance), 4)
+        final = round(min(1.0, self._merge_semantic(base, distance) + micro * 0.25), 4)
+        self.stats.update(final)
 
         factors_dict = {
             "amount": round(factors.amount, 3),
@@ -130,6 +136,7 @@ class ContextAnalyst:
             "peer_amount_ratio": (
                 round(float(tx["amount"]) / peer_avg, 3) if peer_avg > 0 else None
             ),
+            "microcluster": round(micro, 3),
         }
 
         verdict = None

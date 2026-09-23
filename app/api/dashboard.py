@@ -64,6 +64,13 @@ async def status() -> PipelineStatusOut:
     )
 
 
+@app.get("/api/stats", tags=["pipeline"])
+async def stats() -> dict[str, object]:
+    """Online risk-score distribution (drift visibility) across analyzed events."""
+    _require_wired()
+    return state.analyst.stats.summary()
+
+
 @app.get("/api/transactions", response_model=list[AnalyzedTransactionOut], tags=["pipeline"])
 async def transactions() -> list[AnalyzedTransactionOut]:
     _require_wired()

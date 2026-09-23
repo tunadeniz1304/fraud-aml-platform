@@ -60,6 +60,7 @@ class AnalyzedTransactionOut(BaseModel):
     high_risk_country: bool = False
     peer_group_avg: float | None = None
     peer_amount_ratio: float | None = None
+    microcluster: float = 0.0
     llm: dict[str, Any] | None = None
 
 
