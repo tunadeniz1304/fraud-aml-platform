@@ -8,7 +8,10 @@
     "device_id": "DEV-9F2A-11",
     "location": "İstanbul",
     "country": "TR",
-    "purpose": "Salary payment"
+    "purpose": "Salary payment",
+    "beneficiary_id": "BEN-SAL-1",
+    "ip_address": "88.241.10.5",
+    "channel": "web"
   },
   {
     "transaction_id": "TX-1002",
@@ -19,7 +22,24 @@
     "device_id": "DEV-77D0-99",
     "location": "Lagos",
     "country": "NG",
-    "purpose": "Refund"
+    "purpose": "Refund",
+    "beneficiary_id": "BEN-SHM-1",
+    "ip_address": "197.210.44.9",
+    "channel": "web"
+  },
+  {
+    "transaction_id": "TX-1004",
+    "ts": "2026-09-22T02:16:00",
+    "customer_id": "CUST-0002",
+    "amount": 90000,
+    "currency": "EUR",
+    "device_id": "DEV-33CC-10",
+    "location": "Berlin",
+    "country": "DE",
+    "purpose": "Investment",
+    "beneficiary_id": "BEN-SHM-1",
+    "ip_address": "89.12.77.140",
+    "channel": "web"
   },
   {
     "transaction_id": "TX-1003",
@@ -30,18 +50,10 @@
     "device_id": "DEV-11AA-22",
     "location": "Ankara",
     "country": "TR",
-    "purpose": "Invoice payment"
-  },
-  {
-    "transaction_id": "TX-1004",
-    "ts": "2026-09-22T23:58:00",
-    "customer_id": "CUST-0002",
-    "amount": 90000,
-    "currency": "EUR",
-    "device_id": "DEV-33CC-10",
-    "location": "Berlin",
-    "country": "DE",
-    "purpose": "Investment"
+    "purpose": "Invoice payment",
+    "beneficiary_id": "BEN-INV-1",
+    "ip_address": "5.176.120.33",
+    "channel": "mobile"
   },
   {
     "transaction_id": "TX-1005",
@@ -52,7 +64,10 @@
     "device_id": "DEV-88CC-11",
     "location": "İzmir",
     "country": "TR",
-    "purpose": "Shopping"
+    "purpose": "Shopping",
+    "beneficiary_id": "BEN-RTL-1",
+    "ip_address": "176.40.99.210",
+    "channel": "mobile"
   },
   {
     "transaction_id": "TX-1006",
@@ -63,7 +78,10 @@
     "device_id": "DEV-9A9A-00",
     "location": "Aydın",
     "country": "TR",
-    "purpose": "Family transfer"
+    "purpose": "Family transfer",
+    "beneficiary_id": "BEN-FAM-1",
+    "ip_address": "176.42.11.88",
+    "channel": "mobile"
   },
   {
     "transaction_id": "TX-1007",
@@ -74,7 +92,10 @@
     "device_id": "DEV-BB44-77",
     "location": "Bursa",
     "country": "TR",
-    "purpose": "Business"
+    "purpose": "Business",
+    "beneficiary_id": "BEN-BUS-1",
+    "ip_address": "178.233.50.4",
+    "channel": "web"
   },
   {
     "transaction_id": "TX-1008",
@@ -85,7 +106,10 @@
     "device_id": "DEV-FF99-12",
     "location": "Dubai",
     "country": "AE",
-    "purpose": "Gift"
+    "purpose": "Gift",
+    "beneficiary_id": "BEN-GFT-1",
+    "ip_address": "92.96.188.70",
+    "channel": "mobile"
   },
   {
     "transaction_id": "TX-1009",
@@ -96,6 +120,9 @@
     "device_id": "DEV-3C81-55",
     "location": "İstanbul",
     "country": "TR",
-    "purpose": "Peer transfer"
+    "purpose": "Peer transfer",
+    "beneficiary_id": "BEN-P2P-1",
+    "ip_address": "88.241.12.77",
+    "channel": "mobile"
   }
 ]

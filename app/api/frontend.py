@@ -29,6 +29,8 @@ th{color:var(--muted);}
 <div class="grid" id="statcards"></div>
 <h2>Hesap Durumları</h2>
 <table><tbody id="accounts"></tbody></table>
+<h2>İşlemler</h2>
+<table><tr><th>ID</th><th>Müşteri</th><th>Tutar</th><th>Risk</th><th>Mule</th><th>YüksekRiski Ülke</th><th>Açıklama</th></tr><tbody id="txs"></tbody></table>
 <h2>Denetim Logu <a href="/api/admin/audit/export" target="_blank" style="font-size:13px;margin-left:8px;">(CSV indir)</a></h2>
 <table><tbody id="audit"></tbody></table>
 <h2>Risk Dağılımı (Drift)</h2>
@@ -41,13 +43,19 @@ async function j(u){const r=await fetch(api+u);if(!r.ok)throw new Error(r.status
 function esc(s){return (s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 async function refresh(){
   try{
-    const [s,acc,aud,blk,st]=await Promise.all([j('/api/status'),j('/api/admin/accounts'),j('/api/admin/audit?limit=25'),j('/api/blocks'),j('/api/stats')]);
+    const [s,acc,aud,blk,st,tx]=await Promise.all([j('/api/status'),j('/api/admin/accounts'),j('/api/admin/audit?limit=25'),j('/api/blocks'),j('/api/stats'),j('/api/transactions')]);
     document.getElementById('statcards').innerHTML=[
       ['İzlenen İşlem',s.total_monitored,''],['Analiz',s.analyzed,''],
       ['Bloke',s.blocked,'bad'],['Akışta',s.passed,'ok'],['LLM',s.llm_provider,'warn']]
       .map(([l,n,c])=>`<div class="card"><div class="num ${c}">${n}</div><div class="lbl">${esc(l)}</div></div>`).join('');
     document.getElementById('accounts').innerHTML=acc.map(a=>
       `<tr><td>${esc(a.customer_id)}</td><td>${esc(a.name)}</td><td><span class="pill p-${esc(a.hesap_durumu)}">${esc(a.hesap_durumu)}</span></td></tr>`).join('');
+    document.getElementById('txs').innerHTML=tx.slice(-15).reverse().map(t=>
+      `<tr><td>${esc(t.transaction_id)}</td><td>${esc(t.customer_id)}</td><td>${t.amount.toFixed(0)} ${esc(t.currency)}</td>
+       <td class="${t.risk_score>=0.75?'bad':t.risk_score>=0.5?'warn':'ok'}">${t.risk_score.toFixed(2)}</td>
+       <td>${(t.mule_score||0)>0?'<span class="pill p-BLOKE">mule</span>':'-'}</td>
+       <td>${t.high_risk_country?'<span class="pill p-BLOKE">evet</span>':'hayır'}</td>
+       <td>${esc((t.risk_explanation||[]).join(', ')||'-')}</td></tr>`).join('');
     document.getElementById('audit').innerHTML=aud.map(r=>
       `<tr><td>${esc(r.created_at)}</td><td>${esc(r.transaction_id)}</td><td>${esc(r.customer_id)}</td>
        <td>${r.risk_score.toFixed(2)}</td><td><span class="pill p-${esc(r.decision)}">${esc(r.decision)}</span></td></tr>`).join('');

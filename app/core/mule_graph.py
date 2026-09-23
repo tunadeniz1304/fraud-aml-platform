@@ -7,6 +7,10 @@ alıcıya para göndermesi — tipik "ring/sumlot" (mule) kalıbının işaretid
 Bu modül, bu kalıpları kayan bir zaman penceresi içinde izleyen ve her işlem
 için 0..1 aralığında bir risk puanı üreten saf, bağımsız bir `DeviceMuleGraph`
 sunar. Modül hiçbir yan etki üretmez (import-safe).
+
+Puanlama, "sıfır-yanlış-pozitif" yaklaşımı kullanır: cihaz/bir alıcı üzerinde
+yalnızca 1 farklı müşteri görmek NORMALdir ve 0 puan verir; puan ancak eşiği
+aşan farklı müşteri sayısı olduğunda yükselir (yetkisiz paylaşım => şüphe).
 """
 
 from __future__ import annotations
@@ -16,6 +20,17 @@ from collections import defaultdict
 # Fanout sinyali için varsayılan normalleştirme eşiği: tek müşterinin
 # pencerede ulaştığı farklı alıcı sayısı bu değere ulaşınca puan 1 olur.
 FANOUT_THRESHOLD = 3
+
+
+def _normalised(distinct: int, threshold: int) -> float:
+    """0 while ``distinct < threshold``; ramps 1/3..1 above it.
+
+    A single distinct entity is the NORMAL case -> 0. Fraud only starts when
+    the count crosses the threshold (else every dance transaction would score).
+    """
+    if distinct < threshold:
+        return 0.0
+    return min(1.0, (distinct - threshold + 1) / 3.0)
 
 
 class DeviceMuleGraph:
@@ -45,8 +60,9 @@ class DeviceMuleGraph:
     def update(self, tx: dict, ts_ms: float) -> dict[str, float]:
         """İşlemi kaydedip ilgili sinyal puanlarını döndürün."""
         record = self._extract(tx)
+        zero = {"shared_device": 0.0, "shared_beneficiary": 0.0, "fanout": 0.0}
         if record is None:
-            return {"shared_device": 0.0, "shared_beneficiary": 0.0, "fanout": 0.0}
+            return zero
         customer, device, beneficiary = record
 
         self._events.append((customer, device, beneficiary, ts_ms))
@@ -54,15 +70,13 @@ class DeviceMuleGraph:
 
         devices, beneficiaries, customers = self._index()
 
-        shared_device = min(
-            1.0,
-            len(devices[device]) / self.shared_device_threshold,
+        shared_device = _normalised(
+            len(devices[device]), self.shared_device_threshold
         )
-        shared_beneficiary = min(
-            1.0,
-            len(beneficiaries[beneficiary]) / self.shared_beneficiary_threshold,
+        shared_beneficiary = _normalised(
+            len(beneficiaries[beneficiary]), self.shared_beneficiary_threshold
         )
-        fanout = min(1.0, len(customers[customer]) / FANOUT_THRESHOLD)
+        fanout = _normalised(len(customers[customer]), FANOUT_THRESHOLD)
 
         return {
             "shared_device": shared_device,
