@@ -37,9 +37,17 @@ async def ready() -> JSONResponse:
             except Exception:  # noqa: BLE001 - readiness probe must not raise
                 checks["redis"] = False
     ok = all(checks.values())
+    info: dict[str, Any] = {}
+    engine = getattr(getattr(pipeline, "analyst", None), "engine", None)
+    if engine is not None:
+        # A missing model degrades to rules-only scoring; it is reported, not fatal.
+        info["model"] = engine.model.version if engine.model else "yalnız-kurallar"
+        info["challenger"] = engine.challenger.version if engine.challenger else None
+        info["ruleset"] = engine.ruleset.version
+        info["model_loaded"] = engine.model is not None
     return JSONResponse(
         status_code=200 if ok else 503,
-        content={"status": "ready" if ok else "not_ready", "checks": checks},
+        content={"status": "ready" if ok else "not_ready", "checks": checks, "info": info},
     )
 
 

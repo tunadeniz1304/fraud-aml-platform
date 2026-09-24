@@ -26,6 +26,7 @@ from app.api.security import install as install_security
 from app.api.state import state
 from app.config import get_settings
 from app.monitoring.logging import configure_logging
+from app.monitoring.tracing import setup_tracing
 from app.security.auth import UserDirectory
 
 logger = logging.getLogger("fraud.dashboard")
@@ -40,6 +41,7 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         configure_logging(settings)
+        setup_tracing("anil3-api")
         factory = app.state.pipeline_factory
         if factory is None:
             from app.pipeline import build_pipeline

@@ -26,7 +26,7 @@ from app.config import get_settings
 from app.core.aggregates import OnlineStats
 from app.core.event_bus import EventBus
 from app.features.extractor import CustomerDirectory, FeatureExtractor
-from app.monitoring import metrics
+from app.monitoring import metrics, tracing
 from app.scoring.engine import ScoringEngine
 
 logger = logging.getLogger("fraud.analyst")
@@ -104,7 +104,8 @@ class ContextAnalyst:
     async def _on_monitored(self, tx: dict[str, Any]) -> None:
         customer_id = str(tx["customer_id"])
         status = self.account_status(customer_id) if self.account_status else None
-        result = await self.engine.score(tx, account_status=status)
+        with tracing.span("scoring.score", transaction_id=tx.get("transaction_id")):
+            result = await self.engine.score(tx, account_status=status)
         analyzed = {**tx, **result.event_fields()}
         if result.flags.get("account_blocked"):
             logger.warning(

@@ -83,6 +83,7 @@ class TransactionMonitor:
             await self.bus.publish(self.REJECTED, monitored, key=_key(tx))
             return
         self.monitored.append(monitored)
+        metrics.TX_TOTAL.labels(source=str(tx.get("ingested_by") or "stream")).inc()
         logger.info(
             "[Monitor] transfer %s aldı -> tamam (müşteri: %s, %s %s)",
             tx.get("transaction_id"),

@@ -1,0 +1,40 @@
+# Operasyonel alarm kuralları (Türkçe açıklamalı)
+groups:
+  - name: anil3
+    rules:
+      - alert: SkorGecikmesiYuksek
+        expr: histogram_quantile(0.99, sum(rate(fraud_scoring_latency_seconds_bucket[5m])) by (le)) > 0.05
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: "Senkron skor p99 gecikmesi 50 ms'yi aştı"
+      - alert: DeadLetterKuyrugu
+        expr: fraud_dlq_size > 0
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: "Dead-letter kuyruğunda mesaj var"
+      - alert: VakaSLAAsildi
+        expr: fraud_cases_sla_breached > 0
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: "İç SLA'sı (4 saat) aşılmış açık vaka var"
+      - alert: MASAKSuresiDoluyor
+        expr: fraud_cases_masak_due_soon > 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "MASAK ŞİB süresinin dolmasına 2 iş günü veya daha az kalan vaka var"
+      - alert: LLMFallbackOraniYuksek
+        expr: sum(rate(fraud_llm_calls_total{mode="fallback"}[10m])) / clamp_min(sum(rate(fraud_llm_calls_total[10m])), 1e-9) > 0.2
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "LLM çağrılarının %20'sinden fazlası demo çıktısına düşüyor"
+      - alert: SkorDrift
+        expr: max(fraud_drift_psi) > 0.25
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "PSI > 0.25 — feature/skor dağılımında belirgin kayma"

@@ -26,6 +26,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.config import get_settings
+from app.monitoring import metrics, tracing
 from app.security.ratelimit import limiter, rate_limit_handler
 
 logger = logging.getLogger("fraud.http")
@@ -84,14 +85,20 @@ class RequestContextMiddleware:
             await send(message)
 
         structlog.contextvars.bind_contextvars(request_id=request_id)
+        method = str(scope.get("method", ""))
         try:
-            await self.app(scope, receive, send_wrapper)
+            with tracing.span(f"HTTP {method}", **{"http.target": path, "request_id": request_id}):
+                await self.app(scope, receive, send_wrapper)
         finally:
             elapsed = (time.perf_counter() - started) * 1000
             if not path.startswith(("/static", "/assets")) and path != "/metrics":
+                # route template (not the raw path) keeps label cardinality bounded
+                route = getattr(scope.get("route"), "path", "eşleşmeyen")
+                metrics.HTTP_REQUESTS.labels(method, route, str(status_holder["status"])).inc()
+                metrics.HTTP_LATENCY.labels(method, route).observe(elapsed / 1000)
                 logger.info(
                     "%s %s -> %s (%.1f ms)",
-                    scope.get("method"),
+                    method,
                     path,
                     status_holder["status"],
                     elapsed,
