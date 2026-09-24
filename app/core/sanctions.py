@@ -13,6 +13,7 @@ deterministiktir — harici bulanık eşleştirme kütüphanesi kullanılmaz.
 from __future__ import annotations
 
 import json
+import unicodedata
 from pathlib import Path
 
 from app import config
@@ -26,8 +27,14 @@ def _normalise(text: str) -> str:
 
     Büyük/küçük harf (casefold) ve fazladan boşluklar tek boşluğa indirilir —
     "Viktor  Melnikov" ile "VIKTOR melnikov" aynı normal biçimi üretir.
+    Birleşik aksan karakterleri (örn. "İ" casefold sonrası "i"+U+0307) NFD ile
+    ayrıştırılıp atılır; böylece Türkçe karakter varyantları da eşleşir.
     """
-    return " ".join(text.casefold().split())
+    decomposed = unicodedata.normalize("NFD", text.casefold())
+    stripped = "".join(
+        ch for ch in decomposed if unicodedata.category(ch) != "Mn"
+    )
+    return " ".join(stripped.split())
 
 
 def _tokens(text: str) -> set[str]:
@@ -40,14 +47,14 @@ class SanctionScreener:
 
     Bir kayıt, sorgu (``name``) aşağıdaki durumlarda onunla eşleşir:
 
-    - sorgu, kayıt adının ya da herhangi bir takma adının (alias) alt dizesi
-      (normalize edilmiş haliyle içinde geçer), VEYA
+    - sorgu, adın ya da bir takma adın tam bir kelimesiyse (kelime-sınırı
+      alt dize eşleşmesi) — "Melnikov" -> "Viktor Melnikov", VEYA
     - sorgunun tüm kelimeleri, adın ya da bir takma adın kelime kümesinde
-      birebir (tam kelime) bulunur.
+      birebir (tam kelime) bulunursa.
 
-    Alt dize eşleşmesi "Melnikov" -> "Viktor Melnikov" gibi kısmi isimleri
-    yakalar; tam-kelime eşleşmesi ise "Kara" sorgusunun "Karadeniz" içinde
-    yanlışlıkla eşleşmesini önler.
+    Kelime-sınırı eşleşmesi kısmi isimleri ("Melnikov") yakalarken, bir
+    kelimenin ortasına karşılık gelen kısmî alt dizeyi ("Kara" in
+    "Karadeniz") yanlış-pozitif olarak kabul etmez.
     """
 
     def __init__(self, path: str | Path | None = None) -> None:
@@ -71,17 +78,16 @@ class SanctionScreener:
         t = _normalise(target)
         if not q or not t:
             return False
-        if q in t:
-            return True
+        # Tam-kelime (full-word) eşleşmesi: sorgunun tüm kelimeleri hedefin
+        # kelime kümesinde birebir bulunmalı. "Melnikov" -> "Viktor Melnikov",
+        # ama "Kara" -> "Karadeniz" YANLIŞ POZİTİF üretmez. Regex \b kullanmak
+        # Türkçe "İ" gibi casefold sonrası birleşik aksan karakterleriyle bozulur,
+        # bu yüzden kelime-kümesi karşılaştırması kullanılır.
         query_tokens = _tokens(query)
         return bool(query_tokens) and query_tokens.issubset(t.split())
 
     def find_candidates(self, name: str | None) -> list[dict]:
-        """``name`` ile eşleşen kayıtların listesini dosya sırasıyla döndürür.
-
-        Boş/``None`` sorgu için ``[]`` döner; kayıt yüklenmeden önce de tutarlı
-        (deterministik) bir sonuç verir.
-        """
+        """``name`` ile eşleşen kayıtların listesini dosya sırasıyla döndürür."""
         if not name:
             return []
         return [
@@ -94,3 +100,4 @@ class SanctionScreener:
     def name_matches(self, name: str | None) -> bool:
         """``name`` ile en az bir kayıt eşleşiyorsa ``True`` döndürür."""
         return bool(self.find_candidates(name))
+

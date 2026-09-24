@@ -29,6 +29,55 @@ class TestStreamSimulator:
         assert len(monitor.monitored) == 9
 
 
+class TestSanctionsIntegration:
+    def test_analyst_flags_sanctioned_customer(self, bus, store, tmp_path):
+        import asyncio
+        import json
+
+        from app.agents.action_agent import ActionAgent
+        from app.agents.context_analyst import ContextAnalyst
+        from app.agents.transaction_monitor import TransactionMonitor
+
+        # A customer whose name is on the PEP list (Hasan Abadi).
+        cust_file = tmp_path / "customers_pep.json"
+        cust_file.write_text(
+            json.dumps(
+                [
+                    {
+                        "customer_id": "CUST-PEP1",
+                        "name": "Hasan Abadi",
+                        "home_city": "Tahran",
+                        "home_country": "IR",
+                        "known_device_ids": ["DEV-PEP-1"],
+                        "known_locations": ["Tahran"],
+                        "avg_amount": 2000,
+                        "typical_hours": [9, 10, 11, 12],
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        analyst = ContextAnalyst(bus, customers_path=cust_file)
+        ActionAgent(bus, store=store)
+        TransactionMonitor(bus)
+        tx = {
+            "transaction_id": "TX-PEP-1",
+            "ts": "2026-09-22T14:30:00",
+            "customer_id": "CUST-PEP1",
+            "amount": 5000,
+            "currency": "TRY",
+            "device_id": "DEV-PEP-1",
+            "location": "Tahran",
+            "country": "IR",
+            "purpose": "Trade",
+        }
+        asyncio.run(bus.publish(TransactionMonitor.CREATED, tx))
+        analyzed = analyst.analyzed[-1]
+        assert analyzed["sanctions_hit"] is True
+        assert analyzed["sanctions"][0]["id"] == "PEP-0001"
+
+
 class TestEventBusIsolation:
     async def test_failing_subscriber_does_not_block_others(self, bus):
         received = []

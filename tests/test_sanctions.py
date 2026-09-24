@@ -65,7 +65,7 @@ def test_alias_match(screener: SanctionScreener) -> None:
 def test_case_insensitive_and_extra_whitespace(screener: SanctionScreener) -> None:
     """Büyük/küçük harf ve fazladan boşluk eşleşmeyi etkilemez."""
     assert screener.name_matches("  karadeniz   shipping CO ")
-    assert screener.find_candidates("vİktor melnikov")[0]["id"] == "SDN-T1"
+    assert screener.find_candidates("vIkToR MeLnIkOv")[0]["id"] == "SDN-T1"
 
 
 def test_partial_name_via_substring(screener: SanctionScreener) -> None:

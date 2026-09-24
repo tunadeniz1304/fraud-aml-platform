@@ -20,6 +20,7 @@ from app.core.behavior_store import BehaviorStore
 from app.core.event_bus import EventBus
 from app.core.mule_graph import DeviceMuleGraph, mule_explain
 from app.core.risk_engine import _country_score, compute_risk, explain_factors
+from app.core.sanctions import SanctionScreener
 from app.llm import LLMClient
 
 logger = logging.getLogger("fraud.analyst")
@@ -48,6 +49,7 @@ class ContextAnalyst:
         self.llm = llm
         self.microcluster = MicroclusterDetector()
         self.mule_graph = DeviceMuleGraph()
+        self.sanctions = SanctionScreener().load()
         self.stats = OnlineStats()
         self.bus.subscribe(self.MONITORED, self._on_monitored)
 
@@ -136,6 +138,18 @@ class ContextAnalyst:
             "velocity": round(factors.velocity, 3),
         }
         peer_avg = self._peer_avg(self._records, profile)
+        # AML screening: customer name (and beneficiary, when present) against
+        # the OFAC-style sanction/PEP list.
+        screen_names = [profile.get("name", "")]
+        if tx.get("beneficiary_id"):
+            screen_names.append(tx["beneficiary_id"])
+        sanction_hits: list[dict[str, Any]] = []
+        for name in screen_names:
+            for hit in self.sanctions.find_candidates(name):
+                hit_copy = dict(hit)
+                hit_copy["matched_on"] = name
+                if hit_copy not in sanction_hits:
+                    sanction_hits.append(hit_copy)
         analyzed = {
             **tx,
             "risk_score": final,
@@ -152,6 +166,8 @@ class ContextAnalyst:
             "mule_score": round(mule, 3),
             "mule_signals": mule_explain(mule_scores),
             "mule_scores": mule_scores,
+            "sanctions": sanction_hits,
+            "sanctions_hit": bool(sanction_hits),
         }
 
         verdict = None

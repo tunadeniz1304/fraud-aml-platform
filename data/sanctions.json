@@ -49,8 +49,8 @@
   },
   {
     "id": "SDN-0005",
-    "name": "Karadeniz Shipping Co",
-    "aliases": ["Karadeniz Denizcilik", "KDC Shipping"],
+    "name": "Bosphorus Shipping Co",
+    "aliases": ["Bosphorus Shipping Group", "BSC Shipping"],
     "country": "UA",
     "program": "Ukraine-Related Sanctions",
     "pep": false
