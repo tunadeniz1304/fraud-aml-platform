@@ -1,5 +1,5 @@
 # Anil3 fraud platformu
-#   docker compose up --build            -> http://localhost:8000
+#   docker compose up --build            -> http://localhost:8000 (API_PORT ile değişir)
 #   docker compose --profile observability up   (+ Prometheus :9090, Grafana :3000)
 #
 # .env (opsiyonel) env_file ile verilir, imaja kopyalanmaz. Postgres parolası
@@ -60,7 +60,7 @@ services:
   api:
     <<: *app
     ports:
-      - "8000:8000"
+      - "${API_PORT:-8000}:8000"
     environment:
       <<: *app-env
       STREAM_MODE: ${STREAM_MODE:-batch}
