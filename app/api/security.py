@@ -28,8 +28,7 @@ _SECURITY_HEADERS = {
     "Referrer-Policy": "no-referrer",
     "X-XSS-Protection": "1; mode=block",
     "Content-Security-Policy": (
-        "default-src 'self'; style-src 'self' 'unsafe-inline'; "
-        "script-src 'self' 'unsafe-inline'"
+        "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'"
     ),
 }
 
@@ -45,7 +44,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             response.headers[key] = value
         logger.info(
             "%s %s -> %s (%d ms)",
-            request.method, request.url.path, response.status_code, round(elapsed_ms, 1),
+            request.method,
+            request.url.path,
+            response.status_code,
+            round(elapsed_ms, 1),
         )
         return response
 
@@ -66,7 +68,7 @@ class AdminTokenMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-def install(app) -> None:  # noqa: ANN001 - Starlette/FastAPI app
+def install(app) -> None:
     """Install hardening middleware in dependency-free ascending order."""
     app.add_middleware(AdminTokenMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)

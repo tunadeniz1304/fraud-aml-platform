@@ -28,9 +28,7 @@ TX_ENRICH = {
 
 def enrich() -> None:
     """Add fields in place, preserving record order and ids."""
-    for name, key_old, fields in (
-        ("transactions.json", "transaction_id", TX_ENRICH),
-    ):
+    for name, key_old, fields in (("transactions.json", "transaction_id", TX_ENRICH),):
         path = BASE / name
         with path.open("r", encoding="utf-8") as fh:
             data = json.load(fh)

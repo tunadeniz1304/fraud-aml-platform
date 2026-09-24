@@ -10,8 +10,16 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 _CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _CHARS = (
-    "transaction_id", "customer_id", "device_id", "location", "purpose",
-    "beneficiary_id", "ip_address", "channel", "currency", "country",
+    "transaction_id",
+    "customer_id",
+    "device_id",
+    "location",
+    "purpose",
+    "beneficiary_id",
+    "ip_address",
+    "channel",
+    "currency",
+    "country",
 )
 
 

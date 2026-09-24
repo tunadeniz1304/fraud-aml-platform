@@ -125,9 +125,7 @@ class ContextAnalyst:
         if self.vector is not None:
             distance = self.vector.semantic_distance(tx)
         base = round(factors.score, 4)
-        final = round(
-            min(1.0, self._merge_semantic(base, distance) + micro * 0.25 + mule * 0.2), 4
-        )
+        final = round(min(1.0, self._merge_semantic(base, distance) + micro * 0.25 + mule * 0.2), 4)
         self.stats.update(final)
 
         factors_dict = {
@@ -184,7 +182,8 @@ class ContextAnalyst:
                 # rule-only verdict, never kill the event stream.
                 logger.error(
                     "[Analyst][LLM] %s analizi başarısız oldu (%s) — kural motoru kullanıldı",
-                    tx["transaction_id"], exc,
+                    tx["transaction_id"],
+                    exc,
                 )
                 analyzed["llm_error"] = str(exc)
                 verdict = None
@@ -202,7 +201,9 @@ class ContextAnalyst:
         self.analyzed.append(analyzed)
         logger.info(
             "[Analyst] %s risk skoru %.2f (kural %.2f, semantik %s)",
-            tx["transaction_id"], final, base,
+            tx["transaction_id"],
+            final,
+            base,
             f"{distance:.2f}" if distance is not None else "kapalı",
         )
         await self._publish_analyzed(analyzed)

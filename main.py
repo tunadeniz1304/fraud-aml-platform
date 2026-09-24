@@ -9,13 +9,13 @@ event-driven pipeline:
 
 Prints a human-readable report of each transfer's risk score and the agent's
 autonomous decision (passed vs. account blocked)."""
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
 import sys
-from pathlib import Path
 
 from app import config
 from app.agents.action_agent import ActionAgent
@@ -87,8 +87,10 @@ def print_report(monitor, analyst, action) -> None:
     if action.blocked:
         print("\nOtonom bloke edilen hesaplar:")
         for b in action.blocked:
-            print(f"  - {b['transaction_id']} | müşteri {b['customer_id']} | "
-                  f"risk {b['risk_score']:.2f} | {b['reason']}")
+            print(
+                f"  - {b['transaction_id']} | müşteri {b['customer_id']} | "
+                f"risk {b['risk_score']:.2f} | {b['reason']}"
+            )
 
 
 async def main() -> None:

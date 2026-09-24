@@ -77,10 +77,12 @@ async def build_pipeline() -> None:
         await feed_stream(bus, load_transactions())
     logger.info(
         "Pipeline hazır: %d işlem analiz edildi, %d bloke",
-        len(analyst.analyzed), len(action.blocked),
+        len(analyst.analyzed),
+        len(action.blocked),
     )
 
 
 if __name__ == "__main__":
     asyncio.run(build_pipeline())
-    uvicorn.run(app, host=os.getenv("HOST", "0.0.0.0"), port=int(os.getenv("PORT", "8000")))
+    host = os.getenv("HOST", "0.0.0.0")  # noqa: S104 - konteyner içi bağlama
+    uvicorn.run(app, host=host, port=int(os.getenv("PORT", "8000")))

@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -42,7 +42,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at);
 
 
 def _utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class AccountStore:
@@ -60,9 +60,7 @@ class AccountStore:
         self._conn.close()
 
     # --- accounts table ----------------------------------------------------
-    def seed_accounts(
-        self, customers_path: Path | None = None
-    ) -> int:
+    def seed_accounts(self, customers_path: Path | None = None) -> int:
         """Create/refresh ``accounts`` rows from ``data/customers.json``.
 
         Returns number of rows (re)written. Existing ``hesap_durumu`` values
@@ -125,7 +123,7 @@ class AccountStore:
             (_utcnow(), transaction_id, customer_id, float(risk_score), decision, reason),
         )
         self._conn.commit()
-        return int(cur.lastrowid)
+        return int(cur.lastrowid or 0)
 
     def list_audit(self, limit: int = 100) -> list[dict[str, Any]]:
         return [

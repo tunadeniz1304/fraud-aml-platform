@@ -1,3 +1,4 @@
+# ruff: noqa: E501  (inline HTML/JS şablonu; F1'de statik dosyalara taşınacak)
 import os
 
 API = os.getenv("API_BASE", "")

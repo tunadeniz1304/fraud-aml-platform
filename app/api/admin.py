@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 
-from app.api.state import state
 from app.api.schemas import AccountOut, AuditRowOut
+from app.api.state import state
+
 logger = logging.getLogger("fraud.admin")
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -70,9 +71,7 @@ async def export_audit() -> str:
     cols = ("id", "created_at", "transaction_id", "customer_id", "risk_score", "decision", "reason")
 
     def row(values) -> str:
-        return ",".join(
-            f'"{str(v).replace(chr(34), chr(34) * 2)}"' for v in values
-        )
+        return ",".join(f'"{str(v).replace(chr(34), chr(34) * 2)}"' for v in values)
 
     if state.store is None:
         return row(cols) + "\n"

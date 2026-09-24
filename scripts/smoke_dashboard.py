@@ -7,7 +7,6 @@ import asyncio
 from fastapi.testclient import TestClient
 
 import server
-from app.api.dashboard import state
 
 
 def main() -> None:
@@ -22,8 +21,7 @@ def main() -> None:
     assert r.status_code == 200, r.text
     status_ = r.json()
     print(
-        "status: monitored=%s analyzed=%s blocked=%s passed=%s vector=%s"
-        % (
+        "status: monitored={} analyzed={} blocked={} passed={} vector={}".format(
             status_["total_monitored"],
             status_["analyzed"],
             status_["blocked"],

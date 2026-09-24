@@ -80,9 +80,7 @@ def test_customers_share_device_only_after_threshold() -> None:
     graph = DeviceMuleGraph(shared_device_threshold=3)
     scores = []
     for customer in ("C1", "C2", "C3"):
-        scores.append(graph.update(_tx(customer, "DEV-A", "BEN-1"), 1_000)[
-            "shared_device"
-        ])
+        scores.append(graph.update(_tx(customer, "DEV-A", "BEN-1"), 1_000)["shared_device"])
     assert scores[0] == 0.0
     assert scores[1] == 0.0
     assert scores[2] == pytest.approx(1 / 3)  # 3/3 eşiğe ulaştı
@@ -90,8 +88,6 @@ def test_customers_share_device_only_after_threshold() -> None:
 
 def test_mule_explain_labels_only_nonzero_signals() -> None:
     assert mule_explain({}) == []
-    labels = mule_explain(
-        {"shared_device": 1.0, "shared_beneficiary": 0.0, "fanout": 0.4}
-    )
+    labels = mule_explain({"shared_device": 1.0, "shared_beneficiary": 0.0, "fanout": 0.4})
     assert "aynı cihazdan çok sayıda farklı müşteri" in labels
     assert len(labels) == 2

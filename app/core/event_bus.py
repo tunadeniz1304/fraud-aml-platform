@@ -15,7 +15,8 @@ from __future__ import annotations
 import inspect
 import logging
 from collections import defaultdict
-from typing import Any, Awaitable, Callable, DefaultDict
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 logger = logging.getLogger("fraud.eventbus")
 
@@ -28,7 +29,7 @@ class EventBus:
     """A lightweight in-memory pub/sub bus backed by asyncio."""
 
     def __init__(self) -> None:
-        self._subscribers: DefaultDict[Topic, list[Handler]] = defaultdict(list)
+        self._subscribers: defaultdict[Topic, list[Handler]] = defaultdict(list)
 
     def subscribe(self, topic: Topic, handler: Handler) -> None:
         """Register ``handler`` to be invoked for every event on ``topic``."""
@@ -47,7 +48,7 @@ class EventBus:
                 result = handler(payload)
                 if inspect.isawaitable(result):
                     await result
-            except Exception:  # noqa: BLE001 - isolate subscriber failures
+            except Exception:
                 logger.exception(
                     "[EventBus] '%s' abonesi %r işlerken hata verdi",
                     topic,

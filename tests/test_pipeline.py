@@ -16,7 +16,7 @@ class TestPipeline:
     async def test_full_stream_publishing(self, bus, store, sample_transactions):
         monitor = TransactionMonitor(bus)
         analyst = ContextAnalyst(bus)
-        action = ActionAgent(bus, store=store)
+        ActionAgent(bus, store=store)
         await run_pipeline(bus, sample_transactions)
 
         assert len(monitor.monitored) == len(sample_transactions)
@@ -26,7 +26,7 @@ class TestPipeline:
         }
 
     async def test_anomalous_blocks_and_status(self, bus, store, sample_transactions):
-        monitor = TransactionMonitor(bus)
+        TransactionMonitor(bus)
         ContextAnalyst(bus)
         action = ActionAgent(bus, store=store)
         await run_pipeline(bus, sample_transactions)
@@ -42,7 +42,7 @@ class TestPipeline:
         assert account["hesap_durumu"] == "BLOKE"
 
     async def test_clean_transactions_pass(self, bus, store, sample_transactions):
-        monitor = TransactionMonitor(bus)
+        TransactionMonitor(bus)
         ContextAnalyst(bus)
         action = ActionAgent(bus, store=store)
         await run_pipeline(bus, sample_transactions[:2])

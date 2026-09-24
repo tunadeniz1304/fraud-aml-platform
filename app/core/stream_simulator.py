@@ -12,8 +12,9 @@ import asyncio
 import copy
 import json
 import random
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 
 from app import config
 from app.agents.transaction_monitor import TransactionMonitor

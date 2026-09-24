@@ -70,9 +70,7 @@ class DeviceMuleGraph:
 
         devices, beneficiaries, customers = self._index()
 
-        shared_device = _normalised(
-            len(devices[device]), self.shared_device_threshold
-        )
+        shared_device = _normalised(len(devices[device]), self.shared_device_threshold)
         shared_beneficiary = _normalised(
             len(beneficiaries[beneficiary]), self.shared_beneficiary_threshold
         )

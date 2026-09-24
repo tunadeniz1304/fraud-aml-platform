@@ -31,9 +31,7 @@ def _normalise(text: str) -> str:
     ayrıştırılıp atılır; böylece Türkçe karakter varyantları da eşleşir.
     """
     decomposed = unicodedata.normalize("NFD", text.casefold())
-    stripped = "".join(
-        ch for ch in decomposed if unicodedata.category(ch) != "Mn"
-    )
+    stripped = "".join(ch for ch in decomposed if unicodedata.category(ch) != "Mn")
     return " ".join(stripped.split())
 
 
@@ -62,7 +60,7 @@ class SanctionScreener:
         self.path: Path = Path(path) if path else DEFAULT_SANCTIONS_PATH
         self._records: list[dict] = []
 
-    def load(self) -> "SanctionScreener":
+    def load(self) -> SanctionScreener:
         """JSON dosyasını okuyup kayıtları yükler; kendisini döndürür.
 
         Dosya yoksa ``FileNotFoundError`` doğal olarak fırlar. Zincirleme
@@ -100,4 +98,3 @@ class SanctionScreener:
     def name_matches(self, name: str | None) -> bool:
         """``name`` ile en az bir kayıt eşleşiyorsa ``True`` döndürür."""
         return bool(self.find_candidates(name))
-

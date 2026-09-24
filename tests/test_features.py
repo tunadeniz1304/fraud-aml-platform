@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from app.api.schemas import TransactionIn
@@ -22,6 +21,7 @@ class TestStreamSimulator:
 
     async def test_publishes_to_bus(self, bus: EventBus):
         from app.agents.transaction_monitor import TransactionMonitor
+
         monitor = TransactionMonitor(bus)
         sim = TransactionStreamSimulator(path=None)
         async for _ in sim(bus):
@@ -31,7 +31,6 @@ class TestStreamSimulator:
 
 class TestSanctionsIntegration:
     def test_analyst_flags_sanctioned_customer(self, bus, store, tmp_path):
-        import asyncio
         import json
 
         from app.agents.action_agent import ActionAgent
@@ -121,6 +120,7 @@ class TestIngestHardening:
 
     def test_amount_cap_rejects_absurd_values(self):
         import pytest
+
         with pytest.raises(ValidationError):
             TransactionIn(
                 transaction_id="TX-X",
@@ -134,6 +134,7 @@ class TestIngestHardening:
 
     def test_channel_enum_rejects_unknown(self):
         import pytest
+
         with pytest.raises(ValidationError):
             TransactionIn(
                 transaction_id="TX-X",
@@ -180,6 +181,7 @@ class TestDriftInjection:
 class TestSchemas:
     def test_invalid_amount_rejected(self):
         import pytest
+
         with pytest.raises(ValidationError):
             TransactionIn(
                 transaction_id="TX-X",
@@ -193,6 +195,7 @@ class TestSchemas:
 
     def test_extra_fields_rejected(self):
         import pytest
+
         with pytest.raises(ValidationError):
             TransactionIn(
                 transaction_id="TX-X",
@@ -209,11 +212,13 @@ class TestSchemas:
 class TestRiskExplain:
     def test_explain_defaults_empty(self):
         from app.core.risk_engine import RiskFactors, explain_factors
+
         empty = RiskFactors(amount=0.0, device=0.0, location=0.0, time=0.0, velocity=0.0)
         assert explain_factors(empty) == []
 
     def test_explain_weights_dominant_signals(self):
         from app.core.risk_engine import RiskFactors, explain_factors
+
         f = RiskFactors(amount=0.9, device=1.0, location=0.0, time=0.0, velocity=0.0)
         out = explain_factors(f)
         assert out[0] == "bilinmeyen cihaz"
@@ -221,11 +226,13 @@ class TestRiskExplain:
 
     def test_country_score(self):
         from app.core.risk_engine import _country_score
+
         assert _country_score("NG") == 1.0
         assert _country_score("TR") == 0.0
 
     def test_peer_group_baseline(self):
         from app.agents.context_analyst import ContextAnalyst
+
         records = [
             {"customer_id": "A", "home_city": "İstanbul", "avg_amount": 2000},
             {"customer_id": "B", "home_city": "İstanbul", "avg_amount": 3000},
@@ -239,6 +246,7 @@ class TestRiskExplain:
 
     def test_microcluster_burst(self):
         from app.core.aggregates import MicroclusterDetector
+
         d = MicroclusterDetector(threshold=3)
         tx = {"customer_id": "C1", "beneficiary_id": "B9", "device_id": "D1"}
         # Graded ramp: 1/3, 2/3, then full 1.0 at threshold.
@@ -250,6 +258,7 @@ class TestRiskExplain:
 
     def test_online_stats_welford(self):
         from app.core.aggregates import OnlineStats
+
         s = OnlineStats()
         for v in (10.0, 20.0, 30.0):
             s.update(v)
@@ -260,11 +269,13 @@ class TestRiskExplain:
         assert "histogram" in summ
 
     def test_csv_export_contains_header_and_rows(self, store):
-        import asyncio
 
         store.append_audit(
-            transaction_id="TX-1", customer_id="C1", risk_score=0.9,
-            decision="BLOKE", reason="test",
+            transaction_id="TX-1",
+            customer_id="C1",
+            risk_score=0.9,
+            decision="BLOKE",
+            reason="test",
         )
         from app.api.admin import export_audit
         from app.api.state import state
@@ -298,5 +309,6 @@ class TestAdminStore:
 
     def test_invalid_status_rejected(self, store):
         import pytest
+
         with pytest.raises(ValueError):
             store.set_hesap_durumu("CUST-0001", "BOGUS")

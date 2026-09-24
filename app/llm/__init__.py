@@ -96,14 +96,12 @@ class LLMClient:
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": user}],
         )
-        return "".join(
-            block.text for block in resp.content if getattr(block, "type", "") == "text"
-        )
+        return "".join(block.text for block in resp.content if getattr(block, "type", "") == "text")
 
     @staticmethod
     def _parse_json(raw: str) -> dict[str, Any]:
         text = raw.strip()
-        text = text[text.find("{"): text.rfind("}") + 1] if "{" in text else text
+        text = text[text.find("{") : text.rfind("}") + 1] if "{" in text else text
         parsed = json.loads(text)
         if not isinstance(parsed, dict):
             raise ValueError("LLM yanıtı bir nesne değil")
@@ -126,9 +124,8 @@ class LLMClient:
             "risk_factors": risk_factors or {},
             "semantic_distance": semantic_distance,
         }
-        user = (
-            "Aşağıdaki para transferini değerlendir ve fraud analizi yap.\n"
-            + json.dumps(context, ensure_ascii=False, default=str)
+        user = "Aşağıdaki para transferini değerlendir ve fraud analizi yap.\n" + json.dumps(
+            context, ensure_ascii=False, default=str
         )
         try:
             raw = self._completion(system=_SYSTEM, user=user)

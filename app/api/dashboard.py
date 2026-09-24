@@ -9,9 +9,9 @@ and a live ingest endpoint (strict Pydantic validation) for the dashboard.
 from __future__ import annotations
 
 import logging
-from typing import Any
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException
+from fastapi import status as http_status
 from fastapi.responses import HTMLResponse
 
 from app import config
@@ -114,7 +114,7 @@ async def ingest(tx: TransactionIn) -> AnalyzedTransactionOut:
     )
     if analyzed is None:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="İşlem analiz edilemedi",
         )
     return AnalyzedTransactionOut(**analyzed)

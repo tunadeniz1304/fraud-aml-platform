@@ -75,7 +75,7 @@ def test_partial_name_via_substring(screener: SanctionScreener) -> None:
 
 
 def test_no_false_substring_word_match(screener: SanctionScreener) -> None:
-    """"Kara" sorgusu "Karadeniz" ile alt dize olarak eşleşmez (tam kelime)."""
+    """ "Kara" sorgusu "Karadeniz" ile alt dize olarak eşleşmez (tam kelime)."""
     assert not screener.name_matches("Kara")
     assert not screener.name_matches("coffee")
 
