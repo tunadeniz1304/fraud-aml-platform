@@ -72,6 +72,33 @@ class Settings(BaseSettings):
     customers_path: Path | None = Field(default=None, validation_alias="FRAUD_CUSTOMERS_PATH")
     transactions_path: Path | None = Field(default=None, validation_alias="FRAUD_TRANSACTIONS_PATH")
 
+    database_url: str | None = Field(default=None, validation_alias="DATABASE_URL")
+    db_auto_create: bool = True
+    writer_batch_size: int = 500
+    writer_flush_ms: int = 50
+    writer_queue_size: int = 20_000
+
+    # --- Event bus (P0.2) --------------------------------------------------
+    event_bus: Literal["memory", "redis"] = "memory"
+    redis_url: str | None = Field(default=None, validation_alias="REDIS_URL")
+    redis_stream_prefix: str = "fraud"
+    bus_max_retries: int = 2
+    bus_partitions: int = 0
+    bus_queue_size: int = 1_000
+    bus_claim_idle_ms: int = 5_000
+
+    # --- Feature store (P0.4) ----------------------------------------------
+    feature_store: Literal["auto", "memory", "redis"] = "auto"
+    feature_max_entities: int = 200_000
+    profile_alpha: float = 0.05
+    profile_prior_weight: float = 5.0
+    night_start_hour: int = 0
+    night_end_hour: int = 6
+    unusual_hour_prob: float = 0.02
+    structuring_threshold_try: float = 50_000.0
+    structuring_band: float = 0.90
+    large_transfer_factor: float = 1.5
+
     # --- Stream / simulation -----------------------------------------------
     stream_mode: Literal["batch", "stream", "off"] = "batch"
     stream_rate: float = 2.0
@@ -133,7 +160,19 @@ class Settings(BaseSettings):
     # --- Convenience -------------------------------------------------------
     @property
     def resolved_db_path(self) -> Path:
-        return self.db_path or self.data_dir / "fraud_agent.db"
+        return self.db_path or self.data_dir / "fraud_platform.db"
+
+    @property
+    def resolved_database_url(self) -> str:
+        if self.database_url:
+            return self.database_url
+        return f"sqlite+aiosqlite:///{self.resolved_db_path.as_posix()}"
+
+    @property
+    def resolved_feature_store(self) -> str:
+        if self.feature_store == "auto":
+            return "redis" if self.redis_url else "memory"
+        return self.feature_store
 
     @property
     def resolved_vector_dir(self) -> Path:

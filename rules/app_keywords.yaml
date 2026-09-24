@@ -2,8 +2,9 @@
 # Ağırlıklar 0..1; işlem açıklamasındaki en yüksek toplam 1.0'a kırpılır.
 # Kaynak: tipik Türk bankacılığı sosyal mühendislik senaryoları (kurgusal liste).
 keywords:
+  # Türkçe ünsüz yumuşaması: hesap -> hesaba/hesabı/hesabına ("hesab" gövdesi)
   "güvenli hesap": 0.9
-  "guvenli hesap": 0.9
+  "güvenli hesab": 0.9
   "safe account": 0.9
   "acil": 0.5
   "urgent": 0.5
