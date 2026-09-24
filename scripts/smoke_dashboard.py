@@ -14,6 +14,7 @@ import argparse
 import os
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -42,8 +43,9 @@ def run(client: Any) -> None:
     llm = client.get("/api/llm/status", headers=headers).json()
     check("LLM durumu (anahtarsız)", "api_key" not in str(llm).lower(), llm)
 
+    smoke_id = f"TX-SMOKE-{uuid.uuid4().hex[:10].upper()}"  # unique per run (persistent DBs)
     payload = {
-        "transaction_id": "TX-SMOKE-1",
+        "transaction_id": smoke_id,
         "ts": "2026-09-22T15:00:00",
         "customer_id": "CUST-0001",
         "amount": 1500,
@@ -57,7 +59,7 @@ def run(client: Any) -> None:
     check("canlı ingest", r.status_code == 200, r.json().get("risk_score"))
     r = client.post("/api/transactions", json={**payload, "amount": -5}, headers=headers)
     check("geçersiz ingest reddedildi", r.status_code == 422)
-    r = client.post("/api/llm/explain/TX-SMOKE-1", headers=headers)
+    r = client.post(f"/api/llm/explain/{smoke_id}", headers=headers)
     check("LLM açıklaması", r.status_code == 200, r.json().get("llm_mode"))
     r = client.get("/")
     check("dashboard", r.status_code == 200 and "api-base" in r.text)
