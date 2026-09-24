@@ -5,16 +5,28 @@
 işlemlerindeki ``name`` alanları bu liste ile karşılaştırılarak yaptırımlı bir
 kişi/kurumla olası bir isim çakışması varsa aday kayıt(lar) döndürülür.
 
-Modül saf ve import-safe'dir: içe aktarım hiçbir yan etki üretmez; dosya
-yalnızca ``load()`` çağrıldığında okunur. Eşleştirme bağımlılıksızdır ve
-deterministiktir — harici bulanık eşleştirme kütüphanesi kullanılmaz.
+İki aşamalı, deterministik eşleştirme:
+
+1. **Tam kelime** — sorgunun tüm kelimeleri ad/takma adın kelime kümesinde
+   (kısmi isim "Melnikov" yakalanır, "Kara" -> "Karadeniz" yakalanmaz);
+2. **Bulanık** (P0.5, ``rapidfuzz``) — en az iki kelimelik sorgularda
+   Jaro-Winkler ve sıralı-token benzerliğinin büyüğü eşiği
+   (``SANCTIONS_FUZZY_THRESHOLD``, varsayılan 0.93) aşarsa: yazım hatası ve
+   transliterasyon varyantları ("Viktor Melnikof", "Hasan Al Abadi").
+
+Türkçe karakterler aksansız biçime indirgenir. Modül import-safe'dir; dosya
+yalnızca ``load()`` çağrıldığında okunur.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import unicodedata
 from pathlib import Path
+
+from rapidfuzz import fuzz
+from rapidfuzz.distance import JaroWinkler
 
 from app import config
 
@@ -33,6 +45,14 @@ def _normalise(text: str) -> str:
     decomposed = unicodedata.normalize("NFD", text.casefold())
     stripped = "".join(ch for ch in decomposed if unicodedata.category(ch) != "Mn")
     return " ".join(stripped.split())
+
+
+_PUNCT = re.compile(r"[^\w\s]")
+
+
+def _fuzzy_form(text: str) -> str:
+    """Normalised text without punctuation ("Myung-soo" -> "myung soo")."""
+    return " ".join(_PUNCT.sub(" ", _normalise(text)).split())
 
 
 def _tokens(text: str) -> set[str]:
@@ -55,11 +75,17 @@ class SanctionScreener:
     "Karadeniz") yanlış-pozitif olarak kabul etmez.
     """
 
-    def __init__(self, path: str | Path | None = None) -> None:
+    def __init__(self, path: str | Path | None = None, *, fuzzy_threshold: float | None = None):
         """``path`` verilmemişse varsayılan ``data/sanctions.json`` kullanılır."""
         self.path: Path = Path(path) if path else DEFAULT_SANCTIONS_PATH
+        self.fuzzy_threshold = (
+            fuzzy_threshold
+            if fuzzy_threshold is not None
+            else config.get_settings().sanctions_fuzzy_threshold
+        )
         self._records: list[dict] = []
         self._index: list[tuple[dict, list[frozenset[str]]]] = []
+        self._fuzzy: list[tuple[dict, list[str]]] = []
 
     def load(self) -> SanctionScreener:
         """JSON dosyasını okuyup kayıtları yükler; kendisini döndürür.
@@ -78,6 +104,10 @@ class SanctionScreener:
                     for n in [record["name"], *record.get("aliases", [])]
                 ],
             )
+            for record in self._records
+        ]
+        self._fuzzy = [
+            (record, [_fuzzy_form(n) for n in [record["name"], *record.get("aliases", [])]])
             for record in self._records
         ]
         return self
@@ -108,6 +138,38 @@ class SanctionScreener:
             for record, token_sets in self._index
             if any(query.issubset(tokens) for tokens in token_sets)
         ]
+
+    def fuzzy_score(self, query: str, target: str) -> float:
+        """0..1 similarity (max of Jaro-Winkler and token-sort ratio)."""
+        q, t = _fuzzy_form(query), _fuzzy_form(target)
+        if not q or not t:
+            return 0.0
+        return max(JaroWinkler.normalized_similarity(q, t), fuzz.token_sort_ratio(q, t) / 100)
+
+    def screen(self, name: str | None) -> list[dict]:
+        """Exact-token + fuzzy matches with ``match_type`` and ``match_score``."""
+        if not name:
+            return []
+        exact_ids = {id(r) for r in self.find_candidates(name)}
+        out: list[dict] = []
+        query = _fuzzy_form(name)
+        multi_token = len(query.split()) >= 2
+        for record, forms in self._fuzzy:
+            if id(record) in exact_ids:
+                out.append({**record, "match_type": "exact", "match_score": 1.0})
+                continue
+            if not multi_token:
+                continue
+            score = max(
+                max(
+                    JaroWinkler.normalized_similarity(query, f),
+                    fuzz.token_sort_ratio(query, f) / 100,
+                )
+                for f in forms
+            )
+            if score >= self.fuzzy_threshold:
+                out.append({**record, "match_type": "fuzzy", "match_score": round(score, 4)})
+        return out
 
     def name_matches(self, name: str | None) -> bool:
         """``name`` ile en az bir kayıt eşleşiyorsa ``True`` döndürür."""

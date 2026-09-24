@@ -121,3 +121,22 @@ def test_default_path_points_to_data(tmp_path) -> None:
     screener = SanctionScreener()
     assert screener.path.name == "sanctions.json"
     assert screener.path.is_file()
+
+
+def test_fuzzy_typo_and_transliteration_match(screener: SanctionScreener) -> None:
+    """Bulanık eşleşme: yazım hatası ve noktalama farkı (rapidfuzz, eşik 0.93)."""
+    typo = screener.screen("Viktor Melnikof")
+    assert typo and typo[0]["id"] == "SDN-T1" and typo[0]["match_type"] == "fuzzy"
+    assert typo[0]["match_score"] >= screener.fuzzy_threshold
+    exact = screener.screen("Melnikov")
+    assert exact[0]["match_type"] == "exact" and exact[0]["match_score"] == 1.0
+    assert screener.screen("Karadeniz-Shipping Co")[0]["id"] == "SDN-T2"
+
+
+def test_fuzzy_needs_two_tokens_and_rejects_common_names(screener: SanctionScreener) -> None:
+    """Tek kelimelik sorgu bulanık aramaya girmez; sıradan isimler eşleşmez."""
+    assert screener.screen("Melnikof") == []
+    for name in ("Ayşe Yılmaz", "Hasan Kaya", "Mehmet Demir", ""):
+        assert screener.screen(name) == []
+    assert screener.fuzzy_score("", "x") == 0.0
+    assert screener.fuzzy_score("Olga Fedorovna", "Olga Fedorova") > 0.93
