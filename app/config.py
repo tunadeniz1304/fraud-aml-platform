@@ -134,6 +134,21 @@ class Settings(BaseSettings):
     microcluster_weight: float = 0.25
     mule_weight: float = 0.20
 
+    # --- Hybrid scoring / policy (P0.5) --------------------------------------
+    rules_path: Path | None = Field(default=None, validation_alias="RULES_PATH")
+    models_dir: Path | None = Field(default=None, validation_alias="MODELS_DIR")
+    model_enabled: bool = True
+    policy_step_up: float = 0.35
+    policy_hold: float = 0.60
+    policy_block: float = 0.85
+    # Weights of external signals in risk = 1-(1-stack)·Π(1-w·s).
+    policy_signal_weights: dict[str, float] = Field(
+        default_factory=lambda: {"graph": 0.20, "burst": 0.25, "app": 0.50, "consortium": 0.60}
+    )
+    hold_cooling_off_minutes: int = 30
+    reason_top_k: int = 5
+    sanctions_fuzzy_threshold: float = 0.93
+
     high_risk_countries: str = "NG,AE,RU,UA,KP,IR,SY,CU"
     fx_rates_try: dict[str, float] = Field(default_factory=_default_fx)
 
@@ -177,6 +192,14 @@ class Settings(BaseSettings):
     @property
     def resolved_vector_dir(self) -> Path:
         return self.vector_dir or self.data_dir / "chromadb"
+
+    @property
+    def resolved_rules_path(self) -> Path:
+        return self.rules_path or BASE_DIR / "rules" / "core.yaml"
+
+    @property
+    def resolved_models_dir(self) -> Path:
+        return self.models_dir or BASE_DIR / "models"
 
     @property
     def resolved_customers_path(self) -> Path:
