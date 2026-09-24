@@ -39,6 +39,34 @@ MODEL_SCORE = Histogram(
     buckets=tuple(i / 20 for i in range(1, 21)),
     registry=REGISTRY,
 )
+# --- cases / compliance -------------------------------------------------------
+CASES_OPENED = Counter(
+    "fraud_cases_opened_total", "Açılan vaka sayısı", ["case_type"], registry=REGISTRY
+)
+CASE_DECISIONS = Counter(
+    "fraud_case_decisions_total", "Analist vaka kararları", ["outcome"], registry=REGISTRY
+)
+CASES_OPEN = Gauge("fraud_cases_open", "Açık vaka sayısı", registry=REGISTRY)
+SLA_BREACHED = Gauge(
+    "fraud_cases_sla_breached", "İç SLA'sı (4 saat) aşılmış açık vaka", registry=REGISTRY
+)
+MASAK_DUE_SOON = Gauge(
+    "fraud_cases_masak_due_soon", "MASAK süresine ≤2 iş günü kalan açık vaka", registry=REGISTRY
+)
+SIB_SUBMITTED = Counter("fraud_sib_submitted_total", "Onaylanıp gönderilen ŞİB", registry=REGISTRY)
+HTTP_REQUESTS = Counter(
+    "fraud_http_requests_total", "HTTP istekleri", ["method", "route", "status"], registry=REGISTRY
+)
+HTTP_LATENCY = Histogram(
+    "fraud_http_request_seconds",
+    "HTTP istek süresi",
+    ["method", "route"],
+    buckets=_LATENCY_BUCKETS,
+    registry=REGISTRY,
+)
+MODEL_INFO = Gauge(
+    "fraud_model_info", "Yüklü model versiyonları", ["role", "version"], registry=REGISTRY
+)
 DLQ_SIZE = Gauge("fraud_dlq_size", "Dead-letter kuyruğundaki mesaj sayısı", registry=REGISTRY)
 DRIFT_PSI = Gauge("fraud_drift_psi", "Feature/skor PSI değeri", ["feature"], registry=REGISTRY)
 

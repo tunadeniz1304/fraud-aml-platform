@@ -120,6 +120,8 @@ class Alert(Base):
     alert_type: Mapped[str] = mapped_column(String(32))
     severity: Mapped[str] = mapped_column(String(12), default="medium")
     risk_score: Mapped[float] = mapped_column(Float, default=0.0)
+    amount_try: Mapped[Decimal] = mapped_column(Money, default=Decimal("0"), server_default="0")
+    decision: Mapped[str] = mapped_column(String(12), default="", server_default="")
     reason_codes: Mapped[list[dict[str, Any]]] = mapped_column(JSONDoc, default=list)
     case_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("cases.id", ondelete="SET NULL"), nullable=True, index=True
@@ -133,7 +135,9 @@ class Case(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     customer_id: Mapped[str] = mapped_column(String(64), index=True)
     case_type: Mapped[str] = mapped_column(String(32))
+    title: Mapped[str] = mapped_column(String(200), default="", server_default="")
     status: Mapped[str] = mapped_column(String(20), default="YENI", index=True)
+    alert_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     priority: Mapped[float] = mapped_column(Float, default=0.0)
     assigned_to: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ring_id: Mapped[str | None] = mapped_column(String(32), nullable=True)

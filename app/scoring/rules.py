@@ -128,6 +128,7 @@ class RuleHit:
             "text": self.text,
             "action_hint": self.action_hint,
             "severity": self.severity,
+            "tags": list(self.tags),
         }
 
 
