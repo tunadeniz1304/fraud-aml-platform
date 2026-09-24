@@ -1,0 +1,236 @@
+# Çekirdek kural seti (P0.5). Veritabanındaki `rules` tablosu bu dosyadan tohumlanır;
+# sonraki değişiklikler Kural Stüdyosu / CRUD API üzerinden versiyonlanarak yapılır.
+#
+# Alanlar:
+#   when            güvenli ifade (eval YOK) — yalnızca feature adları, sayılar, and/or/not,
+#                   karşılaştırmalar ve min/max/abs/log1p/clamp
+#   score           0..1 kural gücü; kural skoru = noisy-OR: 1 - Π(1 - score)
+#   reason_template Türkçe açıklama; {feature:.1f} biçiminde feature değerleri yerleştirilir
+#   action_hint     politika tabanı (ALLOW < STEP_UP < HOLD < BLOCK) — karar en az bu olur
+#   severity        low | medium | high | critical
+#
+# Not: ülke / amaç / IP / kanal sinyalleri TEK BAŞINA küçük skor üretir (hata #6 regresyonu).
+version: 1
+rules:
+  - id: R_NEW_PAYEE_HIGH_AMT
+    name: Yeni alıcıya yüksek tutar
+    description: Daha önce hiç para gönderilmemiş alıcıya müşteri profilinin çok üzerinde tutar.
+    when: is_new_payee and amount_ratio >= 5
+    score: 0.45
+    reason_template: "İlk kez para gönderilen alıcıya müşteri ortalamasının {amount_ratio:.1f} katı tutar"
+    severity: high
+    tags: [app, ato]
+
+  - id: R_NEW_DEVICE_HIGH_AMT
+    name: Yeni cihazdan yüksek tutar
+    description: Müşterinin daha önce kullanmadığı cihazdan profilin çok üzerinde tutar.
+    when: is_new_device and amount_ratio >= 5
+    score: 0.5
+    reason_template: "Yeni cihazdan müşteri ortalamasının {amount_ratio:.1f} katı tutar"
+    action_hint: STEP_UP
+    severity: high
+    tags: [ato]
+
+  - id: R_ATO_FAST_LOGIN
+    name: Yeni cihazda hızlı transfer
+    description: Yeni cihazda oturum açıldıktan saniyeler sonra transfer (script/ATO).
+    when: is_new_device and 0 <= login_to_transfer_s < 30
+    score: 0.5
+    reason_template: "Yeni cihazda oturum açıldıktan {login_to_transfer_s:.0f} sn sonra transfer"
+    severity: high
+    tags: [ato]
+
+  - id: R_ATO_TAKEOVER
+    name: Hesap ele geçirme örüntüsü
+    description: Yeni cihaz + anonim/yabancı ağ + yüksek tutar birlikte.
+    when: is_new_device and (is_anonymized_ip or ip_country_mismatch or is_foreign) and amount_ratio >= 3
+    score: 0.7
+    reason_template: "Yeni cihaz, anonim/yabancı ağ ve ortalamanın {amount_ratio:.1f} katı tutar: hesap ele geçirme örüntüsü"
+    action_hint: BLOCK
+    severity: critical
+    tags: [ato]
+
+  - id: R_ANON_IP
+    name: Anonim IP (VPN/Tor)
+    description: IP bilinen VPN/Tor çıkış aralığında (tek başına düşük ağırlık).
+    when: is_anonymized_ip
+    score: 0.12
+    reason_template: "IP adresi bilinen bir VPN/Tor aralığında"
+    severity: low
+    tags: [network]
+
+  - id: R_IP_MISMATCH
+    name: IP ülke uyumsuzluğu
+    description: IP'nin coğrafi ülkesi işlem ülkesiyle uyuşmuyor.
+    when: ip_country_mismatch
+    score: 0.12
+    reason_template: "IP ülkesi işlem ülkesiyle uyuşmuyor"
+    severity: low
+    tags: [network]
+
+  - id: R_HIGH_RISK_COUNTRY
+    name: Yüksek riskli ülke
+    description: Yüksek riskli / yaptırımlı yargı bölgesi.
+    when: is_high_risk_country
+    score: 0.3
+    reason_template: "Yüksek riskli yargı bölgesiyle işlem"
+    severity: medium
+    tags: [aml, network]
+
+  - id: R_FOREIGN_NEW_DEVICE
+    name: Yurt dışı + yeni cihaz
+    description: Ev ülkesi dışından ve tanınmayan bir cihazdan işlem.
+    when: is_foreign and is_new_device
+    score: 0.3
+    reason_template: "Yurt dışından ve tanınmayan bir cihazdan işlem"
+    severity: medium
+    tags: [ato]
+
+  - id: R_VELOCITY_BURST
+    name: Ani hız artışı
+    description: Dakikalar içinde çok sayıda işlem.
+    when: cnt_1m >= 3 or cnt_1h >= 8
+    score: 0.3
+    reason_template: "Son 1 saatte {cnt_1h:.0f} işlem (ani hız artışı)"
+    severity: medium
+    tags: [velocity]
+
+  - id: R_DRAIN_PATTERN
+    name: Hesap boşaltma
+    description: Bir saat içinde birden çok alıcıya ardışık yüksek tutarlı transfer.
+    when: cnt_1h >= 1 and amount_ratio >= 3 and distinct_payees_24h >= 1 and is_new_payee
+    score: 0.4
+    reason_template: "1 saat içinde {cnt_1h:.0f} önceki transferin ardından yeni alıcıya yüksek tutar (hesap boşaltma)"
+    action_hint: HOLD
+    severity: high
+    tags: [ato]
+
+  - id: R_NIGHT_UNUSUAL
+    name: Olağandışı gece işlemi
+    description: Müşterinin hiç işlem yapmadığı gece saatinde yüksek tutar.
+    when: is_night and hour_unusual and amount_ratio >= 2
+    score: 0.2
+    reason_template: "Müşteri için olağandışı gece saatinde yüksek tutarlı işlem"
+    severity: medium
+    tags: [time]
+
+  - id: R_EXTREME_AMOUNT
+    name: Aşırı tutar
+    description: Tutar müşterinin EWMA dağılımına göre çok uçta.
+    when: amount_zscore >= 4
+    score: 0.35
+    reason_template: "Tutar müşterinin olağan dağılımının {amount_zscore:.1f} standart sapma üzerinde"
+    severity: high
+    tags: [amount]
+
+  - id: R_STRUCTURING
+    name: Parçalama (smurfing)
+    description: 24 saatte raporlama eşiğinin hemen altında çok sayıda işlem.
+    when: near_threshold_cnt_24h >= 3
+    score: 0.5
+    reason_template: "24 saatte raporlama eşiğinin hemen altında {near_threshold_cnt_24h:.0f} işlem (parçalama)"
+    action_hint: HOLD
+    severity: high
+    tags: [aml]
+
+  - id: R_CARD_TESTING
+    name: Kart testi
+    description: Kısa sürede çok sayıda küçük tutarlı işlem.
+    when: cnt_1h >= 5 and amount_try <= 100
+    score: 0.45
+    reason_template: "Son 1 saatte {cnt_1h:.0f} küçük tutarlı işlem (kart testi örüntüsü)"
+    action_hint: STEP_UP
+    severity: high
+    tags: [card]
+
+  - id: R_URGENT_PURPOSE
+    name: Aciliyet ifadesi
+    description: Açıklamada aciliyet / sosyal mühendislik kalıbı (tek başına düşük ağırlık).
+    when: purpose_risk >= 0.5
+    score: 0.15
+    reason_template: "Açıklamada aciliyet/sosyal mühendislik ifadesi"
+    severity: low
+    tags: [app]
+
+  - id: R_REMOTE_ACCESS
+    name: Uzaktan erişim aracı
+    description: Transfer sırasında uzaktan erişim (ekran paylaşımı) aracı aktif.
+    when: remote_access
+    score: 0.35
+    reason_template: "Transfer sırasında uzaktan erişim aracı aktif"
+    severity: high
+    tags: [app, device]
+
+  - id: R_ACTIVE_CALL_NEW_PAYEE
+    name: Görüşme sırasında yeni alıcı
+    description: Aktif telefon görüşmesi sırasında yeni alıcıya transfer (APP sinyali).
+    when: active_call and is_new_payee
+    score: 0.35
+    reason_template: "Aktif telefon görüşmesi sırasında yeni alıcıya transfer"
+    severity: high
+    tags: [app]
+
+  - id: R_APP_SCAM_PATTERN
+    name: APP dolandırıcılığı örüntüsü
+    description: Yeni alıcı + yüksek tutar + sosyal mühendislik sinyali (görüşme, uzaktan erişim, aciliyet).
+    when: is_new_payee and amount_ratio >= 3 and (active_call or remote_access or purpose_risk >= 0.5)
+    score: 0.6
+    reason_template: "Yeni alıcıya ortalamanın {amount_ratio:.1f} katı tutar ve sosyal mühendislik sinyali (APP örüntüsü)"
+    action_hint: HOLD
+    severity: critical
+    tags: [app]
+
+  - id: R_EMULATOR_ROOT
+    name: Emülatör / root cihaz
+    description: İşlem emülatörden veya root/jailbreak cihazdan.
+    when: is_emulator or is_rooted
+    score: 0.3
+    reason_template: "Emülatör veya root/jailbreak cihaz tespit edildi"
+    severity: medium
+    tags: [device]
+
+  - id: R_BOT_TYPING
+    name: Anormal yazma ritmi
+    description: Yazma ritmi müşterinin davranış profilinden belirgin biçimde sapıyor.
+    when: typing_deviation >= 4
+    score: 0.25
+    reason_template: "Yazma ritmi müşteri profilinden {typing_deviation:.1f} standart sapma farklı"
+    severity: medium
+    tags: [biometrics, ato]
+
+  - id: R_SHARED_DEVICE
+    name: Paylaşılan cihaz
+    description: Aynı cihaz kısa sürede çok sayıda farklı müşteri tarafından kullanılıyor (mule).
+    when: device_customers_7d >= 3
+    score: 0.4
+    reason_template: "Cihaz 7 günde {device_customers_7d:.0f} farklı müşteri tarafından kullanıldı"
+    severity: high
+    tags: [mule]
+
+  - id: R_PAYEE_FAN_IN
+    name: Toplama hesabı (fan-in)
+    description: Alıcı 24 saatte çok sayıda farklı müşteriden para alıyor.
+    when: payee_fan_in_24h >= 4
+    score: 0.4
+    reason_template: "Alıcıya 24 saatte {payee_fan_in_24h:.0f} farklı müşteriden para gönderildi (toplama hesabı)"
+    severity: high
+    tags: [mule, aml]
+
+  - id: R_VULNERABLE_NEW_PAYEE_HIGH
+    name: Kırılgan müşteri + yeni alıcı
+    description: Yaşlı/kırılgan müşteriden yeni alıcıya yüksek tutar.
+    when: vulnerable_customer and is_new_payee and amount_ratio >= 3
+    score: 0.35
+    reason_template: "Yaşlı/kırılgan müşteriden yeni alıcıya ortalamanın {amount_ratio:.1f} katı tutar"
+    action_hint: STEP_UP
+    severity: high
+    tags: [app]
+
+  - id: R_CHANNEL_UNKNOWN
+    name: Kullanılmayan kanal
+    description: Müşterinin hiç kullanmadığı kanal (tek başına düşük ağırlık).
+    when: channel_unknown
+    score: 0.08
+    reason_template: "Müşterinin daha önce kullanmadığı kanal"
+    severity: low
+    tags: [channel]
