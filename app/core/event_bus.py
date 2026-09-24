@@ -1,56 +1,15 @@
-"""Pub/sub asyncio event bus for the fraud detection pipeline.
+"""Backwards-compatible import path for the in-memory event bus.
 
-Agents subscribe to the event topics they care about and other components
-publish events onto the bus, decoupling producers from consumers. Processing
-is awaited sequentially per event so the simulation remains deterministic and
-easy to reason about while still being fully event-driven.
-
-A failing subscriber is isolated: its error is logged and the remaining
-subscribers still receive the event, so one broken handler never kills the
-pipeline (production-grade robustness).
+The implementation lives in :mod:`app.bus.memory` (retries, dead-letter queue,
+idempotency, partitioned queues with backpressure); ``EventBus`` remains the
+name used across the agents and tests.
 """
 
 from __future__ import annotations
 
-import inspect
-import logging
-from collections import defaultdict
-from collections.abc import Awaitable, Callable
-from typing import Any
+from app.bus.base import Handler, Topic
+from app.bus.memory import InMemoryBus
 
-logger = logging.getLogger("fraud.eventbus")
+EventBus = InMemoryBus
 
-Topic = str
-# A subscriber callback may be sync or async.
-Handler = Callable[[dict[str, Any]], Any | Awaitable[Any]]
-
-
-class EventBus:
-    """A lightweight in-memory pub/sub bus backed by asyncio."""
-
-    def __init__(self) -> None:
-        self._subscribers: defaultdict[Topic, list[Handler]] = defaultdict(list)
-
-    def subscribe(self, topic: Topic, handler: Handler) -> None:
-        """Register ``handler`` to be invoked for every event on ``topic``."""
-        if handler not in self._subscribers[topic]:
-            self._subscribers[topic].append(handler)
-
-    async def publish(self, topic: Topic, payload: dict[str, Any]) -> None:
-        """Dispatch ``payload`` to every subscriber of ``topic`` in order.
-
-        Subscriber exceptions are logged and swallowed — a single faulty
-        handler must not prevent the rest of the pipeline from consuming the
-        event.
-        """
-        for handler in list(self._subscribers.get(topic, ())):
-            try:
-                result = handler(payload)
-                if inspect.isawaitable(result):
-                    await result
-            except Exception:
-                logger.exception(
-                    "[EventBus] '%s' abonesi %r işlerken hata verdi",
-                    topic,
-                    getattr(handler, "__name__", handler),
-                )
+__all__ = ["EventBus", "Handler", "InMemoryBus", "Topic"]

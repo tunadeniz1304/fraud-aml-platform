@@ -55,3 +55,18 @@ LLM_LATENCY = Histogram(
     registry=REGISTRY,
 )
 LLM_USAGE = Counter("fraud_llm_tokens_total", "LLM token kullanımı", ["type"], registry=REGISTRY)
+
+# --- persistence / bus -------------------------------------------------------
+DB_WRITE_ERRORS = Counter(
+    "fraud_db_write_errors_total", "Başarısız toplu DB yazımları", registry=REGISTRY
+)
+DB_BATCH_SIZE = Histogram(
+    "fraud_db_batch_size",
+    "Toplu yazım başına kayıt sayısı",
+    buckets=(1, 5, 10, 25, 50, 100, 250, 500, 1000),
+    registry=REGISTRY,
+)
+BUS_EVENTS = Counter(
+    "fraud_bus_events_total", "Olay veriyolu mesajları", ["topic", "outcome"], registry=REGISTRY
+)
+BUS_BACKLOG = Gauge("fraud_bus_backlog", "Tüketilmeyi bekleyen mesajlar", registry=REGISTRY)
