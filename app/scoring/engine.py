@@ -6,7 +6,7 @@
       → features (streaming feature store, point-in-time)
       → external signals (burst, graph, APP, consortium …)
       → rules (safe DSL, noisy-OR, action hints)
-      → LightGBM probability + TreeSHAP contributions
+      → LightGBM probability (+ TreeSHAP when the decision needs explaining)
       → anomaly (IsolationForest + ECOD percentiles)
       → sanctions / PEP screening (fuzzy)
       → policy (stacker + signals → risk → ALLOW / STEP_UP / HOLD / BLOCK)
@@ -202,6 +202,7 @@ class ScoringEngine:
     # --- hot path -------------------------------------------------------------------
     async def score(self, tx: dict[str, Any], *, account_status: str | None = None) -> ScoreResult:
         started = time.perf_counter()
+        settings = get_settings()
         extraction = await self.extractor.extract(tx)
         tx_id, customer_id = str(tx["transaction_id"]), str(tx["customer_id"])
         base: dict[str, Any] = {
@@ -240,7 +241,7 @@ class ScoringEngine:
             signal_results[signal.name] = sig
             features.update(sig.features)
         rules = self.ruleset.evaluate(features)
-        model_score = self.model.score(features) if self.model else None
+        model_score = self.model.score(features, explain=False) if self.model else None
         customer = self.extractor.customers.get(customer_id)
         sanctions = self.screen(customer.name if customer else "", tx)
         decision = self.policy.decide(
@@ -253,6 +254,13 @@ class ScoringEngine:
                 sanctions_hit=bool(sanctions),
             )
         )
+        if (
+            self.model is not None
+            and model_score is not None
+            and (decision.decision != "ALLOW" or decision.risk_score >= settings.explain_min_risk)
+        ):
+            # TreeSHAP only where an explanation is needed (explanation budget).
+            model_score.contributions = self.model.explain(features)
         reasons = self._reasons(rules, model_score, signal_results, decision, features)
         result = ScoreResult(
             **base,

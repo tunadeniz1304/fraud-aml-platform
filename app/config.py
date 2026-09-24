@@ -144,7 +144,35 @@ class Settings(BaseSettings):
     )
     hold_cooling_off_minutes: int = 30
     reason_top_k: int = 5
+    # TreeSHAP (~2 ms) runs for non-ALLOW decisions and for risk >= this value.
+    explain_min_risk: float = 0.2
     sanctions_fuzzy_threshold: float = 0.93
+
+    # --- Case management (P0.6) ----------------------------------------------
+    case_group_window_hours: int = 24
+    internal_sla_hours: int = 4
+    masak_business_days: int = 10
+    masak_warning_business_days: int = 2
+    evidence_max_bytes: int = 1_000_000
+    # Resmi tatiller (MASAK iş günü hesabı): 2026 için sabit + dini bayram günleri.
+    tr_holidays: list[str] = Field(
+        default_factory=lambda: [
+            "2026-01-01",
+            "2026-03-20",
+            "2026-03-21",
+            "2026-03-22",
+            "2026-04-23",
+            "2026-05-01",
+            "2026-05-19",
+            "2026-05-26",
+            "2026-05-27",
+            "2026-05-28",
+            "2026-05-29",
+            "2026-07-15",
+            "2026-08-30",
+            "2026-10-29",
+        ]
+    )
 
     high_risk_countries: str = "NG,AE,RU,UA,KP,IR,SY,CU"
     fx_rates_try: dict[str, float] = Field(default_factory=_default_fx)

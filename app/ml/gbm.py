@@ -1,9 +1,10 @@
 """LightGBM fraud classifier with native TreeSHAP explanations.
 
-The hot path calls :meth:`GBMModel.explain` once per transaction: LightGBM's
-``pred_contrib=True`` returns the exact TreeSHAP values (identical to
-``shap.TreeExplainer`` — asserted in the test-suite) plus the expected value;
-their sum is the raw log-odds, so the probability costs nothing extra.
+The hot path calls :meth:`GBMModel.probability` (~0.1 ms) for every
+transaction and :meth:`GBMModel.explain` (~2 ms) only when a decision needs
+an explanation. LightGBM's ``pred_contrib=True`` returns the exact TreeSHAP
+values (identical to ``shap.TreeExplainer`` — asserted in the test-suite) plus
+the expected value; their sum is the raw log-odds.
 """
 
 from __future__ import annotations
@@ -80,13 +81,21 @@ class GBMModel:
         best = getattr(self.booster, "best_iteration", 0)
         return best if best and best > 0 else None
 
-    def contributions(self, x: np.ndarray) -> np.ndarray:
+    def contributions(self, x: np.ndarray, *, num_threads: int = 0) -> np.ndarray:
         return np.asarray(
-            self.booster.predict(x, pred_contrib=True, num_iteration=self.best_iteration)
+            self.booster.predict(
+                x, pred_contrib=True, num_iteration=self.best_iteration, num_threads=num_threads
+            )
         )
 
+    # Single-row calls run single-threaded: OpenMP start-up costs more than the
+    # work itself for one row and hurts tail latency under load.
+    def probability(self, row: Sequence[float]) -> float:
+        x = np.asarray([row], dtype=float)
+        return float(self.booster.predict(x, num_iteration=self.best_iteration, num_threads=1)[0])
+
     def explain(self, row: Sequence[float]) -> Explanation:
-        contrib = self.contributions(np.asarray([row], dtype=float))[0]
+        contrib = self.contributions(np.asarray([row], dtype=float), num_threads=1)[0]
         raw = float(contrib.sum())
         return Explanation(
             probability=sigmoid(raw),

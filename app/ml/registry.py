@@ -63,16 +63,23 @@ class ModelBundle:
     def vector(self, features: Mapping[str, float]) -> list[float]:
         return [float(features.get(n, 0.0)) for n in self.feature_names]
 
-    def score(self, features: Mapping[str, float]) -> ModelScore:
+    def score(self, features: Mapping[str, float], *, explain: bool = True) -> ModelScore:
+        """Probability + anomaly; TreeSHAP contributions only when ``explain``."""
         row = self.vector(features)
-        explanation = self.gbm.explain(row)
+        contributions: dict[str, float] = {}
+        if explain:
+            explanation = self.gbm.explain(row)
+            probability, contributions = explanation.probability, explanation.contributions
+        else:
+            probability = self.gbm.probability(row)
         anomaly = iforest = ecod = None
         if self.anomaly is not None:
             iforest, ecod = self.anomaly.components(row)
             anomaly = 0.5 * (iforest + ecod)
-        return ModelScore(
-            explanation.probability, anomaly, explanation.contributions, iforest, ecod
-        )
+        return ModelScore(probability, anomaly, contributions, iforest, ecod)
+
+    def explain(self, features: Mapping[str, float]) -> dict[str, float]:
+        return self.gbm.explain(self.vector(features)).contributions
 
 
 def save_bundle(
