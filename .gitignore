@@ -31,6 +31,7 @@ coverage.xml
 htmlcov/
 frontend/node_modules/
 frontend/dist/
+frontend/*.tsbuildinfo
 
 # OS / editor
 .DS_Store

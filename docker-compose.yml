@@ -19,6 +19,11 @@ x-app: &app
     FEATURE_STORE: redis
     DB_AUTO_CREATE: "false"
     LOG_JSON: "true"
+    # Demo nüfusu: 150 sentetik müşteri (IBAN, CoP kaydı) + ısınma geçmişi
+    FRAUD_CUSTOMERS_PATH: /app/data/demo/customers.json
+    FRAUD_PAYEES_PATH: /app/data/demo/payees.json
+    FRAUD_TRANSACTIONS_PATH: /app/data/demo/transactions.json
+    BATCH_REBASE_TS: "true"
   restart: unless-stopped
 
 services:
@@ -87,7 +92,16 @@ services:
   #   docker compose up --scale simulator=0
   simulator:
     <<: *app
-    command: ["python", "-m", "app.simulator", "--rate", "${SIM_RATE:-2}"]
+    command:
+      - python
+      - -m
+      - app.simulator
+      - --rate
+      - "${SIM_RATE:-2}"
+      - --anomaly-rate
+      - "${SIM_ANOMALY_RATE:-0.02}"
+      - --scenario-every
+      - "${SIM_SCENARIO_EVERY:-180}"
     healthcheck:
       disable: true
     depends_on:

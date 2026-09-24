@@ -1,6 +1,15 @@
 # syntax=docker/dockerfile:1.7
 # Anil3 fraud platformu — API / worker / simulator imajı.
 
+# --- 1) SPA build (React + Vite + TypeScript + Tailwind) --------------------
+FROM node:20-alpine AS frontend
+WORKDIR /frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY frontend/ ./
+RUN npm run build
+
+# --- 2) Python runtime -------------------------------------------------------
 FROM python:3.11-slim AS runtime
 
 ENV PYTHONUNBUFFERED=1 \
@@ -20,6 +29,7 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 COPY . .
+COPY --from=frontend /frontend/dist /app/frontend/dist
 
 RUN useradd --create-home --uid 10001 fraud \
     && mkdir -p /app/var /app/logs \

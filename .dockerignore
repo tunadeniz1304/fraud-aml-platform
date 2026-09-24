@@ -25,3 +25,4 @@ var/
 frontend/node_modules/
 frontend/dist/
 handoff.md
+frontend/*.tsbuildinfo
