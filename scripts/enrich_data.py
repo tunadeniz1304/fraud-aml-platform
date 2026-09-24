@@ -8,6 +8,7 @@ ring. Counts and ids unchanged -> existing tests unaffected.
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
@@ -26,10 +27,10 @@ TX_ENRICH = {
 }
 
 
-def enrich() -> None:
-    """Add fields in place, preserving record order and ids."""
+def enrich(base: Path = BASE) -> None:
+    """Add fields in place (under ``base``), preserving record order and ids."""
     for name, key_old, fields in (("transactions.json", "transaction_id", TX_ENRICH),):
-        path = BASE / name
+        path = base / name
         with path.open("r", encoding="utf-8") as fh:
             data = json.load(fh)
         for record in data:
@@ -58,4 +59,11 @@ def enrich() -> None:
 
 
 if __name__ == "__main__":
-    enrich()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        default=BASE,
+        help="Zenginleştirilecek transactions.json'ın bulunduğu dizin (varsayılan: data/)",
+    )
+    enrich(parser.parse_args().data_dir)

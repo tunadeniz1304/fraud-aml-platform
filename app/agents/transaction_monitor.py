@@ -1,16 +1,22 @@
 """TransactionMonitor agent.
 
-Listens for raw incoming transfers (``transaction.created``), performs basic
-integrity checks, and publishes the monitored event (``transaction.monitored``)
-for deeper analysis by the ContextAnalyst.
+Listens for raw incoming transfers (``transaction.created``) and performs
+integrity checks. Well-formed transfers continue as ``transaction.monitored``;
+malformed ones are published as ``transaction.rejected`` and are **never
+scored** (fixes bug #7).
 """
 
 from __future__ import annotations
 
 import logging
+from collections import deque
+from datetime import datetime
 from typing import Any
 
+from app.config import get_settings
 from app.core.event_bus import EventBus
+from app.core.fx import is_supported
+from app.monitoring import metrics
 
 logger = logging.getLogger("fraud.monitor")
 
@@ -20,13 +26,17 @@ class TransactionMonitor:
 
     CREATED = "transaction.created"
     MONITORED = "transaction.monitored"
+    REJECTED = "transaction.rejected"
 
-    def __init__(self, bus: EventBus) -> None:
+    def __init__(self, bus: EventBus, buffer: int | None = None) -> None:
         self.bus = bus
-        self.monitored: list[dict[str, Any]] = []
+        size = buffer or get_settings().analyzed_buffer
+        self.monitored: deque[dict[str, Any]] = deque(maxlen=size)
+        self.rejected: deque[dict[str, Any]] = deque(maxlen=size)
         self.bus.subscribe(self.CREATED, self._on_created)
 
-    def _basic_checks(self, tx: dict[str, Any]) -> list[str]:
+    @staticmethod
+    def _basic_checks(tx: dict[str, Any]) -> list[str]:
         """Return a list of problems (empty when the transfer is well-formed)."""
         problems: list[str] = []
         if not tx.get("transaction_id"):
@@ -34,12 +44,22 @@ class TransactionMonitor:
         if not tx.get("customer_id"):
             problems.append("missing customer_id")
         amount = tx.get("amount")
-        if amount is None or amount <= 0:
-            problems.append("non-positive amount")
+        try:
+            if amount is None or float(amount) <= 0:
+                problems.append("non-positive amount")
+        except (TypeError, ValueError):
+            problems.append("non-numeric amount")
         if not tx.get("device_id"):
             problems.append("missing device_id")
         if not tx.get("location"):
             problems.append("missing location")
+        currency = tx.get("currency") or "TRY"
+        if not is_supported(str(currency)):
+            problems.append(f"unsupported currency {currency}")
+        try:
+            datetime.fromisoformat(str(tx.get("ts")))
+        except (TypeError, ValueError):
+            problems.append("invalid ts")
         return problems
 
     async def _on_created(self, tx: dict[str, Any]) -> None:
@@ -47,13 +67,22 @@ class TransactionMonitor:
         monitored = dict(tx)
         monitored["well_formed"] = not problems
         monitored["issues"] = problems
+        if problems:
+            self.rejected.append(monitored)
+            metrics.TX_REJECTED.inc()
+            logger.warning(
+                "[Monitor] transfer %s reddedildi — skorlanmayacak: %s",
+                tx.get("transaction_id"),
+                problems,
+            )
+            await self.bus.publish(self.REJECTED, monitored)
+            return
         self.monitored.append(monitored)
         logger.info(
-            "[Monitor] transfer %s aldı -> %s (müşteri: %s, %.2f %s)",
+            "[Monitor] transfer %s aldı -> tamam (müşteri: %s, %s %s)",
             tx.get("transaction_id"),
-            "tamam" if not problems else f"sorunlu {problems}",
             tx.get("customer_id"),
-            tx.get("amount", 0.0),
+            tx.get("amount"),
             tx.get("currency", ""),
         )
         await self.bus.publish(self.MONITORED, monitored)

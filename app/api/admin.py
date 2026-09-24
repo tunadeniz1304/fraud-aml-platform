@@ -10,15 +10,19 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 
 from app.api.schemas import AccountOut, AuditRowOut
 from app.api.state import state
+from app.core.account_store import AccountNotFoundError
+from app.security.deps import require_role
 
 logger = logging.getLogger("fraud.admin")
 
-router = APIRouter(prefix="/api/admin", tags=["admin"])
+router = APIRouter(
+    prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_role("admin"))]
+)
 
 
 @router.get("/accounts", response_model=list[AccountOut])
@@ -47,7 +51,10 @@ async def set_status(customer_id: str, status_: str = Query(..., alias="status")
     if account is None:
         raise HTTPException(status_code=404, detail="Müşteri bulunamadı")
     previous = account["hesap_durumu"]
-    state.store.set_hesap_durumu(customer_id, normalized)
+    try:
+        state.store.set_hesap_durumu(customer_id, normalized)
+    except AccountNotFoundError:
+        raise HTTPException(status_code=404, detail="Müşteri bulunamadı") from None
     state.store.append_audit(
         transaction_id="MANUAL",
         customer_id=customer_id,

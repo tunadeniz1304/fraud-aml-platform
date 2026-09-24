@@ -1,0 +1,28 @@
+# APP (yetkili itme ödemesi) dolandırıcılığı / aciliyet metin sinyalleri.
+# Ağırlıklar 0..1; işlem açıklamasındaki en yüksek toplam 1.0'a kırpılır.
+# Kaynak: tipik Türk bankacılığı sosyal mühendislik senaryoları (kurgusal liste).
+keywords:
+  "güvenli hesap": 0.9
+  "guvenli hesap": 0.9
+  "safe account": 0.9
+  "acil": 0.5
+  "urgent": 0.5
+  "hemen": 0.3
+  "polis": 0.7
+  "savcı": 0.7
+  "savci": 0.7
+  "vergi borcu": 0.6
+  "yatırım": 0.5
+  "yatirim": 0.5
+  "investment": 0.4
+  "kripto": 0.6
+  "crypto": 0.6
+  "garantili kazanç": 0.8
+  "yüksek getiri": 0.7
+  "hesabınız tehlikede": 0.9
+  "kargo": 0.3
+  "piyango": 0.7
+  "refund": 0.3
+  "iade": 0.2
+  "gift": 0.2
+  "hediye": 0.2

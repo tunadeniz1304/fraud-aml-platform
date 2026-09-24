@@ -49,10 +49,12 @@ class DeviceMuleGraph:
         beneficiary_window_seconds: int = 3600,
         shared_device_threshold: int = 2,
         shared_beneficiary_threshold: int = 2,
+        max_events: int = 50_000,
     ) -> None:
         self.beneficiary_window_seconds = beneficiary_window_seconds
         self.shared_device_threshold = shared_device_threshold
         self.shared_beneficiary_threshold = shared_beneficiary_threshold
+        self.max_events = max_events
         # Pencere içinde tutulan işlem özetleri:
         #   (customer_id, device_id, beneficiary_id, ts_ms)
         self._events: list[tuple[str, str, str, float]] = []
@@ -104,6 +106,8 @@ class DeviceMuleGraph:
         """Pencerenin dışına düşen kayıtları atar."""
         cutoff = ts_ms - self.beneficiary_window_seconds * 1000
         self._events = [e for e in self._events if e[3] >= cutoff]
+        if len(self._events) > self.max_events:  # hard memory bound (bug #11)
+            self._events = self._events[-self.max_events :]
 
     def _index(
         self,

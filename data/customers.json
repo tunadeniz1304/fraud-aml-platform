@@ -7,7 +7,9 @@
     "known_device_ids": ["DEV-9F2A-11", "DEV-3C81-55"],
     "known_locations": ["İstanbul", "Ankara"],
     "avg_amount": 2500,
-    "typical_hours": [9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+    "typical_hours": [9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
+    "currency": "TRY",
+    "known_channels": ["mobile", "web"]
   },
   {
     "customer_id": "CUST-0002",
@@ -17,7 +19,9 @@
     "known_device_ids": ["DEV-11AA-22", "DEV-55BB-66"],
     "known_locations": ["Ankara"],
     "avg_amount": 1500,
-    "typical_hours": [9, 10, 11, 12, 13, 14, 15, 16, 17]
+    "typical_hours": [9, 10, 11, 12, 13, 14, 15, 16, 17],
+    "currency": "TRY",
+    "known_channels": ["web"]
   },
   {
     "customer_id": "CUST-0003",
@@ -27,7 +31,9 @@
     "known_device_ids": ["DEV-88CC-11"],
     "known_locations": ["İzmir", "Aydın"],
     "avg_amount": 800,
-    "typical_hours": [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    "typical_hours": [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+    "currency": "TRY",
+    "known_channels": ["mobile"]
   },
   {
     "customer_id": "CUST-0004",
@@ -37,7 +43,9 @@
     "known_device_ids": ["DEV-BB44-77"],
     "known_locations": ["Bursa", "İstanbul"],
     "avg_amount": 3000,
-    "typical_hours": [8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+    "typical_hours": [8, 9, 10, 11, 12, 13, 14, 15, 16, 17],
+    "currency": "TRY",
+    "known_channels": ["mobile", "web"]
   },
   {
     "customer_id": "CUST-0005",
@@ -47,6 +55,8 @@
     "known_device_ids": ["DEV-CC10-FF"],
     "known_locations": ["Antalya"],
     "avg_amount": 1900,
-    "typical_hours": [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    "typical_hours": [10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+    "currency": "TRY",
+    "known_channels": ["mobile"]
   }
 ]

@@ -58,6 +58,10 @@ class RiskFactorsOut(BaseModel):
     location: float
     time: float
     velocity: float
+    country: float = 0.0
+    purpose: float = 0.0
+    ip: float = 0.0
+    channel: float = 0.0
 
 
 class AnalyzedTransactionOut(BaseModel):
@@ -70,9 +74,14 @@ class AnalyzedTransactionOut(BaseModel):
     device_id: str
     location: str
     ts: datetime
+    amount_try: float | None = None
+    channel: str | None = None
+    country: str | None = None
+    purpose: str | None = None
+    beneficiary_id: str | None = None
     risk_score: float
     risk_score_rule: float | None = None
-    semantic_distance: float | None = None
+    decision_legacy: str | None = None
     risk_factors: RiskFactorsOut | None = None
     risk_explanation: list[str] = Field(default_factory=list)
     high_risk_country: bool = False
@@ -83,7 +92,9 @@ class AnalyzedTransactionOut(BaseModel):
     mule_signals: list[str] = Field(default_factory=list)
     sanctions: list[dict[str, Any]] = Field(default_factory=list)
     sanctions_hit: bool = False
-    llm: dict[str, Any] | None = None
+    force_review: bool = False
+    unknown_customer: bool = False
+    account_blocked: bool = False
 
 
 class BlockOut(BaseModel):
@@ -117,10 +128,37 @@ class AuditRowOut(BaseModel):
 
 class PipelineStatusOut(BaseModel):
     total_monitored: int
+    rejected: int = 0
     analyzed: int
     blocked: int
     warned: int
     passed: int
-    llm_provider: str
+    llm_mode: str
     vector_customers: int
     accounts: list[AccountOut]
+
+
+class LoginIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=128)
+
+
+class TokenOut(BaseModel):
+    access_token: str
+    token_type: str = "bearer"  # noqa: S105 - OAuth2 token tipi, sır değil
+    expires_in: int
+    role: str
+    display_name: str
+
+
+class LLMStatusOut(BaseModel):
+    mode: str
+    model: str
+    base_url_host: str
+    key_present: bool
+    last_latency_ms: float | None = None
+    calls: int
+    failures: int
+    last_error_kind: str | None = None

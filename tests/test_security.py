@@ -45,7 +45,10 @@ class TestAdminTokenGate:
             assert r.status_code == 200
 
     def test_open_endpoints_ungated(self):
+        """Health stays public; data endpoints now require auth (RBAC, P0.8)."""
         with mock.patch.dict(os.environ, {"ADMIN_TOKEN": "s3cret"}, clear=False):
             c = _client()
             assert c.get("/api/health").status_code == 200
-            assert c.get("/api/status").status_code == 503  # pipeline not wired, not 401
+            assert c.get("/api/status").status_code == 401  # no credentials
+            authed = c.get("/api/status", headers={"Authorization": "Bearer s3cret"})
+            assert authed.status_code == 503  # pipeline not wired

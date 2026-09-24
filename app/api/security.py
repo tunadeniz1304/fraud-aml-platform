@@ -1,74 +1,128 @@
-"""API hardening middleware for the dashboard.
+"""HTTP hardening: request-id correlation, security headers, CORS, rate limits
+and exception sanitising.
 
-- Optional ``ADMIN_TOKEN`` from env: when set, mutating admin endpoints require
-  ``Authorization: Bearer <token>`` (all other endpoints stay open for the
-  live dashboard).
-- Security headers on every response (CSP, X-Content-Type-Options, etc.).
-- Request logging with latency.
+* **CSP without ``'unsafe-inline'``** (bug #15): all dashboard JS/CSS is served
+  as external static files.
+* ``X-Request-ID`` is accepted (sanitised) or generated, bound to every log
+  record of the request and echoed in the response.
+* Unhandled errors return a generic Turkish message plus the request id —
+  internal exception text never leaves the process.
 """
 
 from __future__ import annotations
 
 import logging
-import os
+import re
 import time
+import uuid
+from typing import Any
 
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+import structlog
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-logger = logging.getLogger("fraud.security")
+from app.config import get_settings
+from app.security.ratelimit import limiter, rate_limit_handler
 
-# Mutating paths that require ADMIN_TOKEN when configured.
-_MUTATING_PREFIXES = ("/api/admin",)
+logger = logging.getLogger("fraud.http")
 
+STRICT_CSP = (
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+    "font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; "
+    "form-action 'self'; frame-ancestors 'none'"
+)
+# Swagger UI (only when API_DOCS=true) needs its CDN bundle.
+DOCS_CSP = (
+    "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; "
+    "style-src 'self' https://cdn.jsdelivr.net; img-src 'self' data: https://fastapi.tiangolo.com; "
+    "frame-ancestors 'none'"
+)
 _SECURITY_HEADERS = {
-    "X-Content-Type-Options": "nosniff",
-    "X-Frame-Options": "DENY",
-    "Referrer-Policy": "no-referrer",
-    "X-XSS-Protection": "1; mode=block",
-    "Content-Security-Policy": (
-        "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'"
-    ),
+    b"x-content-type-options": b"nosniff",
+    b"x-frame-options": b"DENY",
+    b"referrer-policy": b"no-referrer",
+    b"permissions-policy": b"camera=(), microphone=(), geolocation=()",
+    b"cross-origin-opener-policy": b"same-origin",
 }
+_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 
-class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    """Attach security headers and access logging to every response."""
+class RequestContextMiddleware:
+    """Pure-ASGI middleware (streaming/SSE friendly)."""
 
-    async def dispatch(self, request: Request, call_next):
-        start = time.perf_counter()
-        response: Response = await call_next(request)
-        elapsed_ms = (time.perf_counter() - start) * 1000
-        for key, value in _SECURITY_HEADERS.items():
-            response.headers[key] = value
-        logger.info(
-            "%s %s -> %s (%d ms)",
-            request.method,
-            request.url.path,
-            response.status_code,
-            round(elapsed_ms, 1),
-        )
-        return response
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
 
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = dict(scope.get("headers") or [])
+        incoming = headers.get(b"x-request-id", b"").decode("latin-1")
+        request_id = incoming if _REQUEST_ID_RE.match(incoming) else uuid.uuid4().hex
+        scope.setdefault("state", {})["request_id"] = request_id
+        path: str = scope.get("path", "")
+        csp = DOCS_CSP if path.startswith(("/docs", "/redoc")) else STRICT_CSP
+        started = time.perf_counter()
+        status_holder: dict[str, Any] = {"status": 500}
 
-class AdminTokenMiddleware(BaseHTTPMiddleware):
-    """Enforce ``ADMIN_TOKEN`` on mutating endpoints when configured."""
+        async def send_wrapper(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                status_holder["status"] = message["status"]
+                raw = list(message.get("headers", []))
+                present = {k.lower() for k, _ in raw}
+                for key, value in _SECURITY_HEADERS.items():
+                    if key not in present:
+                        raw.append((key, value))
+                raw.append((b"content-security-policy", csp.encode()))
+                raw.append((b"x-request-id", request_id.encode()))
+                message["headers"] = raw
+            await send(message)
 
-    async def dispatch(self, request: Request, call_next):
-        admin_token = os.getenv("ADMIN_TOKEN", "").strip()
-        if admin_token and request.url.path.startswith(_MUTATING_PREFIXES):
-            auth = request.headers.get("authorization", "")
-            token = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
-            if token != admin_token:
-                return JSONResponse(
-                    status_code=401,
-                    content={"detail": "Yetkisiz: geçerli ADMIN_TOKEN gerekli"},
+        structlog.contextvars.bind_contextvars(request_id=request_id)
+        try:
+            await self.app(scope, receive, send_wrapper)
+        finally:
+            elapsed = (time.perf_counter() - started) * 1000
+            if not path.startswith(("/static", "/assets")) and path != "/metrics":
+                logger.info(
+                    "%s %s -> %s (%.1f ms)",
+                    scope.get("method"),
+                    path,
+                    status_holder["status"],
+                    elapsed,
                 )
-        return await call_next(request)
+            structlog.contextvars.unbind_contextvars("request_id")
 
 
-def install(app) -> None:
-    """Install hardening middleware in dependency-free ascending order."""
-    app.add_middleware(AdminTokenMiddleware)
-    app.add_middleware(SecurityHeadersMiddleware)
+async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
+    request_id = getattr(request.state, "request_id", None) or request.scope.get("state", {}).get(
+        "request_id"
+    )
+    logger.exception("İşlenmeyen hata (request_id=%s)", request_id, exc_info=exc)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Beklenmeyen sunucu hatası", "request_id": request_id},
+    )
+
+
+def install(app: FastAPI) -> None:
+    """Install hardening middleware (outermost last)."""
+    settings = get_settings()
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, rate_limit_handler)
+    app.add_exception_handler(Exception, _unhandled)
+    app.add_middleware(SlowAPIMiddleware)
+    if settings.cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_origins,
+            allow_credentials=False,
+            allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+            allow_headers=["Authorization", "Content-Type", "X-Request-ID", "X-API-Key"],
+        )
+    app.add_middleware(RequestContextMiddleware)

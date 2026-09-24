@@ -1,10 +1,10 @@
-"""Relational account + audit store (SQLite).
+"""Relational account + audit store (SQLite, v1).
 
-Adım 5 deliverable: the action engine must update the customer's
-``hesap_durumu`` column to ``BLOKE`` when an autonomous block is placed, and
-append a durable audit log row. SQLite is the boring, zero-config choice for
-this local simulation; a Kafka/RabbitMQ + Postgres deployment would swap this
-module for real adapters behind the same interface.
+Thread-safe (bug #15): every statement runs under a re-entrant lock because the
+connection is shared (``check_same_thread=False``) between the event loop and
+worker threads. Updating a missing account raises
+:class:`AccountNotFoundError` instead of silently touching zero rows (bug #8),
+and :meth:`escalate` applies the monotonic state machine (bug #4).
 """
 
 from __future__ import annotations
@@ -12,11 +12,13 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from app import config
+from app.core.account_state import Actor, next_status, normalise
 
 logger = logging.getLogger("fraud.store")
 
@@ -41,6 +43,10 @@ CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at);
 """
 
 
+class AccountNotFoundError(KeyError):
+    """No ``accounts`` row for the given customer."""
+
+
 def _utcnow() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -49,63 +55,82 @@ class AccountStore:
     """SQLite-backed accounts (with ``hesap_durumu``) and audit log."""
 
     def __init__(self, db_path: Path | None = None) -> None:
-        self.db_path = db_path or config.DB_PATH
+        self.db_path = db_path or config.get_settings().resolved_db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
-        self._conn.executescript(_DDL)
-        self._conn.commit()
+        with self._lock:
+            self._conn.executescript(_DDL)
+            self._conn.commit()
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
 
     # --- accounts table ----------------------------------------------------
     def seed_accounts(self, customers_path: Path | None = None) -> int:
         """Create/refresh ``accounts`` rows from ``data/customers.json``.
 
-        Returns number of rows (re)written. Existing ``hesap_durumu`` values
-        (e.g. a previously placed BLOKE) are preserved.
+        Existing ``hesap_durumu`` values (e.g. a previous BLOKE) are preserved.
         """
-        path = customers_path or config.DATA_DIR / "customers.json"
+        path = customers_path or config.get_settings().resolved_customers_path
         with path.open("r", encoding="utf-8") as fh:
             records = json.load(fh)
         now = _utcnow()
-        for record in records:
-            cid = record["customer_id"]
-            current = self._conn.execute(
-                "SELECT hesap_durumu FROM accounts WHERE customer_id = ?", (cid,)
-            ).fetchone()
-            status = current["hesap_durumu"] if current else "AKTIF"
-            self._conn.execute(
-                "INSERT INTO accounts(customer_id, name, hesap_durumu, updated_at) "
-                "VALUES (?, ?, ?, ?) "
-                "ON CONFLICT(customer_id) DO UPDATE SET name=excluded.name, "
-                "updated_at=excluded.updated_at",
-                (cid, record.get("name", ""), status, now),
-            )
-        self._conn.commit()
+        with self._lock:
+            for record in records:
+                self._conn.execute(
+                    "INSERT INTO accounts(customer_id, name, hesap_durumu, updated_at) "
+                    "VALUES (?, ?, 'AKTIF', ?) "
+                    "ON CONFLICT(customer_id) DO UPDATE SET name=excluded.name, "
+                    "updated_at=excluded.updated_at",
+                    (record["customer_id"], record.get("name", ""), now),
+                )
+            self._conn.commit()
         return len(records)
 
     def get_account(self, customer_id: str) -> dict[str, Any] | None:
-        row = self._conn.execute(
-            "SELECT * FROM accounts WHERE customer_id = ?", (customer_id,)
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM accounts WHERE customer_id = ?", (customer_id,)
+            ).fetchone()
         return dict(row) if row else None
 
+    def get_status(self, customer_id: str) -> str | None:
+        account = self.get_account(customer_id)
+        return account["hesap_durumu"] if account else None
+
     def list_accounts(self) -> list[dict[str, Any]]:
-        return [dict(r) for r in self._conn.execute("SELECT * FROM accounts ORDER BY customer_id")]
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM accounts ORDER BY customer_id").fetchall()
+        return [dict(r) for r in rows]
 
     def set_hesap_durumu(self, customer_id: str, status: str) -> None:
-        """Transition the account to a new status (e.g. ``BLOKE``)."""
-        normalized = status.strip().upper()
-        if normalized not in ("AKTIF", "BLOKE", "INCELENIYOR"):
-            raise ValueError(f"Geçersiz hesap_durumu: {status!r}")
-        self._conn.execute(
-            "UPDATE accounts SET hesap_durumu = ?, updated_at = ? WHERE customer_id = ?",
-            (normalized, _utcnow(), customer_id),
-        )
-        self._conn.commit()
+        """Low-level status write (operator path). Raises if the account is missing."""
+        normalized = normalise(status)
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE accounts SET hesap_durumu = ?, updated_at = ? WHERE customer_id = ?",
+                (normalized, _utcnow(), customer_id),
+            )
+            self._conn.commit()
+        if cur.rowcount == 0:
+            raise AccountNotFoundError(customer_id)
         logger.info("[Store] %s hesap_durumu -> %s", customer_id, normalized)
+
+    def escalate(
+        self, customer_id: str, requested: str, *, actor: Actor = "system"
+    ) -> tuple[str, str]:
+        """Apply the state machine atomically; returns ``(previous, new)``."""
+        with self._lock:
+            current = self.get_status(customer_id)
+            if current is None:
+                raise AccountNotFoundError(customer_id)
+            target = next_status(current, requested, actor=actor)
+            if target != current:
+                self.set_hesap_durumu(customer_id, target)
+            return current, target
 
     # --- audit log ---------------------------------------------------------
     def append_audit(
@@ -117,18 +142,18 @@ class AccountStore:
         decision: str,
         reason: str = "",
     ) -> int:
-        cur = self._conn.execute(
-            "INSERT INTO audit_log(created_at, transaction_id, customer_id, "
-            "risk_score, decision, reason) VALUES (?, ?, ?, ?, ?, ?)",
-            (_utcnow(), transaction_id, customer_id, float(risk_score), decision, reason),
-        )
-        self._conn.commit()
-        return int(cur.lastrowid or 0)
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO audit_log(created_at, transaction_id, customer_id, "
+                "risk_score, decision, reason) VALUES (?, ?, ?, ?, ?, ?)",
+                (_utcnow(), transaction_id, customer_id, float(risk_score), decision, reason),
+            )
+            self._conn.commit()
+            return int(cur.lastrowid or 0)
 
     def list_audit(self, limit: int = 100) -> list[dict[str, Any]]:
-        return [
-            dict(r)
-            for r in self._conn.execute(
+        with self._lock:
+            rows = self._conn.execute(
                 "SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)
-            )
-        ]
+            ).fetchall()
+        return [dict(r) for r in rows]

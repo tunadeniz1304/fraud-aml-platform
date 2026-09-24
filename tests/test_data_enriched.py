@@ -48,12 +48,21 @@ class TestEnrichedTransactions:
 
 class TestEnrichmentReproducible:
     def test_generator_is_deterministic(self, tmp_path):
+        """Idempotent on a copy — the repo's data file is never rewritten (bug #13)."""
+        import shutil
         import subprocess
         import sys
 
-        cmd = [sys.executable, str(config.BASE_DIR / "scripts" / "enrich_data.py")]
-        before = (config.DATA_DIR / "transactions.json").read_bytes()
+        repo_file = config.DATA_DIR / "transactions.json"
+        before = repo_file.read_bytes()
+        shutil.copy(repo_file, tmp_path / "transactions.json")
+        cmd = [
+            sys.executable,
+            str(config.BASE_DIR / "scripts" / "enrich_data.py"),
+            "--data-dir",
+            str(tmp_path),
+        ]
         subprocess.run(cmd, check=True, capture_output=True, cwd=config.BASE_DIR)
-        after = (config.DATA_DIR / "transactions.json").read_bytes()
         # Same instruction set -> byte-identical, idempotent.
-        assert after == before
+        assert (tmp_path / "transactions.json").read_bytes() == before
+        assert repo_file.read_bytes() == before

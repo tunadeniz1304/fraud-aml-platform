@@ -1,0 +1,19 @@
+{
+  "_note": "Kurgusal demo IP istihbarat tablosu (gerçek GeoIP verisi değildir). cidr -> ülke/ASN/VPN/Tor bayrakları.",
+  "ranges": [
+    {"cidr": "88.241.0.0/16", "country": "TR", "asn": 9121, "org": "TR-Telekom-Demo", "vpn": false, "tor": false},
+    {"cidr": "5.176.0.0/16", "country": "TR", "asn": 16135, "org": "TR-Mobil-Demo", "vpn": false, "tor": false},
+    {"cidr": "176.40.0.0/14", "country": "TR", "asn": 12735, "org": "TR-Fiber-Demo", "vpn": false, "tor": false},
+    {"cidr": "178.233.0.0/16", "country": "TR", "asn": 34984, "org": "TR-Kablo-Demo", "vpn": false, "tor": false},
+    {"cidr": "78.160.0.0/13", "country": "TR", "asn": 9121, "org": "TR-Telekom-Demo", "vpn": false, "tor": false},
+    {"cidr": "31.140.0.0/15", "country": "TR", "asn": 16135, "org": "TR-Mobil-Demo", "vpn": false, "tor": false},
+    {"cidr": "197.210.0.0/16", "country": "NG", "asn": 29465, "org": "NG-Mobile-Demo", "vpn": false, "tor": false},
+    {"cidr": "89.12.0.0/16", "country": "DE", "asn": 3320, "org": "DE-Telekom-Demo", "vpn": false, "tor": false},
+    {"cidr": "92.96.0.0/14", "country": "AE", "asn": 5384, "org": "AE-Telecom-Demo", "vpn": false, "tor": false},
+    {"cidr": "95.173.0.0/16", "country": "RU", "asn": 12389, "org": "RU-Telecom-Demo", "vpn": false, "tor": false},
+    {"cidr": "185.220.100.0/22", "country": "DE", "asn": 208294, "org": "Tor-Exit-Demo", "vpn": false, "tor": true},
+    {"cidr": "45.84.0.0/16", "country": "NL", "asn": 9009, "org": "VPN-Hosting-Demo", "vpn": true, "tor": false},
+    {"cidr": "104.244.72.0/21", "country": "US", "asn": 53667, "org": "VPN-Cloud-Demo", "vpn": true, "tor": false},
+    {"cidr": "193.29.60.0/22", "country": "RO", "asn": 60068, "org": "VPN-DC-Demo", "vpn": true, "tor": false}
+  ]
+}

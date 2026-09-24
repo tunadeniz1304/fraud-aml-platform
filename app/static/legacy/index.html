@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="api-base" content="{{API_BASE}}">
+<title>Fraud Ajan Dashboard (klasik)</title>
+<link rel="stylesheet" href="/static/legacy/dashboard.css">
+<script src="/static/legacy/dashboard.js" defer></script>
+</head>
+<body>
+<header>
+  <h1>🛡 Siber Güvenlik ve Fraud Ajanı — Klasik Dashboard</h1>
+  <div id="session" class="session"></div>
+</header>
+<section id="login" class="card hidden" aria-labelledby="login-title">
+  <h2 id="login-title">Giriş</h2>
+  <form id="login-form">
+    <label>Kullanıcı <input name="username" autocomplete="username" value="analist" required></label>
+    <label>Parola <input name="password" type="password" autocomplete="current-password" required></label>
+    <button type="submit">Giriş yap</button>
+    <p id="login-error" class="bad" role="alert"></p>
+  </form>
+</section>
+<main id="app" class="hidden">
+  <div class="grid" id="statcards"></div>
+  <h2>Hesap Durumları</h2>
+  <table><tbody id="accounts"></tbody></table>
+  <h2>İşlemler</h2>
+  <table>
+    <thead><tr><th>ID</th><th>Müşteri</th><th>Tutar</th><th>Risk</th><th>Mule</th><th>Yüksek Riskli Ülke</th><th>Açıklama</th></tr></thead>
+    <tbody id="txs"></tbody>
+  </table>
+  <h2>Denetim Logu <button id="csv" class="link" type="button">(CSV indir)</button></h2>
+  <table><tbody id="audit"></tbody></table>
+  <h2>Risk Dağılımı (Drift)</h2>
+  <table><tbody id="stats"></tbody></table>
+  <h2>Son Blokeler</h2>
+  <table><tbody id="blocks"></tbody></table>
+</main>
+</body>
+</html>

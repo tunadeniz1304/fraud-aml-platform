@@ -70,7 +70,7 @@ target-version = "py311"
 extend-exclude = ["frontend", "data", "models", "alembic/versions"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "ASYNC", "S"]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "ASYNC", "S", "BLE"]
 ignore = [
     "RUF001", "RUF002", "RUF003",  # Türkçe metinlerde 'ı', 'İ' vb. bilinçli
     "S101",                        # testlerde assert
@@ -80,8 +80,8 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S", "B", "SIM"]
-"scripts/**" = ["S"]
+"tests/**" = ["S", "B", "SIM", "BLE"]
+"scripts/**" = ["S", "E402"]
 
 [tool.ruff.format]
 quote-style = "double"

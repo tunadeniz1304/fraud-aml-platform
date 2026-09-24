@@ -8,7 +8,7 @@ scores so ops can see whether the risk distribution is shifting (drift).
 from __future__ import annotations
 
 import math
-from collections import Counter
+from collections import Counter, OrderedDict, deque
 from dataclasses import dataclass, field
 
 
@@ -52,27 +52,60 @@ class MicroclusterDetector:
 
     Flags moments when a single edge (customer -> beneficiary) fires many times
     in a short window — the signature of mule accounts / colluding devices.
-    Backed by a bounded priority structure to keep memory constant.
+
+    Memory is bounded (bug #11): per-edge timestamps live in a deque trimmed
+    to the window, idle edges are swept periodically and the number of tracked
+    edges is capped with LRU eviction.
     """
 
-    def __init__(self, threshold: int = 3, window_seconds: int = 3600) -> None:
+    def __init__(
+        self,
+        threshold: int = 3,
+        window_seconds: int = 3600,
+        max_edges: int = 100_000,
+        sweep_every: int = 1_000,
+    ) -> None:
         self.threshold = threshold
         self.window_seconds = window_seconds
-        self._edges: dict[tuple[str, str], list[float]] = {}
+        self.max_edges = max_edges
+        self.sweep_every = sweep_every
+        self._edges: OrderedDict[tuple[str, str], deque[float]] = OrderedDict()
+        self._updates = 0
 
     def _key(self, tx: dict) -> tuple[str, str] | None:
+        # Only real payment edges count: (customer, device) repeating is normal
+        # behaviour and must not add baseline noise to every transfer.
         src = tx.get("customer_id")
-        dst = tx.get("beneficiary_id") or tx.get("device_id")
+        dst = tx.get("beneficiary_id")
         return (str(src), str(dst)) if src and dst else None
+
+    def _sweep(self, now_ms: float) -> None:
+        cutoff = now_ms - self.window_seconds * 1000
+        stale = [k for k, q in self._edges.items() if not q or q[-1] < cutoff]
+        for key in stale:
+            del self._edges[key]
+
+    def __len__(self) -> int:
+        return len(self._edges)
 
     def update(self, tx: dict, ts_ms: float) -> float:
         """Register an edge event; return microcluster anomaly score (0..1)."""
         key = self._key(tx)
         if key is None:
             return 0.0
-        bucket = self._edges.setdefault(key, [])
+        self._updates += 1
+        bucket = self._edges.get(key)
+        if bucket is None:
+            bucket = deque()
+            self._edges[key] = bucket
+        else:
+            self._edges.move_to_end(key)
         bucket.append(ts_ms)
-        # Drop events outside the window (constant-ish memory per active edge).
-        self._edges[key] = [t for t in bucket if ts_ms - t <= self.window_seconds * 1000]
-        count = len(self._edges[key])
-        return min(1.0, count / self.threshold)
+        cutoff = ts_ms - self.window_seconds * 1000
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        if self._updates % self.sweep_every == 0:
+            self._sweep(ts_ms)
+        while len(self._edges) > self.max_edges:
+            self._edges.popitem(last=False)
+        return min(1.0, len(bucket) / self.threshold)
