@@ -1,23 +1,100 @@
-# docker compose up --build  ->  http://localhost:8000
-# .env (opsiyonel) env_file ile verilir; imaja kopyalanmaz.
+# Anil3 fraud platformu
+#   docker compose up --build            -> http://localhost:8000
+#   docker compose --profile observability up   (+ Prometheus :9090, Grafana :3000)
+#
+# .env (opsiyonel) env_file ile verilir, imaja kopyalanmaz. Postgres parolası
+# yalnızca yerel demo içindir; üretimde secret yönetimiyle değiştirilir.
 name: anil3
 
+x-app: &app
+  build: .
+  image: anil3-fraud:latest
+  env_file:
+    - path: .env
+      required: false
+  environment: &app-env
+    DATABASE_URL: postgresql+asyncpg://fraud:fraud@postgres:5432/fraud
+    REDIS_URL: redis://redis:6379/0
+    EVENT_BUS: redis
+    FEATURE_STORE: redis
+    DB_AUTO_CREATE: "false"
+    LOG_JSON: "true"
+  restart: unless-stopped
+
 services:
-  api:
-    build: .
-    image: anil3-fraud:latest
-    ports:
-      - "8000:8000"
-    env_file:
-      - path: .env
-        required: false
+  postgres:
+    image: postgres:16-alpine
     environment:
-      STREAM_MODE: ${STREAM_MODE:-stream}
-      STREAM_RATE: ${STREAM_RATE:-2}
-      LOG_JSON: ${LOG_JSON:-true}
+      POSTGRES_USER: fraud
+      POSTGRES_PASSWORD: fraud
+      POSTGRES_DB: fraud
     volumes:
-      - fraud-var:/app/var
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fraud -d fraud"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
     restart: unless-stopped
 
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    ports:
+      - "8000:8000"
+    environment:
+      <<: *app-env
+      STREAM_MODE: ${STREAM_MODE:-batch}
+    volumes:
+      - fraud-var:/app/var
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  worker:
+    <<: *app
+    command: ["python", "-m", "app.worker"]
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  # Sürekli canlı trafik (Redis Streams ingress). Kapatmak için:
+  #   docker compose up --scale simulator=0
+  simulator:
+    <<: *app
+    command: ["python", "-m", "app.simulator", "--rate", "${SIM_RATE:-2}"]
+    healthcheck:
+      disable: true
+    depends_on:
+      api:
+        condition: service_healthy
+
 volumes:
+  pg-data:
+  redis-data:
   fraud-var:

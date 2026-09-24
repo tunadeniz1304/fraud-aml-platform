@@ -26,7 +26,12 @@ RUN useradd --create-home --uid 10001 fraud \
     && chown -R fraud:fraud /app/var /app/logs /app/data
 USER fraud
 
-ENV FRAUD_DB_PATH=/app/var/fraud_agent.db \
+# RAG için yerel MiniLM (ONNX) modelini imaja önceden indir; ağ yoksa build
+# yine başarılı olur ve çalışma anında deterministik hash gömmeye düşülür.
+RUN python -c "from chromadb.utils.embedding_functions import DefaultEmbeddingFunction as E; E()(['ısınma'])" \
+    || echo "ONNX modeli indirilemedi - hash gomme kullanilacak"
+
+ENV FRAUD_DB_PATH=/app/var/fraud_platform.db \
     VECTOR_DIR=/app/var/chromadb \
     HOST=0.0.0.0 \
     PORT=8000
