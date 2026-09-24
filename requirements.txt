@@ -1,21 +1,30 @@
-# --- Runtime: event-driven fraud detection -------------------------------
-# Event bus / risk engine / standard-library only for simulation.
-
-# --- Vectors & embeddings (local ONNX MiniLM, no API key) ----------------
-chromadb>=1.5.9
-
-# --- LLM analysis (real providers; keys from .env) -----------------------
-openai>=2.54.0
-anthropic>=0.97.0
+# Çalışma zamanı bağımlılıkları (pyproject.toml [project.dependencies] ile senkron).
+# Geliştirme araçları: pip install -e ".[dev]"
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.9
+pydantic-settings>=2.5
 python-dotenv>=1.0.1
-
-# --- API / dashboard ------------------------------------------------------
-fastapi>=0.141.1
-uvicorn>=0.34.0
-pydantic>=2.13.5
-pydantic-settings>=2.14.1
-
-# --- Tests ----------------------------------------------------------------
-pytest>=8.3.4
-pytest-asyncio>=0.24.0
-httpx>=0.28.1
+openai>=1.50
+httpx>=0.27
+sqlalchemy[asyncio]>=2.0.30
+aiosqlite>=0.20
+asyncpg>=0.29
+alembic>=1.13
+redis>=5.0
+numpy>=1.26
+scikit-learn>=1.4
+lightgbm>=4.3
+pyod>=2.0
+shap>=0.46
+river>=0.21
+networkx>=3.3
+rapidfuzz>=3.9
+simpleeval>=1.0
+pyyaml>=6.0
+pyjwt>=2.9
+slowapi>=0.1.9
+prometheus-client>=0.20
+structlog>=24.1
+reportlab>=4.2
+chromadb>=0.5

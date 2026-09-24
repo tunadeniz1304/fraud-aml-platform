@@ -1,14 +1,26 @@
+# Sırlar ve çalışma zamanı artefaktları imaja girmez
+.env
+.env.*
+!.env.example
+Anil3.md
+.git/
+.github/
 __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
 venv/
 env/
-
-# Secrets & runtime artifacts must not ride along in the image
-.env
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 logs/
 data/chromadb/
+data/generated/
+var/
 *.db
 *.sqlite3
-.git/
+frontend/node_modules/
+frontend/dist/

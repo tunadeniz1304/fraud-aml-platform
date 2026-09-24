@@ -1,12 +1,23 @@
+# docker compose up --build  ->  http://localhost:8000
+# .env (opsiyonel) env_file ile verilir; imaja kopyalanmaz.
+name: anil3
+
 services:
-  fraud-agent:
+  api:
     build: .
-    container_name: fraud-agent
+    image: anil3-fraud:latest
     ports:
       - "8000:8000"
-    volumes:
-      - ./data:/app/data          # persist SQLite + ChromaDB between runs
-      - ./logs:/app/logs
     env_file:
-      - .env
+      - path: .env
+        required: false
+    environment:
+      STREAM_MODE: ${STREAM_MODE:-stream}
+      STREAM_RATE: ${STREAM_RATE:-2}
+      LOG_JSON: ${LOG_JSON:-true}
+    volumes:
+      - fraud-var:/app/var
     restart: unless-stopped
+
+volumes:
+  fraud-var:
