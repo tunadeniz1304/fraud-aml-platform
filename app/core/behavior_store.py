@@ -233,6 +233,42 @@ class BehaviorStore:
             logger.debug("[Vector] sorgu hatası: %s", exc)
             return None
 
+    # --- labelled fraud cases (copilot RAG, P1.1) --------------------------------
+    def add_case(self, case_id: str, document: str, metadata: dict[str, Any]) -> bool:
+        """Store a closed, analyst-confirmed case for similar-case retrieval."""
+        if self._disabled:
+            return False
+        try:
+            self._collection.upsert(
+                ids=[f"case:{case_id}"],
+                documents=[document],
+                metadatas=[{**metadata, "kind": "fraud_case", "case_id": str(case_id)}],
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001  # pragma: no cover
+            logger.debug("[Vector] vaka eklenemedi: %s", exc)
+            return False
+
+    def similar_cases(self, text: str, k: int = 3) -> list[dict[str, Any]]:
+        if self._disabled:
+            return []
+        try:
+            results = self._collection.query(
+                query_texts=[text], n_results=k, where={"kind": "fraud_case"}
+            )
+        except Exception as exc:  # noqa: BLE001  # pragma: no cover
+            logger.debug("[Vector] vaka sorgu hatası: %s", exc)
+            return []
+        out = []
+        for doc, meta, dist in zip(
+            (results.get("documents") or [[]])[0],
+            (results.get("metadatas") or [[]])[0],
+            (results.get("distances") or [[]])[0],
+            strict=False,
+        ):
+            out.append({"case_id": str(meta.get("case_id")), "document": doc, "distance": dist})
+        return out
+
     def semantic_distance(self, transaction: dict[str, Any]) -> float | None:
         hit = self.retrieve(transaction)
         return hit.distance if hit else None

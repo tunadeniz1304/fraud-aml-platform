@@ -23,30 +23,35 @@ import asyncio
 import contextlib
 import json
 import logging
-from collections import OrderedDict
+from collections import OrderedDict, deque
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.agents.action_agent import ActionAgent
 from app.agents.context_analyst import ContextAnalyst
 from app.agents.transaction_monitor import TransactionMonitor
 from app.bus.memory import InMemoryBus
 from app.bus.redis_streams import RedisStreamsBus
-from app.cases.service import CaseService
+from app.cases.service import OPEN_STATUSES, CaseService
 from app.config import Settings, get_settings
+from app.copilot.agent import CopilotAgent
+from app.copilot.tools import CopilotTools
 from app.core.behavior_store import BehaviorStore
 from app.core.stream_simulator import TransactionStreamSimulator
 from app.db import repository as repo
 from app.db.database import Database
-from app.db.models import Decision, Transaction
+from app.db.models import Case, Decision, Label, Transaction
 from app.db.writer import PersistenceWriter
 from app.features.extractor import CustomerDirectory, FeatureExtractor
 from app.features.store import FeatureStateStore, MemoryFeatureStore, RedisFeatureStore
+from app.graph.entity_graph import EntityGraph
 from app.llm.config import LLMSettings
 from app.llm.service import LLMService
 from app.ml.registry import ModelRegistry
+from app.scenarios import ScenarioFactory
 from app.scoring import rule_store
 from app.scoring.engine import ScoringEngine
 from app.scoring.policy import LEGACY
@@ -60,6 +65,25 @@ def load_transactions(path: Path) -> list[dict[str, Any]]:
     with path.open("r", encoding="utf-8") as fh:
         data = json.load(fh)
     return data if isinstance(data, list) else [data]
+
+
+def rebase_timestamps(
+    transactions: list[dict[str, Any]], *, end: datetime | None = None
+) -> list[dict[str, Any]]:
+    """Shift a warm-up history so its last event is (almost) now.
+
+    The demo population ships with a fixed-date history; rebasing keeps the
+    sliding windows, profiles and graph "recent" when the stack starts.
+    """
+    if not transactions:
+        return transactions
+    stamps = [datetime.fromisoformat(str(t["ts"])) for t in transactions]
+    target = (end or datetime.now()).replace(microsecond=0) - timedelta(minutes=1)
+    delta = target - max(stamps)
+    return [
+        {**t, "ts": (ts + delta).isoformat(timespec="seconds")}
+        for t, ts in zip(transactions, stamps, strict=True)
+    ]
 
 
 class Pipeline:
@@ -99,14 +123,39 @@ class Pipeline:
         self.redis = redis
         self.vector = vector
         self.cases = cases or CaseService(
-            db, accounts=accounts, writer=writer, customer_name=self._customer_name
+            db,
+            accounts=accounts,
+            writer=writer,
+            customer_name=self._customer_name,
+            on_fraud_confirmed=self._fraud_confirmed,
+            on_fraud_case=self._index_fraud_case,
         )
+        self.copilot = CopilotAgent(
+            llm,
+            CopilotTools(
+                db=db,
+                cases=self.cases,
+                customers=customers,
+                sanctions=analyst.engine.sanctions,
+                graph=analyst.engine.graph,
+                vector=None,
+                account_status=accounts.get_status,
+                profile_lookup=self._profile_summary,
+            ),
+        )
+        self._background: set[asyncio.Task[Any]] = set()
+        self._live: set[asyncio.Queue[dict[str, Any]]] = set()
+        self.recent_live: deque[dict[str, Any]] = deque(maxlen=2000)
+        self.cases.handlers["MODEL_PROMOTE"] = self._approve_promotion
         self.results: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._stream_task: asyncio.Task[None] | None = None
         self._vector_task: asyncio.Task[None] | None = None
+        self._ring_task: asyncio.Task[None] | None = None
+        self.rings: list[dict[str, Any]] = []
         self.stream_done = asyncio.Event()
         bus.subscribe(ActionAgent.DECIDED, self._remember)
         bus.subscribe(ActionAgent.DECIDED, self._to_cases)
+        bus.subscribe(ActionAgent.DECIDED, self._to_live)
         bus.subscribe(TransactionMonitor.REJECTED, self._remember)
         if ingress is not None:
             ingress.subscribe(TransactionMonitor.CREATED, self._from_ingress, group="pipeline")
@@ -120,6 +169,123 @@ class Pipeline:
     @property
     def engine(self) -> ScoringEngine:
         return self.analyst.engine
+
+    @property
+    def graph(self) -> EntityGraph | None:
+        return self.analyst.engine.graph
+
+    # --- graph feedback / rings ----------------------------------------------------------
+    def _fraud_confirmed(self, customer_id: str, beneficiaries: list[str]) -> None:
+        """Analyst-confirmed fraud propagates risk through the entity graph."""
+        hub = self.engine.consortium
+        if hub is not None:  # share hashed identifiers with the consortium
+            from app.consortium import publish_fraud
+
+            publish_fraud(hub, beneficiaries, [])
+        graph = self.graph
+        if graph is None:
+            return
+        graph.flag_customer(customer_id)
+        for account in beneficiaries:
+            graph.flag_account(account)
+
+    async def load_graph_flags(self) -> int:
+        """Re-flag nodes of analyst-labelled fraud (restart safe)."""
+        graph = self.graph
+        if graph is None:
+            return 0
+        async with self.db.session() as session:
+            rows = (
+                await session.execute(
+                    select(
+                        Transaction.customer_id,
+                        Transaction.beneficiary_iban,
+                        Transaction.beneficiary_id,
+                    )
+                    .join(Label, Label.transaction_id == Transaction.id)
+                    .where(Label.label == 1)
+                )
+            ).all()
+        for customer_id, iban, beneficiary_id in rows:
+            graph.flag_customer(customer_id)
+            for account in (iban, beneficiary_id):
+                if account:
+                    graph.flag_account(account)
+        return len(rows)
+
+    async def refresh_rings(self) -> list[dict[str, Any]]:
+        """Louvain ring detection on the live graph; persisted to ``graph_rings``."""
+        graph = self.graph
+        if graph is None:
+            return []
+        rings = await asyncio.to_thread(graph.detect_rings)
+        if rings:
+            async with self.db.transaction() as session:
+                await repo.upsert_rings(session, rings)
+                for ring in rings:
+                    await session.execute(
+                        update(Case)
+                        .where(
+                            Case.customer_id.in_(ring["members"]),
+                            Case.ring_id.is_(None),
+                            Case.status.in_(OPEN_STATUSES),
+                        )
+                        .values(ring_id=ring["id"])
+                    )
+        self.rings = rings
+        return rings
+
+    async def _ring_loop(self) -> None:
+        interval = self.settings.ring_detect_interval_s
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                rings = await self.refresh_rings()
+                if rings:
+                    logger.info(
+                        "[Graph] %d halka tespit edildi: %s",
+                        len(rings),
+                        rings[0]["stats"]["summary"],
+                    )
+            except Exception:  # periodic analytics must never stop the pipeline
+                logger.exception("[Graph] halka tespiti başarısız")
+
+    async def run_scenario(self, name: str, customer_id: str | None = None) -> dict[str, Any]:
+        """Inject an attack scenario and report the decisions of its key transfers."""
+        factory = ScenarioFactory(self.customers)
+        scenario = factory.build(name, customer_id)
+        results: dict[str, dict[str, Any]] = {}
+        for tx in scenario.transactions:
+            result = await self.ingest(tx)
+            if result is not None:
+                results[tx["transaction_id"]] = result
+        await self.writer.flush()
+        await self.wait_background()
+        rings = await self.refresh_rings() if name == "mule_ring" else []
+        key = []
+        for tx_id in scenario.key_ids:
+            r = results.get(tx_id) or {}
+            key.append(
+                {
+                    "transaction_id": tx_id,
+                    "customer_id": r.get("customer_id"),
+                    "decision": r.get("decision"),
+                    "risk_score": r.get("risk_score"),
+                    "reasons": [x.get("text") for x in (r.get("reason_codes") or [])[:3]],
+                    "ring_id": r.get("ring_id"),
+                    "app_warning": r.get("app_warning"),
+                }
+            )
+        cases = []
+        for cid in dict.fromkeys(x["customer_id"] for x in key if x["customer_id"]):
+            cases += await self.cases.list_cases(customer_id=str(cid), limit=5)
+        return {
+            **scenario.as_dict(),
+            "results": key,
+            "decisions": {tid: r.get("decision") for tid, r in results.items()},
+            "cases": cases,
+            "rings": [r for r in rings if set(r["members"]) & set(scenario.customers)],
+        }
 
     # --- bookkeeping -------------------------------------------------------------------
     def _remember(self, event: dict[str, Any]) -> None:
@@ -141,9 +307,122 @@ class Pipeline:
     async def _to_cases(self, event: dict[str, Any]) -> None:
         """HOLD / BLOCK / case-required decisions become alerts grouped into cases."""
         try:
-            await self.cases.on_decision(event)
+            case_id = await self.cases.on_decision(event)
         except Exception:  # case intake must never break the decision flow
             logger.exception("[Cases] alert/vaka oluşturulamadı (%s)", event.get("transaction_id"))
+            return
+        if case_id is not None:
+            self._spawn(self._enrich_case(case_id, event))
+
+    async def reload_models(self) -> dict[str, str | None]:
+        """Reload champion/challenger from the registry into the live engine."""
+        registry = ModelRegistry(self.settings.resolved_models_dir)
+        champion = registry.load_role("champion")
+        challenger = registry.load_role("challenger")
+        self.engine.set_models(champion, challenger)
+        async with self.db.transaction() as session:
+            await repo.upsert_models(session, registry.models())
+        return {
+            "champion": champion.version if champion else None,
+            "challenger": challenger.version if challenger else None,
+        }
+
+    async def _approve_promotion(self, approval: dict[str, Any], actor: str) -> dict[str, Any]:
+        version = str(approval["target_id"])
+        ModelRegistry(self.settings.resolved_models_dir).promote(version)
+        loaded = await self.reload_models()
+        logger.warning("[Models] %s champion yapıldı (onaylayan %s)", version, actor)
+        return loaded
+
+    # --- live dashboard feed ----------------------------------------------------------
+    def subscribe_live(self) -> asyncio.Queue[dict[str, Any]]:
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=500)
+        self._live.add(queue)
+        return queue
+
+    def unsubscribe_live(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
+        self._live.discard(queue)
+
+    def _to_live(self, event: dict[str, Any]) -> None:
+        item = {
+            "transaction_id": event.get("transaction_id"),
+            "customer_id": event.get("customer_id"),
+            "ts": event.get("ts"),
+            "amount_try": event.get("amount_try"),
+            "decision": event.get("decision"),
+            "risk_score": event.get("risk_score"),
+            "latency_ms": event.get("latency_ms"),
+            "channel": event.get("channel"),
+            "country": event.get("country"),
+            "reason": (event.get("risk_explanation") or [None])[0],
+            "ring_id": event.get("ring_id"),
+        }
+        self.recent_live.append({**item, "_t": asyncio.get_running_loop().time()})
+        for queue in list(self._live):
+            if queue.full():  # slow client: drop the oldest event, never block scoring
+                queue.get_nowait()
+            queue.put_nowait(item)
+
+    def _spawn(self, coro: Any) -> None:
+        task = asyncio.create_task(coro)
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+
+    async def wait_background(self) -> None:
+        """Await copilot enrichment tasks (tests / scenario runner)."""
+        while self._background:
+            await asyncio.gather(*list(self._background), return_exceptions=True)
+
+    async def _enrich_case(self, case_id: int, event: dict[str, Any]) -> None:
+        """Async, off the scoring path: APP text triage + automatic ŞİB draft."""
+        try:
+            case = await self.cases.get_case(case_id)
+            if case["case_type"] == "APP" and event.get("purpose"):
+                triage = await self.copilot.triage_text(str(event["purpose"]))
+                await self.cases.add_note(
+                    case_id,
+                    f"[Copilot metin sınıflandırması] {triage.output.label} "
+                    f"(güven {triage.output.confidence:.2f}, mod {triage.llm_mode}) — "
+                    "skoru etkilemez, yalnızca önceliklendirme bilgisidir.",
+                    "copilot",
+                )
+            if case["case_type"] in self.settings.auto_sib_case_types and not case["sib_draft"]:
+                result, _ = await self.copilot.sib_draft(case_id)
+                await self.cases.save_sib_draft(
+                    case_id, result.output.model_dump(mode="json"), "copilot"
+                )
+                logger.info(
+                    "[Copilot] vaka #%s için ŞİB taslağı hazırlandı (%s)", case_id, result.llm_mode
+                )
+        except Exception:  # enrichment is best-effort
+            logger.exception("[Copilot] vaka #%s zenginleştirilemedi", case_id)
+
+    def _profile_summary(self, customer_id: str) -> dict[str, Any] | None:
+        store = self.extractor.store
+        profiles = getattr(store, "profiles", None)
+        profile = profiles.get(customer_id) if profiles is not None else None
+        if profile is None:
+            return None
+        import math
+
+        return {
+            "ewma_amount_try": round(math.expm1(profile.log_mean), 2),
+            "observations": round(profile.n, 1),
+            "max_amount_try": round(profile.max_amount, 2),
+            "devices": len(profile.devices),
+        }
+
+    def _index_fraud_case(self, case: dict[str, Any]) -> None:
+        if self.vector is None:
+            return
+        codes = sorted(
+            {r.get("code", "") for a in case["alerts"] for r in a.get("reason_codes") or []}
+        )
+        document = (
+            f"{case['case_type']} vakası: {case['title']}; {case['alert_count']} alert, toplam "
+            f"{case['total_amount_try']:.0f} TL; nedenler: {', '.join(codes)}"
+        )
+        self.vector.add_case(str(case["id"]), document, {"case_type": case["case_type"]})
 
     async def _from_ingress(self, payload: dict[str, Any]) -> None:
         """Redis ingress: same strict validation as the HTTP API.
@@ -206,6 +485,7 @@ class Pipeline:
                 return
             await asyncio.to_thread(store.seed)
             self.vector = store
+            self.copilot.tools.vector = store
             logger.info("[Vector] RAG deposu hazır (%s gömme)", store.embedding)
         except Exception:
             logger.exception("[Vector] RAG deposu başlatılamadı — copilot RAG'siz çalışacak")
@@ -218,9 +498,17 @@ class Pipeline:
             logger.info("Redis Streams ingress aktif (grup: pipeline)")
         if self.settings.vector_store == "chroma" and self.vector is None:
             self._vector_task = asyncio.create_task(self._init_vector(), name="vector-init")
+        flagged = await self.load_graph_flags()
+        if flagged:
+            logger.info("[Graph] %d doğrulanmış fraud işlemi grafta işaretlendi", flagged)
+        if self.graph is not None and self.settings.ring_detect_interval_s > 0:
+            self._ring_task = asyncio.create_task(self._ring_loop(), name="ring-detection")
         mode = self.settings.stream_mode
         if mode == "batch":
-            await self.feed(load_transactions(self.settings.resolved_transactions_path))
+            batch = load_transactions(self.settings.resolved_transactions_path)
+            if self.settings.batch_rebase_ts:
+                batch = rebase_timestamps(batch)
+            await self.feed(batch)
             await self.drain()
             self.stream_done.set()
             logger.info(
@@ -243,7 +531,8 @@ class Pipeline:
         await self.writer.flush()
 
     async def stop(self) -> None:
-        for task in (self._stream_task, self._vector_task):
+        await self.wait_background()
+        for task in (self._stream_task, self._vector_task, self._ring_task):
             if task is not None and not task.done():
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):

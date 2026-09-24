@@ -8,6 +8,11 @@ anomalies (new device, foreign IP, large amount, urgent purpose).
 
     python -m app.simulator --rate 2
     python -m app.simulator --rate 50 --count 5000 --anomaly-rate 0.05
+    python -m app.simulator --rate 2 --scenario-every 180   # + saldırı senaryoları
+
+With ``--scenario-every N`` a random attack scenario (ATO, APP, mule ring,
+smurfing, card testing — :mod:`app.scenarios`) is injected every N seconds so
+the live dashboard always has something to investigate.
 """
 
 from __future__ import annotations
@@ -20,11 +25,14 @@ import random
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
 from app.agents.transaction_monitor import TransactionMonitor
 from app.config import get_settings
+from app.features.extractor import CustomerDirectory
 from app.monitoring.logging import configure_logging
+from app.scenarios import SCENARIOS, ScenarioError, ScenarioFactory
 
 logger = logging.getLogger("fraud.simulator")
 
@@ -85,7 +93,13 @@ class TrafficGenerator:
         return tx
 
 
-async def run(rate: float, count: int | None, anomaly_rate: float, customers_path: Path) -> int:
+async def run(
+    rate: float,
+    count: int | None,
+    anomaly_rate: float,
+    customers_path: Path,
+    scenario_every: float = 0.0,
+) -> int:
     import redis.asyncio as aioredis
 
     from app.bus.redis_streams import RedisStreamsBus
@@ -98,14 +112,32 @@ async def run(rate: float, count: int | None, anomaly_rate: float, customers_pat
     redis = aioredis.from_url(settings.redis_url, decode_responses=True)
     bus = RedisStreamsBus(redis, prefix=settings.redis_stream_prefix)
     generator = TrafficGenerator(customers)
+    directory = CustomerDirectory(customers)
     delay = 1.0 / rate if rate > 0 else 0.0
     sent = 0
+    next_scenario = monotonic() + scenario_every if scenario_every > 0 else None
     logger.info("Simülatör başladı: %.1f işlem/sn, anomali oranı %.0f%%", rate, anomaly_rate * 100)
     try:
         while count is None or sent < count:
             tx = generator.next(anomaly_rate=anomaly_rate)
             await bus.publish(TransactionMonitor.CREATED, tx, key=tx["transaction_id"])
             sent += 1
+            if next_scenario is not None and monotonic() >= next_scenario:
+                name = generator.rng.choice(list(SCENARIOS))
+                try:
+                    scenario = ScenarioFactory(directory).build(name)
+                except ScenarioError as exc:
+                    logger.warning("Senaryo atlandı (%s): %s", name, exc)
+                else:
+                    for stx in scenario.transactions:
+                        await bus.publish(
+                            TransactionMonitor.CREATED, stx, key=stx["transaction_id"]
+                        )
+                    sent += len(scenario.transactions)
+                    logger.info(
+                        "Senaryo enjekte edildi: %s (%s)", scenario.title, scenario.customers
+                    )
+                next_scenario = monotonic() + scenario_every
             if sent % 100 == 0:
                 logger.info("Simülatör: %d işlem yayınlandı", sent)
             if delay:
@@ -123,6 +155,9 @@ def main() -> None:
     parser.add_argument("--count", type=int, default=None, help="toplam işlem (boş: sonsuz)")
     parser.add_argument("--anomaly-rate", type=float, default=0.05)
     parser.add_argument("--customers", type=Path, default=None)
+    parser.add_argument(
+        "--scenario-every", type=float, default=0.0, help="saniye (0: senaryo enjeksiyonu yok)"
+    )
     args = parser.parse_args()
     settings = get_settings()
     configure_logging(settings)
@@ -132,6 +167,7 @@ def main() -> None:
             args.count,
             args.anomaly_rate,
             args.customers or settings.resolved_customers_path,
+            args.scenario_every,
         )
     )
 

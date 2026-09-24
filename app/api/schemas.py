@@ -96,7 +96,7 @@ class AnalyzedTransactionOut(BaseModel):
     decision: str | None = None
     decision_legacy: str | None = None
     decision_reason: str | None = None
-    components: dict[str, float | None] = Field(default_factory=dict)
+    components: dict[str, Any] = Field(default_factory=dict)
     reason_codes: list[dict[str, Any]] = Field(default_factory=list)
     rule_hits: list[dict[str, Any]] = Field(default_factory=list)
     risk_explanation: list[str] = Field(default_factory=list)

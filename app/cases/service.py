@@ -57,12 +57,13 @@ MANUAL_TRANSITIONS: dict[str, tuple[str, ...]] = {
 OUTCOMES = {"FRAUD": ("KAPANDI_FRAUD", 1), "TEMIZ": ("KAPANDI_TEMIZ", 0)}
 APPROVAL_KINDS = ("UNBLOCK", "SIB", "MODEL_PROMOTE")
 
-#: rule tag -> alert type (first match wins, most serious first)
+#: rule tag -> alert type (the tag carried by the strongest fired rule wins;
+#: ties follow this order)
 _TYPE_BY_TAG = (
-    ("aml", "AML"),
     ("mule", "MULE"),
-    ("app", "APP"),
+    ("aml", "AML"),
     ("ato", "ATO"),
+    ("app", "APP"),
     ("card", "KART_TESTI"),
 )
 _TYPE_RANK = ["DAVRANIS", "KART_TESTI", "ATO", "APP", "MULE", "AML", "YAPTIRIM"]
@@ -98,11 +99,16 @@ def alert_type(event: dict[str, Any]) -> str:
         return "YAPTIRIM"
     if event.get("unknown_customer"):
         return "BILINMEYEN_MUSTERI"
-    tags = {t for hit in event.get("rule_hits") or [] for t in hit.get("tags") or []}
-    for tag, kind in _TYPE_BY_TAG:
-        if tag in tags:
-            return kind
-    return "DAVRANIS"
+    strength: dict[str, float] = {}
+    for hit in event.get("rule_hits") or []:
+        for tag in hit.get("tags") or []:
+            strength[tag] = max(strength.get(tag, 0.0), float(hit.get("score") or 0.0))
+    best: tuple[float, int, str] | None = None
+    for order, (tag, kind) in enumerate(_TYPE_BY_TAG):
+        if tag in strength:
+            candidate = (strength[tag], -order, kind)
+            best = candidate if best is None or candidate > best else best
+    return best[2] if best else "DAVRANIS"
 
 
 def _severity(event: dict[str, Any]) -> str:
@@ -123,8 +129,13 @@ class CaseService:
         accounts: AccountService | None = None,
         writer: PersistenceWriter | None = None,
         customer_name: Callable[[str], str] | None = None,
+        on_fraud_confirmed: Callable[[str, list[str]], None] | None = None,
+        on_fraud_case: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
+        self.on_fraud_case = on_fraud_case
         self.db = db
+        #: feedback hook (graph risk propagation): customer id + beneficiary accounts
+        self.on_fraud_confirmed = on_fraud_confirmed
         self.accounts = accounts
         self.writer = writer
         self.customer_name = customer_name or (lambda cid: cid)
@@ -208,6 +219,8 @@ class CaseService:
             elif _rank(kind) > _rank(case.case_type):
                 case.case_type = kind
                 case.title = f"{TYPE_TEXT.get(kind, kind)} — {self.customer_name(customer_id)}"
+            if ring_id and not case.ring_id:
+                case.ring_id = ring_id
             alert = Alert(
                 transaction_id=str(event["transaction_id"]),
                 customer_id=customer_id,
@@ -234,6 +247,8 @@ class CaseService:
                     alert_type=kind,
                     risk_score=risk,
                     decision=event.get("decision"),
+                    ring_id=ring_id,
+                    app_warning=event.get("app_warning"),
                 )
             )
             case_id = case.id
@@ -594,7 +609,21 @@ class CaseService:
             )
             customer = case.customer_id
         metrics.CASE_DECISIONS.labels(outcome=outcome).inc()
+        if outcome == "FRAUD" and self.on_fraud_confirmed is not None:
+            async with self.db.session() as session:
+                rows = await session.execute(
+                    select(Transaction.beneficiary_iban, Transaction.beneficiary_id).where(
+                        Transaction.id.in_(tx_ids)
+                    )
+                )
+                beneficiaries = [value for pair in rows.all() for value in pair if value]
+            self.on_fraud_confirmed(customer, sorted(set(beneficiaries)))
         await self._settle_account(customer, outcome, actor, case_id)
+        if outcome == "FRAUD" and self.on_fraud_case is not None:
+            try:
+                self.on_fraud_case(await self.get_case(case_id))
+            except Exception:  # RAG indexing must not break the decision
+                logger.exception("[Cases] vaka RAG deposuna eklenemedi (#%s)", case_id)
         await self._audit(
             "CASE_DECISION",
             str(case_id),
@@ -615,6 +644,58 @@ class CaseService:
         elif outcome == "TEMIZ" and current == "INCELENIYOR":
             # INCELENIYOR -> AKTIF is not a block lift; BLOKE needs maker-checker.
             await self.accounts.set_by_analyst(customer_id, "AKTIF", actor=actor, reason=reason)
+
+    async def customer_confirmation(
+        self, transaction_id: str, *, knows_payee: bool, note: str = ""
+    ) -> dict[str, Any]:
+        """Simulated "Bu kişiyi tanıyor musunuz?" answer for a held APP payment."""
+        async with self.db.transaction() as session:
+            alert = (
+                (
+                    await session.execute(
+                        select(Alert)
+                        .where(Alert.transaction_id == transaction_id)
+                        .order_by(Alert.id.desc())
+                        .limit(1)
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if alert is None or alert.case_id is None:
+                raise CaseNotFoundError(transaction_id)
+            case = await self._case(session, alert.case_id)
+            session.add(
+                self._event(
+                    case.id,
+                    "CUSTOMER_CONFIRMATION",
+                    "müşteri",
+                    transaction_id=transaction_id,
+                    knows_payee=knows_payee,
+                    note=note,
+                )
+            )
+            if not knows_payee:
+                # the customer does not know the beneficiary: strong fraud evidence
+                case.priority = round(float(case.priority or 0.0) * 2 + 1.0, 2)
+                if case.status == "YENI":
+                    case.status = "INCELENIYOR"
+            case.updated_at = utcnow()
+            case_id = case.id
+        message = (
+            "Teşekkürler. İşlem, cooling-off süresi sonunda analist onayıyla serbest bırakılacak."
+            if knows_payee
+            else "İşlem durduruldu; dolandırıcılık ekibimiz sizinle iletişime geçecek. "
+            "Kimseyle şifre/OTP paylaşmayın."
+        )
+        return {"case_id": case_id, "knows_payee": knows_payee, "message": message}
+
+    async def save_summary(self, case_id: int, summary: dict[str, Any], actor: str) -> None:
+        async with self.db.transaction() as session:
+            case = await self._case(session, case_id)
+            case.summary = summary
+            case.updated_at = utcnow()
+            session.add(self._event(case_id, "COPILOT_SUMMARY", actor))
 
     # --- ŞİB ----------------------------------------------------------------------------------
     async def save_sib_draft(

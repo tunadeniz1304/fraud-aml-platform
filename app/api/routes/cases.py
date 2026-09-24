@@ -127,6 +127,7 @@ async def case_stats() -> dict[str, Any]:
 
 @router.get("/cases/{case_id}", dependencies=[Depends(analyst)])
 async def get_case(case_id: int) -> dict[str, Any]:
+    await require_pipeline().writer.flush()  # decisions are written behind; read your writes
     return await _call(cases_service().get_case, case_id)
 
 

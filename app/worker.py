@@ -81,6 +81,45 @@ async def case_sla(ctx: WorkerContext) -> dict[str, Any]:
     return result
 
 
+@job("ring_detection", interval_s=300)
+async def ring_detection(ctx: WorkerContext) -> dict[str, Any]:
+    """Louvain mule-ring detection over the last 7 days of transactions."""
+    from app.graph.batch import detect_and_store
+
+    result = await detect_and_store(ctx.db)
+    if result["rings"]:
+        logger.warning("[Worker] %d şüpheli halka: %s", result["rings"], result["top"])
+    return result
+
+
+@job("retrain_check", interval_s=900)
+async def retrain_check(ctx: WorkerContext) -> dict[str, Any]:
+    """Feedback loop: recommend retraining once enough new analyst labels exist."""
+    from sqlalchemy import func, select
+
+    from app.db.models import Label, ModelVersion
+
+    settings = get_settings()
+    async with ctx.db.session() as session:
+        since = (
+            await session.execute(
+                select(ModelVersion.created_at).where(ModelVersion.status == "champion")
+            )
+        ).scalar_one_or_none()
+        query = select(func.count()).select_from(Label).where(Label.source == "analyst")
+        if since is not None:
+            query = query.where(Label.created_at >= since)
+        new_labels = int((await session.execute(query)).scalar_one())
+    due = new_labels >= settings.retrain_min_new_labels
+    if due:
+        logger.warning(
+            "[Worker] %d yeni analist etiketi: 'python scripts/train_models.py --incremental "
+            "--status challenger --version fraud_gbm_vN' önerilir",
+            new_labels,
+        )
+    return {"new_labels": new_labels, "retrain_recommended": due}
+
+
 @job("decision_stats", interval_s=60)
 async def decision_stats(ctx: WorkerContext) -> dict[str, Any]:
     stats = dict(ctx.decisions_seen)

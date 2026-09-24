@@ -28,7 +28,9 @@ from typing import TYPE_CHECKING, Any
 from app.config import get_settings
 from app.core.sanctions import SanctionScreener
 from app.features.extractor import CustomerDirectory, Extraction, FeatureExtractor
+from app.ml.monitoring import DriftMonitor
 from app.ml.registry import ModelBundle, ModelRegistry, ModelScore
+from app.monitoring import metrics
 from app.scoring.policy import PolicyDecision, PolicyEngine, PolicyInput
 from app.scoring.reasons import ReasonCode, ml_reasons, policy_reason, top_reasons
 from app.scoring.rules import RuleEvaluation, RuleSet, load_ruleset
@@ -83,6 +85,15 @@ class ScoreResult:
             out[name] = sig.score
         return out
 
+    def explanation(self, top: int = 10) -> list[dict[str, float | str]]:
+        """Top TreeSHAP contributions (log-odds) for the waterfall view."""
+        if self.model is None or not self.model.contributions:
+            return []
+        items = sorted(self.model.contributions.items(), key=lambda kv: -abs(kv[1]))[:top]
+        return [
+            {"feature": k, "value": round(v, 5), "x": self.features.get(k, 0.0)} for k, v in items
+        ]
+
     def event_fields(self) -> dict[str, Any]:
         """Fields merged into the ``transaction.analyzed`` event."""
         burst = self.signals.get("burst")
@@ -109,6 +120,7 @@ class ScoreResult:
             "challenger_version": self.challenger_version,
             "challenger_score": self.challenger_score,
             "latency_ms": round(self.latency_ms, 3),
+            "explanation": self.explanation(),
             "microcluster": burst.score if burst else 0.0,
             "mule_score": graph.score if graph else 0.0,
             "mule_signals": [r.text for r in graph.reasons] if graph else [],
@@ -150,6 +162,10 @@ def build_signals(
     signals.append(APPScamSignal(payees))
     if settings.online_anomaly_enabled:
         signals.append(OnlineAnomalySignal())
+    if settings.consortium_enabled:
+        from app.consortium import ConsortiumHub, ConsortiumSignal
+
+        signals.append(ConsortiumSignal(ConsortiumHub()))
     return graph, payees, signals
 
 
@@ -170,6 +186,7 @@ class ScoringEngine:
         self.extractor = extractor
         self.graph = graph
         self.payees = payees
+        self.drift: DriftMonitor | None = None
         self.ruleset = ruleset
         self.policy = policy
         self.sanctions = sanctions
@@ -204,7 +221,7 @@ class ScoringEngine:
         if model is None:
             logger.warning("[Scoring] champion model yok — kural + politika ile skorlanıyor")
         graph, payees, default = build_signals(extractor.customers)
-        return cls(
+        engine = cls(
             extractor,
             ruleset=ruleset or load_ruleset(settings.resolved_rules_path),
             policy=PolicyEngine(model.stacker if model else None),
@@ -215,6 +232,8 @@ class ScoringEngine:
             graph=graph,
             payees=payees,
         )
+        engine.set_models(model, challenger)
+        return engine
 
     def set_ruleset(self, ruleset: RuleSet) -> None:
         self.ruleset = ruleset  # atomic reference swap (hot reload)
@@ -223,6 +242,18 @@ class ScoringEngine:
         self.model = champion
         self.challenger = challenger
         self.policy.stacker = champion.stacker if champion else None
+        reference = (champion.metadata.get("psi_reference") if champion else None) or {}
+        self.drift = DriftMonitor(reference) if reference else None
+        for role, bundle in (("champion", champion), ("challenger", challenger)):
+            if bundle is not None:
+                metrics.MODEL_INFO.labels(role=role, version=bundle.version).set(1)
+
+    @property
+    def consortium(self) -> Any:
+        for signal in self.signals:
+            if signal.name == "consortium":
+                return getattr(signal, "hub", None)
+        return None
 
     @property
     def customers(self) -> CustomerDirectory:

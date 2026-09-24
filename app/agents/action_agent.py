@@ -180,7 +180,10 @@ class ActionAgent:
                     "customer_id": str(tx["customer_id"]),
                     "decision": decision,
                     "risk_score": risk,
-                    "components": tx.get("components") or {},
+                    "components": {
+                        **(tx.get("components") or {}),
+                        "shap": tx.get("explanation") or [],
+                    },
                     "reason_codes": tx.get("reason_codes") or [],
                     "features": tx.get("features") or {},
                     "rule_version": str(tx.get("rule_version") or ""),

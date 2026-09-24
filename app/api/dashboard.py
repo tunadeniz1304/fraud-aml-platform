@@ -15,13 +15,25 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api import admin
 from app.api.frontend import STATIC_DIR
 from app.api.frontend import render as render_frontend
-from app.api.routes import auth, cases, health, llm, pipeline, rules
+from app.api.routes import (
+    auth,
+    cases,
+    consortium,
+    copilot,
+    health,
+    live,
+    llm,
+    models,
+    network,
+    pipeline,
+    rules,
+)
 from app.api.security import install as install_security
 from app.api.state import state
 from app.config import get_settings
@@ -74,12 +86,32 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> FastAPI:
     app.include_router(llm.router)
     app.include_router(rules.router)
     app.include_router(cases.router)
+    app.include_router(network.router)
+    app.include_router(copilot.router)
+    app.include_router(models.router)
+    app.include_router(live.router)
+    app.include_router(consortium.router)
     app.include_router(admin.router)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-    @app.get("/", response_class=HTMLResponse, include_in_schema=False)
-    async def index() -> str:
+    @app.get("/legacy", response_class=HTMLResponse, include_in_schema=False)
+    async def legacy() -> str:
         return render_frontend()
+
+    dist = settings.resolved_frontend_dist
+    if (dist / "index.html").is_file():
+        # React SPA (built by the Docker multi-stage build / `npm run build`)
+        app.mount("/app", StaticFiles(directory=dist, html=True), name="spa")
+
+        @app.get("/", include_in_schema=False)
+        async def spa() -> FileResponse:
+            return FileResponse(dist / "index.html")
+
+    else:
+
+        @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+        async def index() -> str:
+            return render_frontend()
 
     return app
 

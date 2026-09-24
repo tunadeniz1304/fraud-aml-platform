@@ -180,6 +180,12 @@ class Settings(BaseSettings):
         }
     )
     online_anomaly_enabled: bool = True
+    consortium_enabled: bool = True
+    # Konsorsiyum tuzu (üyeler arası paylaşılan gizli değer; demo varsayılanı).
+    consortium_salt: str = "anil3-consortium-demo"
+    frontend_dist: Path | None = Field(default=None, validation_alias="FRONTEND_DIST")
+    fp_cost_try: float = 50.0  # operasyonel maliyet: bir yanlış alarmın inceleme maliyeti
+    retrain_min_new_labels: int = 50
     auto_sib_case_types: list[str] = Field(default_factory=lambda: ["AML", "MULE", "YAPTIRIM"])
     online_anomaly_reason_min: float = 0.9
 
@@ -260,6 +266,10 @@ class Settings(BaseSettings):
     @property
     def resolved_models_dir(self) -> Path:
         return self.models_dir or BASE_DIR / "models"
+
+    @property
+    def resolved_frontend_dist(self) -> Path:
+        return self.frontend_dist or BASE_DIR / "frontend" / "dist"
 
     @property
     def resolved_payees_path(self) -> Path:

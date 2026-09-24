@@ -18,6 +18,7 @@ from app.db.models import (
     AuditLog,
     Customer,
     Decision,
+    GraphRing,
     ModelVersion,
     Transaction,
 )
@@ -229,3 +230,32 @@ async def upsert_models(session: AsyncSession, models: Iterable[dict[str, Any]])
         await session.execute(stmt)
         count += 1
     return count
+
+
+async def upsert_rings(session: AsyncSession, rings: Iterable[dict[str, Any]]) -> int:
+    count = 0
+    for ring in rings:
+        stmt = _insert(session, GraphRing).values(
+            id=str(ring["id"]), members=ring["members"], stats=ring["stats"], detected_at=utcnow()
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[GraphRing.id],
+            set_={
+                "members": stmt.excluded.members,
+                "stats": stmt.excluded.stats,
+                "detected_at": stmt.excluded.detected_at,
+            },
+        )
+        await session.execute(stmt)
+        count += 1
+    return count
+
+
+async def list_rings(session: AsyncSession, limit: int = 50) -> list[dict[str, Any]]:
+    rows = (
+        await session.execute(select(GraphRing).order_by(GraphRing.detected_at.desc()).limit(limit))
+    ).scalars()
+    return [
+        {"id": r.id, "members": r.members, "stats": r.stats, "detected_at": r.detected_at}
+        for r in rows
+    ]

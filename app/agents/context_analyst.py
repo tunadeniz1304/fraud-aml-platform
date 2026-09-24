@@ -122,6 +122,8 @@ class ContextAnalyst:
         else:
             await self.engine.commit(result)
             self.stats.update(result.risk_score)
+            if self.engine.drift is not None:
+                self.engine.drift.observe(result.features, result.policy.stacked)
             metrics.SCORE_LATENCY.observe(result.latency_ms / 1000)
             if result.model is not None:
                 metrics.MODEL_SCORE.labels(result.model_version, "champion").observe(

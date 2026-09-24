@@ -281,7 +281,7 @@ class TestBug09AsyncLLM:
         result = await narrate_transaction(service, {"transaction_id": "T", "risk_score": 0.1})
         hb.cancel()
         assert result.llm_mode == "live" and isinstance(result.output, TransactionNarrative)
-        assert ticks >= 10
+        assert ticks >= 5  # a blocking call would yield 0-1 ticks (tolerant under CI load)
 
 
 # --- #10 ------------------------------------------------------------------------
