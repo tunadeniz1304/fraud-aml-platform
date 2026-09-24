@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api import admin
 from app.api.frontend import STATIC_DIR
 from app.api.frontend import render as render_frontend
-from app.api.routes import auth, health, llm, pipeline, rules
+from app.api.routes import auth, cases, health, llm, pipeline, rules
 from app.api.security import install as install_security
 from app.api.state import state
 from app.config import get_settings
@@ -71,6 +71,7 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> FastAPI:
     app.include_router(pipeline.router)
     app.include_router(llm.router)
     app.include_router(rules.router)
+    app.include_router(cases.router)
     app.include_router(admin.router)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 

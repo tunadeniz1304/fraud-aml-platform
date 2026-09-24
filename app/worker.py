@@ -66,6 +66,21 @@ async def audit_verify(ctx: WorkerContext) -> dict[str, Any]:
     return result.as_dict()
 
 
+@job("case_sla", interval_s=60)
+async def case_sla(ctx: WorkerContext) -> dict[str, Any]:
+    """Internal 4 h SLA and MASAK 10-business-day deadline monitoring."""
+    from app.cases.service import CaseService
+
+    result = await CaseService(ctx.db).sla_scan()
+    if result["internal_sla_breached"] or result["masak_due_soon"]:
+        logger.warning(
+            "[Worker] SLA: %d vaka iç SLA'yı aştı, %d vakanın MASAK süresi dolmak üzere",
+            result["internal_sla_breached"],
+            result["masak_due_soon"],
+        )
+    return result
+
+
 @job("decision_stats", interval_s=60)
 async def decision_stats(ctx: WorkerContext) -> dict[str, Any]:
     stats = dict(ctx.decisions_seen)
@@ -100,7 +115,7 @@ async def run_worker(stop: asyncio.Event | None = None) -> WorkerContext:
         bus = RedisStreamsBus(redis, prefix=settings.redis_stream_prefix, consumer="worker")
 
         async def on_decision(event: dict[str, Any]) -> None:
-            ctx.decisions_seen[str(event.get("decision_legacy") or event.get("decision"))] += 1
+            ctx.decisions_seen[str(event.get("decision") or event.get("decision_legacy"))] += 1
 
         bus.subscribe("decision.made", on_decision, group="worker")
         await bus.start()

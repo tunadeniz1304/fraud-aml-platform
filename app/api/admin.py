@@ -1,8 +1,8 @@
 """Admin endpoints: account overrides and compliance exports.
 
 Every mutation is written to the hash-chained audit log. Manual status changes
-are a human decision (``actor=<username>``); from F4 on, lifting a block goes
-through the maker-checker approval flow.
+are a human decision (``actor=<username>``); lifting a block goes through the
+maker-checker approval flow (``UNBLOCK`` request, approved by someone else).
 """
 
 from __future__ import annotations
@@ -12,11 +12,13 @@ import io
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import PlainTextResponse
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from app.api.deps import require_pipeline
 from app.api.schemas import AccountOut, AuditRowOut
 from app.api.state import state
+from app.cases.service import CaseError
 from app.core.account_state import STATUSES
 from app.db import repository as repo
 from app.security.auth import Principal
@@ -50,17 +52,42 @@ async def list_accounts() -> list[AccountOut]:
     return [AccountOut(**a) for a in await state.pipeline.accounts.list_accounts()]
 
 
-@router.post("/accounts/{customer_id}/status", response_model=AccountOut)
+@router.post("/accounts/{customer_id}/status", response_model=None)
 async def set_status(
     customer_id: str,
     status_: str = Query(..., alias="status"),
     principal: Principal = Depends(require_role("admin")),
-) -> AccountOut:
-    """Manually set an account's hesap_durumu (AKTIF|BLOKE|INCELENIYOR)."""
+) -> AccountOut | JSONResponse:
+    """Manually set an account's hesap_durumu (AKTIF|BLOKE|INCELENIYOR).
+
+    Escalations apply immediately. Lifting a ``BLOKE`` is a maker-checker
+    action: it creates an ``UNBLOCK`` approval request (HTTP 202) that another
+    senior user must approve.
+    """
     pipeline = require_pipeline()
     normalized = status_.strip().upper()
     if normalized not in STATUSES:
         raise HTTPException(status_code=422, detail="Geçerli: AKTIF, BLOKE, INCELENIYOR")
+    current = pipeline.accounts.get_status(customer_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail="Müşteri bulunamadı")
+    if current == "BLOKE" and normalized != "BLOKE":
+        try:
+            approval = await pipeline.cases.request_approval(
+                "UNBLOCK",
+                customer_id,
+                {"to_status": normalized, "from_status": current},
+                principal.username,
+                "Yönetici bloke kaldırma talebi",
+            )
+        except CaseError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        return JSONResponse(
+            status_code=202,
+            content=jsonable_encoder(
+                {"message": "Bloke kaldırma maker-checker onayı bekliyor", "approval": approval}
+            ),
+        )
     try:
         await pipeline.accounts.set_by_analyst(
             customer_id,

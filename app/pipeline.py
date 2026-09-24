@@ -34,6 +34,7 @@ from app.agents.context_analyst import ContextAnalyst
 from app.agents.transaction_monitor import TransactionMonitor
 from app.bus.memory import InMemoryBus
 from app.bus.redis_streams import RedisStreamsBus
+from app.cases.service import CaseService
 from app.config import Settings, get_settings
 from app.core.behavior_store import BehaviorStore
 from app.core.stream_simulator import TransactionStreamSimulator
@@ -80,6 +81,7 @@ class Pipeline:
         ingress: RedisStreamsBus | None = None,
         redis: Any = None,
         vector: BehaviorStore | None = None,
+        cases: CaseService | None = None,
     ) -> None:
         self.settings = settings
         self.db = db
@@ -95,11 +97,15 @@ class Pipeline:
         self.ingress = ingress
         self.redis = redis
         self.vector = vector
+        self.cases = cases or CaseService(
+            db, accounts=accounts, writer=writer, customer_name=self._customer_name
+        )
         self.results: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._stream_task: asyncio.Task[None] | None = None
         self._vector_task: asyncio.Task[None] | None = None
         self.stream_done = asyncio.Event()
         bus.subscribe(ActionAgent.DECIDED, self._remember)
+        bus.subscribe(ActionAgent.DECIDED, self._to_cases)
         bus.subscribe(TransactionMonitor.REJECTED, self._remember)
         if ingress is not None:
             ingress.subscribe(TransactionMonitor.CREATED, self._from_ingress, group="pipeline")
@@ -126,6 +132,17 @@ class Pipeline:
 
     def customer_names(self) -> list[str]:
         return self.customers.names()
+
+    def _customer_name(self, customer_id: str) -> str:
+        customer = self.customers.get(customer_id)
+        return customer.name if customer is not None and customer.name else customer_id
+
+    async def _to_cases(self, event: dict[str, Any]) -> None:
+        """HOLD / BLOCK / case-required decisions become alerts grouped into cases."""
+        try:
+            await self.cases.on_decision(event)
+        except Exception:  # case intake must never break the decision flow
+            logger.exception("[Cases] alert/vaka oluşturulamadı (%s)", event.get("transaction_id"))
 
     async def _from_ingress(self, payload: dict[str, Any]) -> None:
         """Redis ingress: same strict validation as the HTTP API.
