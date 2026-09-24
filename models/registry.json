@@ -1,0 +1,19 @@
+{
+ "champion": "fraud_gbm_v1",
+ "challenger": null,
+ "models": {
+  "fraud_gbm_v1": {
+   "path": "fraud_gbm_v1",
+   "status": "champion",
+   "metrics": {
+    "pr_auc": 0.971,
+    "roc_auc": 0.9925,
+    "recall_at_1pct_fpr": 0.9691,
+    "cost_weighted_recall": 0.4591,
+    "ml_pr_auc": 0.974
+   },
+   "created_at": "2026-09-24T20:53:45+00:00",
+   "promoted_at": "2026-09-24T20:53:45+00:00"
+  }
+ }
+}

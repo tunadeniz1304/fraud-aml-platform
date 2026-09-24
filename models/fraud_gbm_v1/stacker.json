@@ -1,0 +1,14 @@
+{
+ "inputs": [
+  "rule",
+  "ml",
+  "anomaly"
+ ],
+ "transform": "logit",
+ "coef": [
+  0.3,
+  1.6273499528221458,
+  0.05
+ ],
+ "intercept": 3.471349306223874
+}
