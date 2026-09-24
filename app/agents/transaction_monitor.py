@@ -21,6 +21,11 @@ from app.monitoring import metrics
 logger = logging.getLogger("fraud.monitor")
 
 
+def _key(tx: dict[str, Any]) -> str | None:
+    tx_id = tx.get("transaction_id")
+    return str(tx_id) if tx_id else None
+
+
 class TransactionMonitor:
     """First stage of the pipeline: ingest + basic checks."""
 
@@ -75,7 +80,7 @@ class TransactionMonitor:
                 tx.get("transaction_id"),
                 problems,
             )
-            await self.bus.publish(self.REJECTED, monitored)
+            await self.bus.publish(self.REJECTED, monitored, key=_key(tx))
             return
         self.monitored.append(monitored)
         logger.info(
@@ -85,4 +90,4 @@ class TransactionMonitor:
             tx.get("amount"),
             tx.get("currency", ""),
         )
-        await self.bus.publish(self.MONITORED, monitored)
+        await self.bus.publish(self.MONITORED, monitored, key=_key(tx))

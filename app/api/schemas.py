@@ -20,7 +20,27 @@ _CHARS = (
     "channel",
     "currency",
     "country",
+    "beneficiary_iban",
+    "beneficiary_name",
 )
+
+
+class SessionIn(BaseModel):
+    """Optional device/session/behavioural-biometrics block (P1.4, simulated SDK)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    device_fingerprint: str | None = Field(default=None, max_length=128)
+    is_emulator: bool = False
+    is_rooted: bool = False
+    remote_access_tool: bool = False
+    active_call: bool = False
+    ip_asn: int | None = Field(default=None, ge=0, le=4_294_967_295)
+    is_vpn_or_tor: bool | None = None
+    typing_cadence_ms: float | None = Field(default=None, ge=0, le=5_000)
+    paste_used: bool = False
+    session_duration_s: float | None = Field(default=None, ge=0, le=86_400)
+    login_to_transfer_s: float | None = Field(default=None, ge=0, le=86_400)
 
 
 class TransactionIn(BaseModel):
@@ -40,6 +60,11 @@ class TransactionIn(BaseModel):
     channel: str = Field(default="web", pattern=r"^(mobile|web|atm)$")
     country: str = Field(default="", min_length=2, max_length=2)
     purpose: str = Field(default="", max_length=160)
+    beneficiary_iban: str = Field(
+        default="", max_length=34, pattern=r"^([A-Z]{2}\d{2}[A-Z0-9]{10,30})?$"
+    )
+    beneficiary_name: str = Field(default="", max_length=160)
+    session: SessionIn | None = None
 
     @field_validator("currency", "country")
     @classmethod
@@ -124,6 +149,9 @@ class AuditRowOut(BaseModel):
     risk_score: float
     decision: str
     reason: str
+    actor: str = "system"
+    event_type: str = "DECISION"
+    hash: str = ""
 
 
 class PipelineStatusOut(BaseModel):

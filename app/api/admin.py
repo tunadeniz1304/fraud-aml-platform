@@ -1,22 +1,27 @@
-"""Admin / case-management endpoints for the fraud dashboard.
+"""Admin endpoints: account overrides and compliance exports.
 
-Typical of real fraud-ops consoles: a human analyst can query account status,
-manually (un)block an account, and dump the audit log. All mutations write an
-audit_log row so every decision stays traceable (hesap_durumu + denetim logu
-requirement).
+Every mutation is written to the hash-chained audit log. Manual status changes
+are a human decision (``actor=<username>``); from F4 on, lifting a block goes
+through the maker-checker approval flow.
 """
 
 from __future__ import annotations
 
+import csv
+import io
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 
+from app.api.deps import require_pipeline
 from app.api.schemas import AccountOut, AuditRowOut
 from app.api.state import state
-from app.core.account_store import AccountNotFoundError
+from app.core.account_state import STATUSES
+from app.db import repository as repo
+from app.security.auth import Principal
 from app.security.deps import require_role
+from app.services.accounts import AccountNotFoundError
 
 logger = logging.getLogger("fraud.admin")
 
@@ -24,66 +29,75 @@ router = APIRouter(
     prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_role("admin"))]
 )
 
+AUDIT_COLS = (
+    "id",
+    "created_at",
+    "transaction_id",
+    "customer_id",
+    "risk_score",
+    "decision",
+    "reason",
+    "actor",
+    "event_type",
+    "hash",
+)
+
 
 @router.get("/accounts", response_model=list[AccountOut])
 async def list_accounts() -> list[AccountOut]:
-    if state.store is None:
+    if state.pipeline is None:
         return []
-    accounts = state.store.list_accounts()
-    return [AccountOut(**a) for a in accounts]
+    return [AccountOut(**a) for a in await state.pipeline.accounts.list_accounts()]
 
 
 @router.post("/accounts/{customer_id}/status", response_model=AccountOut)
-async def set_status(customer_id: str, status_: str = Query(..., alias="status")) -> AccountOut:
-    """Manually set an account's hesap_durumu (AKTIF|BLOKE|INCELENIYOR).
-
-    Every change is appended to the audit log for traceability.
-    """
-    if state.store is None:
-        raise HTTPException(status_code=503, detail="Depo bağlı değil")
+async def set_status(
+    customer_id: str,
+    status_: str = Query(..., alias="status"),
+    principal: Principal = Depends(require_role("admin")),
+) -> AccountOut:
+    """Manually set an account's hesap_durumu (AKTIF|BLOKE|INCELENIYOR)."""
+    pipeline = require_pipeline()
     normalized = status_.strip().upper()
-    if normalized not in ("AKTIF", "BLOKE", "INCELENIYOR"):
-        raise HTTPException(
-            status_code=422,
-            detail="Geçerli: AKTIF, BLOKE, INCELENIYOR",
-        )
-    account = state.store.get_account(customer_id)
-    if account is None:
-        raise HTTPException(status_code=404, detail="Müşteri bulunamadı")
-    previous = account["hesap_durumu"]
+    if normalized not in STATUSES:
+        raise HTTPException(status_code=422, detail="Geçerli: AKTIF, BLOKE, INCELENIYOR")
     try:
-        state.store.set_hesap_durumu(customer_id, normalized)
+        await pipeline.accounts.set_by_analyst(
+            customer_id,
+            normalized,
+            actor=principal.username,
+            reason="Yönetici tarafından manuel durum değişikliği",
+        )
     except AccountNotFoundError:
         raise HTTPException(status_code=404, detail="Müşteri bulunamadı") from None
-    state.store.append_audit(
-        transaction_id="MANUAL",
-        customer_id=customer_id,
-        risk_score=0.0,
-        decision=f"STATUS:{previous}->{normalized}",
-        reason="Operatör tarafından manuel durum değişikliği",
-    )
-    return AccountOut(**state.store.get_account(customer_id))  # type: ignore[arg-type]
+    account = await pipeline.accounts.get_account(customer_id)
+    return AccountOut(**account)  # type: ignore[arg-type]
 
 
 @router.get("/audit", response_model=list[AuditRowOut])
 async def audit(limit: int = Query(50, ge=1, le=1000)) -> list[AuditRowOut]:
-    if state.store is None:
+    if state.pipeline is None:
         return []
-    return [AuditRowOut(**r) for r in state.store.list_audit(limit=limit)]
+    async with state.pipeline.db.session() as session:
+        return [AuditRowOut(**r) for r in await repo.list_audit(session, limit)]
+
+
+def audit_csv(rows: list[dict[str, object]]) -> str:
+    """RFC-4180 CSV (all fields quoted)."""
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, quoting=csv.QUOTE_ALL, lineterminator="\n")
+    writer.writerow(AUDIT_COLS)
+    for r in rows:
+        writer.writerow([r.get(k, "") for k in AUDIT_COLS])
+    return buffer.getvalue()
 
 
 @router.get("/audit/export", response_class=PlainTextResponse)
 async def export_audit() -> str:
-    """RFC-4180 CSV dump of the audit log (compliance export)."""
-    cols = ("id", "created_at", "transaction_id", "customer_id", "risk_score", "decision", "reason")
-
-    def row(values) -> str:
-        return ",".join(f'"{str(v).replace(chr(34), chr(34) * 2)}"' for v in values)
-
-    if state.store is None:
-        return row(cols) + "\n"
-    rows = state.store.list_audit(limit=5000)
-    lines = [row(cols)]
-    for r in rows:
-        lines.append(row(tuple(r[k] for k in cols)))
-    return "\n".join(lines) + "\n"
+    """Compliance export of the audit log."""
+    if state.pipeline is None:
+        return audit_csv([])
+    await state.pipeline.writer.flush()
+    async with state.pipeline.db.session() as session:
+        rows = await repo.list_audit(session, limit=50_000)
+    return audit_csv(rows)

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 from pydantic import ValidationError
 
@@ -30,7 +28,7 @@ class TestStreamSimulator:
 
 
 class TestSanctionsIntegration:
-    def test_analyst_flags_sanctioned_customer(self, bus, store, tmp_path):
+    async def test_analyst_flags_sanctioned_customer(self, bus, store, tmp_path):
         import json
 
         from app.agents.action_agent import ActionAgent
@@ -58,7 +56,7 @@ class TestSanctionsIntegration:
         )
 
         analyst = ContextAnalyst(bus, customers_path=cust_file)
-        ActionAgent(bus, store=store)
+        ActionAgent(bus, accounts=store.accounts, writer=store.writer)
         TransactionMonitor(bus)
         tx = {
             "transaction_id": "TX-PEP-1",
@@ -71,7 +69,7 @@ class TestSanctionsIntegration:
             "country": "IR",
             "purpose": "Trade",
         }
-        asyncio.run(bus.publish(TransactionMonitor.CREATED, tx))
+        await bus.publish(TransactionMonitor.CREATED, tx)
         analyzed = analyst.analyzed[-1]
         assert analyzed["sanctions_hit"] is True
         assert analyzed["sanctions"][0]["id"] == "PEP-0001"
@@ -268,47 +266,39 @@ class TestRiskExplain:
         assert summ["n"] == 3
         assert "histogram" in summ
 
-    def test_csv_export_contains_header_and_rows(self, store):
+    async def test_csv_export_contains_header_and_rows(self, store):
+        from app.api.admin import audit_csv
+        from app.db.audit import AuditEntry
 
-        store.append_audit(
-            transaction_id="TX-1",
-            customer_id="C1",
-            risk_score=0.9,
-            decision="BLOKE",
-            reason="test",
+        await store.writer.record_audit(
+            AuditEntry(
+                event_type="DECISION",
+                transaction_id="TX-1",
+                customer_id="C1",
+                risk_score=0.9,
+                decision="BLOKE",
+                reason='iç "tırnak", virgül',
+            )
         )
-        from app.api.admin import export_audit
-        from app.api.state import state
-
-        state.store = store
-        try:
-            text = asyncio.run(export_audit())
-        finally:
-            state.store = None
-        assert '"id","created_at"' in text
-        assert '"BLOKE"' in text
-        assert '"TX-1"' in text
+        text = audit_csv(await store.audit())
+        assert text.startswith('"id","created_at"')
+        assert '"BLOKE"' in text and '"TX-1"' in text
+        assert '"iç ""tırnak"", virgül"' in text  # RFC-4180 quoting
 
 
 class TestAdminStore:
-    def test_status_transition_and_audit(self, store):
-        # Manual operator unblock: BLOKE -> AKTIF, with audit row.
-        store.set_hesap_durumu("CUST-0001", "BLOKE")
-        assert store.get_account("CUST-0001")["hesap_durumu"] == "BLOKE"
-        store.set_hesap_durumu("CUST-0001", "AKTIF")
-        assert store.get_account("CUST-0001")["hesap_durumu"] == "AKTIF"
-        store.append_audit(
-            transaction_id="MANUAL",
-            customer_id="CUST-0001",
-            risk_score=0.0,
-            decision="STATUS:BLOKE->AKTIF",
-            reason="Operatör manuel kaldırma",
-        )
-        audit = store.list_audit()
-        assert audit[0]["decision"] == "STATUS:BLOKE->AKTIF"
+    async def test_status_transition_and_audit(self, store):
+        # Manual analyst unblock: BLOKE -> AKTIF, each change audited.
+        await store.set_status("CUST-0001", "BLOKE")
+        assert await store.db_status("CUST-0001") == "BLOKE"
+        await store.set_status("CUST-0001", "AKTIF")
+        assert await store.db_status("CUST-0001") == "AKTIF"
+        audit = await store.audit("ACCOUNT_STATUS")
+        assert audit[0]["decision"] == "BLOKE->AKTIF"
+        assert audit[0]["actor"] == "test"
 
-    def test_invalid_status_rejected(self, store):
+    async def test_invalid_status_rejected(self, store):
         import pytest
 
         with pytest.raises(ValueError):
-            store.set_hesap_durumu("CUST-0001", "BOGUS")
+            await store.set_status("CUST-0001", "BOGUS")

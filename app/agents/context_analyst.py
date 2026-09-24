@@ -1,37 +1,35 @@
 """ContextAnalyst agent.
 
-Consumes monitored transfers, looks up the customer's behavioural context and
-scores each transfer 0..1. Guarantees of this stage:
+Consumes monitored transfers, builds point-in-time features from the
+streaming feature store and scores each transfer 0..1. Guarantees:
 
-* the synchronous path never calls an LLM (bug #9) — narratives are produced
-  asynchronously on demand (:mod:`app.llm.tasks`);
+* the synchronous path never calls an LLM (bug #9);
 * amounts are normalised to TRY before any comparison (bug #12);
-* sanctions, country, IP, channel and purpose signals feed the score
-  (bug #6); a sanctions hit forces human review regardless of the score;
+* sanctions, country, IP, channel and purpose signals feed the score and a
+  sanctions hit forces human review (bug #6);
 * transfers of an already ``BLOKE`` account are stopped *before* scoring
-  (bug #5);
-* an unknown customer is flagged for review instead of a silent ``1.0``
-  (bug #8);
-* all per-customer buffers are bounded (bug #11).
+  (bug #5); unknown customers go to review instead of a silent ``1.0`` (bug #8);
+* all buffers are bounded (bug #11) — windows live in the feature store;
+* the adaptive profile only learns from transfers that pass (poisoning
+  protection).
 """
 
 from __future__ import annotations
 
-import json
 import logging
-from collections import OrderedDict, deque
+from collections import deque
 from collections.abc import Callable
-from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from app.config import get_settings
 from app.core.aggregates import MicroclusterDetector, OnlineStats
+from app.core.decisions import legacy_decision
 from app.core.event_bus import EventBus
-from app.core.fx import to_try
 from app.core.mule_graph import DeviceMuleGraph, mule_explain
 from app.core.risk_engine import _country_score, compute_risk, explain_factors
 from app.core.sanctions import SanctionScreener
+from app.features.extractor import CustomerDirectory, FeatureExtractor
 
 logger = logging.getLogger("fraud.analyst")
 
@@ -50,16 +48,20 @@ class ContextAnalyst:
         customers_path: Path | None = None,
         *,
         account_status: StatusLookup | None = None,
+        extractor: FeatureExtractor | None = None,
         buffer: int | None = None,
     ) -> None:
         settings = get_settings()
         self.bus = bus
-        self._records = self._load_records(customers_path or settings.resolved_customers_path)
-        self.customers = {r["customer_id"]: r for r in self._records}
-        self._peer_cache = {
-            r["customer_id"]: self._peer_avg(self._records, r) for r in self._records
-        }
-        self._recent: OrderedDict[str, deque[datetime]] = OrderedDict()
+        if extractor is None:
+            directory = CustomerDirectory.from_file(
+                customers_path or settings.resolved_customers_path
+            )
+            extractor = FeatureExtractor(customers=directory)
+        self.extractor = extractor
+        self.directory = extractor.customers
+        self.customers = {r["customer_id"]: r for r in self.directory.records()}
+        self._peer_cache = self._peer_averages(list(self.customers.values()))
         self.analyzed: deque[dict[str, Any]] = deque(maxlen=buffer or settings.analyzed_buffer)
         self.microcluster = MicroclusterDetector()
         self.mule_graph = DeviceMuleGraph()
@@ -69,12 +71,6 @@ class ContextAnalyst:
         self.bus.subscribe(self.MONITORED, self._on_monitored)
 
     # --- helpers -------------------------------------------------------------
-    @staticmethod
-    def _load_records(path: Path) -> list[dict[str, Any]]:
-        with path.open("r", encoding="utf-8") as fh:
-            records = json.load(fh)
-        return records if isinstance(records, list) else [records]
-
     @staticmethod
     def _peer_avg(records: list[dict[str, Any]], record: dict[str, Any]) -> float:
         """Average amount of other customers from the same home city (peer group)."""
@@ -86,23 +82,20 @@ class ContextAnalyst:
         ]
         return float(sum(peers) / len(peers)) if peers else float(record["avg_amount"])
 
-    def _velocity_last_hour(self, customer_id: str, ts: datetime) -> int:
-        """Count + record the customer's transfers in the sliding window (bounded)."""
-        settings = get_settings()
-        window = self._recent.get(customer_id)
-        if window is None:
-            window = deque()
-            self._recent[customer_id] = window
-        else:
-            self._recent.move_to_end(customer_id)
-        cutoff = ts - timedelta(seconds=settings.recent_window_seconds)
-        while window and window[0] < cutoff:
-            window.popleft()
-        count = sum(1 for t in window if t >= cutoff)
-        window.append(ts)
-        while len(self._recent) > settings.max_tracked_customers:
-            self._recent.popitem(last=False)
-        return count
+    @classmethod
+    def _peer_averages(cls, records: list[dict[str, Any]]) -> dict[str, float]:
+        by_city: dict[str, list[tuple[str, float]]] = {}
+        for r in records:
+            by_city.setdefault(r.get("home_city", ""), []).append(
+                (r["customer_id"], float(r.get("avg_amount", 0)))
+            )
+        out: dict[str, float] = {}
+        for members in by_city.values():
+            total = sum(a for _, a in members)
+            for cid, own in members:
+                peers = len(members) - 1
+                out[cid] = (total - own) / peers if peers else own
+        return out
 
     def _screen(self, profile: dict[str, Any], tx: dict[str, Any]) -> list[dict[str, Any]]:
         """AML screening of customer and beneficiary names against the list."""
@@ -122,7 +115,8 @@ class ContextAnalyst:
     async def _on_monitored(self, tx: dict[str, Any]) -> None:
         settings = get_settings()
         customer_id = tx["customer_id"]
-        amount_try = float(to_try(tx["amount"], tx.get("currency", "TRY")))
+        extraction = await self.extractor.extract(tx)
+        amount_try = extraction.tx.amount_try
 
         status = self.account_status(customer_id) if self.account_status else None
         if status == "BLOKE":
@@ -165,9 +159,9 @@ class ContextAnalyst:
             )
             return
 
-        ts = datetime.fromisoformat(tx["ts"])
-        velocity = self._velocity_last_hour(customer_id, ts)
-        ts_ms = ts.timestamp() * 1000
+        features = extraction.features
+        ts = extraction.tx.ts
+        ts_ms = extraction.tx.epoch * 1000
         micro = self.microcluster.update(tx, ts_ms)
         mule_scores = self.mule_graph.update(tx, ts_ms)
         mule = min(
@@ -176,23 +170,22 @@ class ContextAnalyst:
             + 0.3 * mule_scores["shared_beneficiary"]
             + 0.2 * mule_scores["fanout"],
         )
-        avg_try = float(to_try(profile["avg_amount"], profile.get("currency", "TRY")))
-        known_channels = set(profile.get("known_channels") or [])
+        static = extraction.context.customer
         factors = compute_risk(
             amount=amount_try,
-            avg_amount=avg_try,
+            avg_amount=static.avg_amount_try,
             device_id=tx["device_id"],
-            known_device_ids=set(profile["known_device_ids"]),
+            known_device_ids=set(static.known_devices),
             location=tx["location"],
-            known_locations=set(profile["known_locations"]),
+            known_locations=set(static.known_locations),
             hour=ts.hour,
-            typical_hours=set(profile["typical_hours"]),
-            events_last_hour=velocity,
+            typical_hours=set(static.typical_hours),
+            events_last_hour=int(features["cnt_1h"]),
             country=tx.get("country", ""),
             purpose=tx.get("purpose", ""),
             ip_address=tx.get("ip_address"),
             channel=tx.get("channel"),
-            known_channels=known_channels or None,
+            known_channels=set(static.known_channels) or None,
         )
         base = round(factors.score, 4)
         final = round(
@@ -200,7 +193,9 @@ class ContextAnalyst:
         )
         self.stats.update(final)
         sanction_hits = self._screen(profile, tx)
-        peer_avg = self._peer_cache.get(customer_id) or avg_try
+        peer_avg = self._peer_cache.get(customer_id) or static.avg_amount_try
+        decision = legacy_decision(final, force_review=bool(sanction_hits))
+        await self.extractor.commit(extraction, learn_profile=decision == "GECTI")
         analyzed = {
             **tx,
             "amount_try": amount_try,
@@ -218,6 +213,7 @@ class ContextAnalyst:
             "sanctions": sanction_hits,
             "sanctions_hit": bool(sanction_hits),
             "force_review": bool(sanction_hits),
+            "features": features,
             "scored": True,
         }
         logger.info(
@@ -231,4 +227,4 @@ class ContextAnalyst:
 
     async def _publish(self, analyzed: dict[str, Any]) -> None:
         self.analyzed.append(analyzed)
-        await self.bus.publish(self.ANALYZED, analyzed)
+        await self.bus.publish(self.ANALYZED, analyzed, key=str(analyzed["transaction_id"]))

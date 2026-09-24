@@ -59,6 +59,7 @@ class SanctionScreener:
         """``path`` verilmemişse varsayılan ``data/sanctions.json`` kullanılır."""
         self.path: Path = Path(path) if path else DEFAULT_SANCTIONS_PATH
         self._records: list[dict] = []
+        self._index: list[tuple[dict, list[frozenset[str]]]] = []
 
     def load(self) -> SanctionScreener:
         """JSON dosyasını okuyup kayıtları yükler; kendisini döndürür.
@@ -68,6 +69,17 @@ class SanctionScreener:
         """
         with self.path.open("r", encoding="utf-8") as fh:
             self._records = json.load(fh)
+        # Normalise every name/alias once (screening runs on the hot path).
+        self._index = [
+            (
+                record,
+                [
+                    frozenset(_normalise(n).split())
+                    for n in [record["name"], *record.get("aliases", [])]
+                ],
+            )
+            for record in self._records
+        ]
         return self
 
     def _matches(self, query: str, target: str) -> bool:
@@ -88,11 +100,13 @@ class SanctionScreener:
         """``name`` ile eşleşen kayıtların listesini dosya sırasıyla döndürür."""
         if not name:
             return []
+        query = _tokens(name)
+        if not query:
+            return []
         return [
             record
-            for record in self._records
-            if self._matches(name, record["name"])
-            or any(self._matches(name, alias) for alias in record.get("aliases", []))
+            for record, token_sets in self._index
+            if any(query.issubset(tokens) for tokens in token_sets)
         ]
 
     def name_matches(self, name: str | None) -> bool:

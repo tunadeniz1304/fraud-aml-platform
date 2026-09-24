@@ -8,7 +8,6 @@ import logging
 import shutil
 import subprocess
 import sys
-import threading
 import time
 
 import httpx
@@ -26,7 +25,6 @@ from app.api.frontend import render
 from app.api.state import state
 from app.config import get_settings
 from app.core.account_state import next_status
-from app.core.account_store import AccountNotFoundError, AccountStore
 from app.core.aggregates import MicroclusterDetector
 from app.core.event_bus import EventBus
 from app.llm.backends import OpenAICompatibleBackend
@@ -47,10 +45,14 @@ CLEAN_TX = {
 }
 
 
-def wire(bus: EventBus, store: AccountStore | None = None, **analyst_kw):
+def wire(bus: EventBus, store=None, **analyst_kw):
     monitor = TransactionMonitor(bus)
     analyst = ContextAnalyst(bus, account_status=store.get_status if store else None, **analyst_kw)
-    action = ActionAgent(bus, store=store)
+    action = ActionAgent(
+        bus,
+        accounts=store.accounts if store else None,
+        writer=store.writer if store else None,
+    )
     return monitor, analyst, action
 
 
@@ -111,20 +113,21 @@ class TestBug04MonotonicStateMachine:
         assert next_status("BLOKE", "AKTIF", actor="analyst") == "AKTIF"
 
     async def test_warning_does_not_downgrade_blocked_account(self, bus, store):
-        store.set_hesap_durumu("CUST-0001", "BLOKE")
-        action = ActionAgent(bus, store=store)
+        await store.set_status("CUST-0001", "BLOKE")
+        action = ActionAgent(bus, accounts=store.accounts, writer=store.writer)
         await bus.publish(
             ActionAgent.ANALYZED,
             {"transaction_id": "TX-W", "customer_id": "CUST-0001", "risk_score": 0.6},
         )
         assert len(action.warned) == 1
         assert store.get_status("CUST-0001") == "BLOKE"
+        assert await store.db_status("CUST-0001") == "BLOKE"
 
 
 # --- #5 -------------------------------------------------------------------------
 class TestBug05BlockedAccountStoppedBeforeScoring:
     async def test_blocked_account_not_scored(self, bus, store):
-        store.set_hesap_durumu("CUST-0001", "BLOKE")
+        await store.set_status("CUST-0001", "BLOKE")
         _, analyst, action = wire(bus, store)
         await bus.publish(TransactionMonitor.CREATED, dict(CLEAN_TX))
         analyzed = analyst.analyzed[-1]
@@ -175,6 +178,7 @@ class TestBug06AllSignalsReachTheScore:
         assert analyst.analyzed[-1]["sanctions_hit"] is True
         assert action.warned and "yaptırım" in action.warned[-1]["reason"]
         assert store.get_status("CUST-0001") == "INCELENIYOR"
+        assert await store.db_status("CUST-0001") == "INCELENIYOR"
 
     def test_dead_settings_removed(self):
         fields = set(config.Settings.model_fields)
@@ -188,10 +192,12 @@ class TestBug07MalformedNotScored:
         rejected: list[dict] = []
         bus.subscribe(TransactionMonitor.REJECTED, rejected.append)
         await bus.publish(TransactionMonitor.CREATED, {**CLEAN_TX, "amount": -5})
-        await bus.publish(TransactionMonitor.CREATED, {**CLEAN_TX, "currency": "XYZ"})
+        await bus.publish(
+            TransactionMonitor.CREATED, {**CLEAN_TX, "transaction_id": "TX-CCY", "currency": "XYZ"}
+        )
         assert len(rejected) == 2 and not analyst.analyzed
         assert not (action.blocked or action.warned or action.passed)
-        assert store.list_audit() == []
+        assert await store.audit() == []
 
 
 # --- #8 -------------------------------------------------------------------------
@@ -205,11 +211,15 @@ class TestBug08UnknownCustomer:
         assert analyzed["risk_score"] == get_settings().unknown_customer_risk < 1.0
         assert action.warned and not action.blocked
         assert "hesap kaydı yok" in caplog.text
-        assert store.get_account("CUST-9999") is None
+        assert await store.get_account("CUST-9999") is None
 
-    def test_update_of_missing_account_raises(self, store):
+    async def test_update_of_missing_account_raises(self, store):
+        from app.services.accounts import AccountNotFoundError
+
         with pytest.raises(AccountNotFoundError):
-            store.set_hesap_durumu("CUST-9999", "BLOKE")
+            await store.accounts.escalate("CUST-9999", "BLOKE", reason="x")
+        with pytest.raises(AccountNotFoundError):
+            await store.set_status("CUST-9999", "BLOKE")
 
 
 # --- #9 -------------------------------------------------------------------------
@@ -299,16 +309,27 @@ class TestBug10AuthHardening:
 
 # --- #11 ------------------------------------------------------------------------
 class TestBug11BoundedMemory:
-    async def test_buffers_are_bounded(self, bus, monkeypatch):
-        monkeypatch.setattr(get_settings(), "max_tracked_customers", 3)
-        _, analyst, _ = wire(bus, buffer=50)
+    async def test_buffers_are_bounded(self, bus):
+        from app.features.extractor import CustomerDirectory, FeatureExtractor
+        from app.features.store import MemoryFeatureStore
+
+        directory = CustomerDirectory.from_file(get_settings().resolved_customers_path)
+        store = MemoryFeatureStore(max_entities=3)
+        _, analyst, _ = wire(bus, buffer=50, extractor=FeatureExtractor(store, directory))
         for i in range(120):
             await bus.publish(
                 TransactionMonitor.CREATED,
-                {**CLEAN_TX, "transaction_id": f"TX-{i}", "beneficiary_id": f"B-{i}"},
+                {
+                    **CLEAN_TX,
+                    "transaction_id": f"TX-{i}",
+                    "customer_id": f"CUST-000{1 + i % 5}",
+                    "beneficiary_id": f"B-{i}",
+                    "device_id": f"D-{i}",
+                },
             )
         assert len(analyst.analyzed) == 50
-        assert len(analyst._recent) <= 3
+        sizes = store.size()
+        assert sizes["customers"] <= 3 and sizes["devices"] <= 3 and sizes["payees"] <= 3
 
     def test_microcluster_edges_are_capped_and_swept(self):
         mc = MicroclusterDetector(window_seconds=10, max_edges=100, sweep_every=50)
@@ -393,28 +414,29 @@ class TestBug15ReportLockCsp:
         assert time.perf_counter() - started < 1.0
         assert len(report) == n and report[-1][5] == "geçti"
 
-    def test_sqlite_store_is_thread_safe(self, store):
-        errors: list[Exception] = []
+    async def test_concurrent_writers_keep_audit_chain_intact(self, store):
+        """Many concurrent producers + batching writer: no lost rows, chain valid."""
+        from app.db.audit import AuditEntry, verify_chain
 
-        def worker(k: int) -> None:
-            try:
-                for i in range(100):
-                    store.append_audit(
+        await store.writer.start()
+
+        async def producer(k: int) -> None:
+            for i in range(100):
+                await store.writer.record_audit(
+                    AuditEntry(
+                        event_type="DECISION",
                         transaction_id=f"T{k}-{i}",
                         customer_id="CUST-0001",
                         risk_score=0.1,
                         decision="GECTI",
                     )
-            except Exception as exc:  # pragma: no cover - failure path
-                errors.append(exc)
+                )
 
-        threads = [threading.Thread(target=worker, args=(k,)) for k in range(8)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-        assert not errors
-        assert len(store.list_audit(limit=10_000)) == 800
+        await asyncio.gather(*(producer(k) for k in range(8)))
+        await store.set_status("CUST-0001", "BLOKE")  # synchronous writer path too
+        assert len(await store.audit("DECISION")) == 800
+        async with store.db.session() as session:
+            assert (await verify_chain(session)).ok
 
     def test_csp_has_no_unsafe_inline(self):
         r = TestClient(create_app()).get("/")

@@ -27,7 +27,15 @@ async def live() -> dict[str, str]:
 
 @router.get("/api/health/ready")
 async def ready() -> JSONResponse:
-    checks = {"pipeline": state.wired}
+    checks: dict[str, bool] = {"pipeline": state.wired}
+    pipeline = state.pipeline
+    if pipeline is not None:
+        checks["database"] = await pipeline.db.ping()
+        if pipeline.redis is not None:
+            try:
+                checks["redis"] = bool(await pipeline.redis.ping())
+            except Exception:  # noqa: BLE001 - readiness probe must not raise
+                checks["redis"] = False
     ok = all(checks.values())
     return JSONResponse(
         status_code=200 if ok else 503,

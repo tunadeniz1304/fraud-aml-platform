@@ -1,14 +1,14 @@
 """ActionAgent agent.
 
-Final stage of the pipeline. Maps each analyzed transfer to a decision and
-applies it through the account **state machine** (bug #4): system decisions
-may only escalate ``AKTIF → INCELENIYOR → BLOKE`` and never downgrade a blocked
-account. Every decision appends exactly one audit row.
+Final stage of the pipeline. Maps each analyzed transfer to a decision,
+applies it through the account **state machine** (bug #4: system decisions
+only escalate ``AKTIF → INCELENIYOR → BLOKE``) and persists the transaction,
+the decision and a hash-chained audit entry through the write-behind writer.
 
-* ``risk >= risk_threshold``            → ``BLOKE`` (account blocked, event emitted)
+* ``risk >= risk_threshold`` or an already blocked account → ``BLOKE``
 * ``risk >= warning_threshold`` or a forced review (sanctions hit, unknown
-  customer)                              → ``INCELENIYOR``
-* otherwise                              → ``GECTI``
+  customer)                                                 → ``INCELENIYOR``
+* otherwise                                                 → ``GECTI``
 """
 
 from __future__ import annotations
@@ -19,127 +19,155 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.config import get_settings
-from app.core.account_store import AccountNotFoundError, AccountStore
+from app.core.decisions import legacy_decision
 from app.core.event_bus import EventBus
+from app.db import repository as repo
+from app.db.audit import AuditEntry
+from app.db.writer import PersistenceWriter
+from app.monitoring import metrics
+from app.services.accounts import AccountNotFoundError, AccountService
 
 logger = logging.getLogger("fraud.action")
 
+_TARGET = {"BLOKE": "BLOKE", "INCELENIYOR": "INCELENIYOR"}
+
 
 class ActionAgent:
-    """Third stage: autonomous account actions + audit persistence."""
+    """Third stage: autonomous account actions + persistence."""
 
     ANALYZED = "transaction.analyzed"
     BLOCKED = "account.blocked"
     DECIDED = "decision.made"
 
     def __init__(
-        self, bus: EventBus, store: AccountStore | None = None, buffer: int | None = None
+        self,
+        bus: EventBus,
+        accounts: AccountService | None = None,
+        writer: PersistenceWriter | None = None,
+        buffer: int | None = None,
     ) -> None:
         size = buffer or get_settings().analyzed_buffer
         self.bus = bus
-        self.store = store
+        self.accounts = accounts
+        self.writer = writer
         self.blocked: deque[dict[str, Any]] = deque(maxlen=size)
         self.passed: deque[dict[str, Any]] = deque(maxlen=size)
         self.warned: deque[dict[str, Any]] = deque(maxlen=size)
         self.bus.subscribe(self.ANALYZED, self._on_analyzed)
 
+    @staticmethod
+    def _reason(tx: dict[str, Any], decision: str, risk: float) -> str:
+        settings = get_settings()
+        if decision == "BLOKE":
+            if tx.get("account_blocked"):
+                return "Hesap zaten BLOKE: işlem skorlanmadan reddedildi"
+            return f"Otonom bloke: risk skoru eşiği aştı ({risk:.2f} >= {settings.risk_threshold})"
+        if decision == "INCELENIYOR":
+            reasons = []
+            if tx.get("sanctions_hit"):
+                reasons.append("yaptırım/PEP listesi eşleşmesi (zorunlu inceleme)")
+            if tx.get("unknown_customer"):
+                reasons.append("bilinmeyen müşteri")
+            return "İnsan incelemesi gerekli: " + (", ".join(reasons) or "uyarı eşiği aşıldı")
+        return "Risk eşiği aşılmadı"
+
     async def _on_analyzed(self, tx: dict[str, Any]) -> None:
-        settings = get_settings()
         risk = float(tx.get("risk_score", 0.0))
-        if tx.get("account_blocked") or risk >= settings.risk_threshold:
-            decision = "BLOKE"
-            block = self._block(tx, risk)
-            await self.bus.publish(self.BLOCKED, block)
-        elif risk >= settings.warning_threshold or tx.get("force_review"):
-            decision = "INCELENIYOR"
-            self._warn(tx, risk)
-        else:
-            decision = "GECTI"
-            self._pass(tx, risk)
-        await self.bus.publish(self.DECIDED, {**tx, "decision_legacy": decision})
-
-    # --- persistence helpers ---------------------------------------------------
-    def _apply(self, tx: dict[str, Any], requested: str | None, decision: str, reason: str) -> None:
-        if self.store is None:
-            return
-        customer_id = tx["customer_id"]
-        if requested is not None:
-            try:
-                previous, new = self.store.escalate(customer_id, requested)
-                if previous != new:
-                    logger.warning("[Action] %s hesap durumu %s → %s", customer_id, previous, new)
-            except AccountNotFoundError:
-                logger.warning(
-                    "[Action] %s için hesap kaydı yok — durum güncellenmedi (işlem %s)",
-                    customer_id,
-                    tx["transaction_id"],
-                )
-            except Exception:
-                logger.exception("[Action] hesap güncelleme hatası")
-        try:
-            self.store.append_audit(
-                transaction_id=tx["transaction_id"],
-                customer_id=customer_id,
-                risk_score=float(tx.get("risk_score", 0.0)),
-                decision=decision,
-                reason=reason,
-            )
-        except Exception:  # persistence must not kill the pipeline
-            logger.exception("[Action] audit kaydı hatası")
-
-    # --- branches --------------------------------------------------------------
-    def _block(self, tx: dict[str, Any], risk: float) -> dict[str, Any]:
-        settings = get_settings()
-        if tx.get("account_blocked"):
-            reason = "Hesap zaten BLOKE: işlem skorlanmadan reddedildi"
-        else:
-            reason = (
-                f"Otonom bloke: risk skoru eşiği aştı ({risk:.2f} >= {settings.risk_threshold})"
-            )
-        block = {
+        decision = legacy_decision(
+            risk,
+            force_review=bool(tx.get("force_review")),
+            account_blocked=bool(tx.get("account_blocked")),
+        )
+        reason = self._reason(tx, decision, risk)
+        entry = {
             "transaction_id": tx["transaction_id"],
             "customer_id": tx["customer_id"],
             "risk_score": risk,
-            "blocked_at": datetime.now(UTC).isoformat(),
             "reason": reason,
         }
-        self.blocked.append(block)
-        logger.warning(
-            "[Action] OTONOM HESAP BLOKE — %s (müşteri %s, risk %.2f)",
-            tx["transaction_id"],
-            tx["customer_id"],
-            risk,
-        )
-        self._apply(tx, "BLOKE", "BLOKE", reason)
-        return block
+        if decision == "BLOKE":
+            block = {**entry, "blocked_at": datetime.now(UTC).isoformat()}
+            self.blocked.append(block)
+            logger.warning(
+                "[Action] OTONOM HESAP BLOKE — %s (müşteri %s, risk %.2f)",
+                tx["transaction_id"],
+                tx["customer_id"],
+                risk,
+            )
+        elif decision == "INCELENIYOR":
+            self.warned.append(entry)
+            logger.warning("[Action] %s incelemeye alındı (risk %.2f)", tx["transaction_id"], risk)
+        else:
+            self.passed.append(entry)
+            logger.info("[Action] %s normal akışta (risk %.2f)", tx["transaction_id"], risk)
+        metrics.DECISIONS.labels(decision=decision).inc()
+        metrics.RISK_SCORE.observe(risk)
 
-    def _warn(self, tx: dict[str, Any], risk: float) -> None:
-        reasons = []
-        if tx.get("sanctions_hit"):
-            reasons.append("yaptırım/PEP listesi eşleşmesi (zorunlu inceleme)")
-        if tx.get("unknown_customer"):
-            reasons.append("bilinmeyen müşteri")
-        if not reasons:
-            reasons.append("uyarı eşiği aşıldı")
-        reason = "İnsan incelemesi gerekli: " + ", ".join(reasons)
-        self.warned.append(
-            {
-                "transaction_id": tx["transaction_id"],
-                "customer_id": tx["customer_id"],
-                "risk_score": risk,
-                "reason": reason,
-            }
+        await self._apply_status(tx, decision, reason, risk)
+        await self._persist(tx, decision, reason, risk)
+        if decision == "BLOKE":
+            await self.bus.publish(self.BLOCKED, self.blocked[-1], key=str(tx["transaction_id"]))
+        await self.bus.publish(
+            self.DECIDED,
+            {**tx, "decision_legacy": decision, "decision_reason": reason},
+            key=str(tx["transaction_id"]),
         )
-        logger.warning("[Action] %s incelemeye alındı (risk %.2f)", tx["transaction_id"], risk)
-        self._apply(tx, "INCELENIYOR", "INCELENIYOR", reason)
 
-    def _pass(self, tx: dict[str, Any], risk: float) -> None:
-        self.passed.append(
-            {
-                "transaction_id": tx["transaction_id"],
-                "customer_id": tx["customer_id"],
-                "risk_score": risk,
-            }
-        )
-        logger.info("[Action] %s normal akışta (risk %.2f)", tx["transaction_id"], risk)
-        self._apply(tx, None, "GECTI", "Risk eşiği aşılmadı")
+    async def _apply_status(
+        self, tx: dict[str, Any], decision: str, reason: str, risk: float
+    ) -> None:
+        target = _TARGET.get(decision)
+        if self.accounts is None or target is None:
+            return
+        try:
+            await self.accounts.escalate(
+                tx["customer_id"],
+                target,
+                reason=reason,
+                transaction_id=tx["transaction_id"],
+                risk_score=risk,
+            )
+        except AccountNotFoundError:
+            logger.warning(
+                "[Action] %s için hesap kaydı yok — durum güncellenmedi (işlem %s)",
+                tx["customer_id"],
+                tx["transaction_id"],
+            )
+
+    async def _persist(self, tx: dict[str, Any], decision: str, reason: str, risk: float) -> None:
+        if self.writer is None:
+            return
+        try:
+            await self.writer.record_decision(
+                repo.transaction_values(tx),
+                {
+                    "transaction_id": str(tx["transaction_id"]),
+                    "customer_id": str(tx["customer_id"]),
+                    "decision": decision,
+                    "risk_score": risk,
+                    "components": {
+                        "rule": tx.get("risk_score_rule"),
+                        "microcluster": tx.get("microcluster"),
+                        "mule": tx.get("mule_score"),
+                    },
+                    "reason_codes": [
+                        {"code": "LEGACY", "text": t} for t in tx.get("risk_explanation") or []
+                    ],
+                    "features": tx.get("features") or {},
+                    "rule_version": "v1",
+                    "model_version": "",
+                    "latency_ms": float(tx.get("latency_ms") or 0.0),
+                    "status": "FINAL",
+                },
+                AuditEntry(
+                    event_type="DECISION",
+                    transaction_id=str(tx["transaction_id"]),
+                    customer_id=str(tx["customer_id"]),
+                    entity_id=str(tx["transaction_id"]),
+                    risk_score=risk,
+                    decision=decision,
+                    reason=reason,
+                ),
+            )
+        except Exception:
+            logger.exception("[Action] kalıcılık hatası (%s)", tx["transaction_id"])

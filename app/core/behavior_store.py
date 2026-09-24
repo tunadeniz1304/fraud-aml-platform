@@ -171,11 +171,13 @@ class BehaviorStore:
                 path=str(self.vector_dir),
                 settings=chromadb.config.Settings(anonymized_telemetry=False),
             )
-            name = f"{COLLECTION_NAME}_{self.embedding}"
+            # Resolve the embedding first: an ONNX failure switches to "hash",
+            # and each embedding gets its own collection (no dimension clash).
+            embedding_fn = self._embedding_function()
             self._collection = client.get_or_create_collection(
-                name=name,
+                name=f"{COLLECTION_NAME}_{self.embedding}",
                 metadata={"hnsw:space": "cosine"},
-                embedding_function=self._embedding_function(),
+                embedding_function=embedding_fn,
             )
         except Exception as exc:  # pragma: no cover
             self._disabled = True

@@ -145,8 +145,12 @@ class TestIngestCredentials:
         with TestClient(create_app()) as c:
             r = c.post("/api/transactions", json=TX, headers=analyst_headers)
             assert r.status_code == 200
+            dup = c.post("/api/transactions", json=TX, headers=analyst_headers)
+            assert dup.status_code == 200  # idempotent: same id -> same decision
             bad = c.post(
-                "/api/transactions", json={**TX, "currency": "XYZ"}, headers=analyst_headers
+                "/api/transactions",
+                json={**TX, "transaction_id": "TX-BAD-CCY", "currency": "XYZ"},
+                headers=analyst_headers,
             )
             assert bad.status_code == 422
             assert "unsupported currency XYZ" in json.dumps(bad.json())
