@@ -118,6 +118,7 @@ class AnalyzedTransactionOut(BaseModel):
     force_review: bool = False
     unknown_customer: bool = False
     account_blocked: bool = False
+    duplicate: bool = False
 
 
 class BlockOut(BaseModel):

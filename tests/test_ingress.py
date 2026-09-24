@@ -88,3 +88,26 @@ async def test_worker_runs_jobs_and_stops(app_env, monkeypatch):
     ctx = await asyncio.wait_for(task, 10)
     assert ctx.last_results["audit_verify"]["ok"] is True
     assert ctx.last_results["audit_verify"]["checked"] >= 9
+
+
+async def test_persisted_duplicate_returns_stored_decision(app_env, monkeypatch):
+    """After a restart (in-memory results lost) a replayed id returns the DB decision."""
+    monkeypatch.setenv("STREAM_MODE", "off")
+    get_settings.cache_clear()
+    pipeline = await build_pipeline(get_settings())
+    await pipeline.start()
+    try:
+        first = await pipeline.ingest({**VALID, "transaction_id": "ING-DUP"})
+        assert first is not None and first["decision"] in ("ALLOW", "STEP_UP", "HOLD", "BLOCK")
+        await pipeline.writer.flush()
+        pipeline.results.clear()  # simulate a process restart
+        again = await pipeline.ingest({**VALID, "transaction_id": "ING-DUP"})
+        assert again is not None and again["persisted_only"] and again["duplicate"]
+        assert again["decision"] == first["decision"]
+        assert again["risk_score"] == pytest.approx(first["risk_score"])
+        from app.api.schemas import AnalyzedTransactionOut
+
+        assert AnalyzedTransactionOut(**again).duplicate is True
+        assert await pipeline.stored_result("NOPE") is None
+    finally:
+        await pipeline.stop()

@@ -40,7 +40,7 @@ from app.core.behavior_store import BehaviorStore
 from app.core.stream_simulator import TransactionStreamSimulator
 from app.db import repository as repo
 from app.db.database import Database
-from app.db.models import Decision
+from app.db.models import Decision, Transaction
 from app.db.writer import PersistenceWriter
 from app.features.extractor import CustomerDirectory, FeatureExtractor
 from app.features.store import FeatureStateStore, MemoryFeatureStore, RedisFeatureStore
@@ -49,6 +49,7 @@ from app.llm.service import LLMService
 from app.ml.registry import ModelRegistry
 from app.scoring import rule_store
 from app.scoring.engine import ScoringEngine
+from app.scoring.policy import LEGACY
 from app.scoring.rules import load_rule_file
 from app.services.accounts import AccountService
 
@@ -258,20 +259,55 @@ class Pipeline:
                 await self.redis.aclose()
 
     # --- ingest ---------------------------------------------------------------------------------
-    async def _already_decided(self, tx_id: str) -> bool:
+    async def stored_result(self, tx_id: str) -> dict[str, Any] | None:
+        """Decision of an already persisted transaction (restart-safe idempotency)."""
         async with self.db.session() as session:
-            row = await session.execute(
-                select(Decision.id).where(Decision.transaction_id == tx_id).limit(1)
-            )
-            return row.scalar_one_or_none() is not None
+            row = (
+                await session.execute(
+                    select(Transaction, Decision)
+                    .join(Decision, Decision.transaction_id == Transaction.id)
+                    .where(Transaction.id == tx_id)
+                    .limit(1)
+                )
+            ).first()
+        if row is None:
+            return None
+        tx, decision = row
+        return {
+            "transaction_id": tx.id,
+            "customer_id": tx.customer_id,
+            "ts": tx.ts,
+            "amount": float(tx.amount),
+            "currency": tx.currency,
+            "amount_try": float(tx.amount_try),
+            "device_id": tx.device_id,
+            "location": tx.location,
+            "channel": tx.channel,
+            "country": tx.country,
+            "purpose": tx.purpose,
+            "beneficiary_id": tx.beneficiary_id,
+            "risk_score": decision.risk_score,
+            "decision": decision.decision if decision.decision in LEGACY else None,
+            "decision_legacy": LEGACY.get(decision.decision, decision.decision),
+            "components": decision.components,
+            "reason_codes": decision.reason_codes,
+            "risk_explanation": [str(r.get("text", "")) for r in decision.reason_codes or []],
+            "rule_version": decision.rule_version,
+            "model_version": decision.model_version,
+            "latency_ms": decision.latency_ms,
+            "duplicate": True,
+            "persisted_only": True,
+        }
 
     async def ingest(self, tx: dict[str, Any]) -> dict[str, Any] | None:
         """Publish one transaction and return its decision (idempotent per id)."""
         tx_id = str(tx.get("transaction_id") or "")
         if tx_id and tx_id in self.results:
             return {**self.results[tx_id], "duplicate": True}
-        if tx_id and await self._already_decided(tx_id):
-            return {"transaction_id": tx_id, "duplicate": True, "persisted_only": True}
+        if tx_id:
+            stored = await self.stored_result(tx_id)
+            if stored is not None:
+                return stored
         await self.bus.publish(TransactionMonitor.CREATED, tx, key=tx_id or None)
         if self.bus.running:
             await self.bus.drain()
