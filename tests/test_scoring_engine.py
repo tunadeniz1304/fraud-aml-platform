@@ -105,7 +105,9 @@ class TestHybridScoring:
         assert engine.model is None and engine.policy.stacker is None
         result = await engine.score(ATO)
         assert result.components()["ml"] is None
-        assert result.risk_score == result.rules.score  # type: ignore[union-attr]
+        # rules-only stack; external signals (graph/APP/online) may still add risk
+        assert result.policy.stacked == result.rules.score  # type: ignore[union-attr]
+        assert result.risk_score >= result.policy.stacked
         custom = RuleSet.from_definitions(
             [RuleDef(id="R_ALL", name="all", when="amount_try > 0", score=0.9, action_hint="BLOCK")]
         )

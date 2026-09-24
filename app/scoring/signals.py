@@ -1,13 +1,20 @@
 """External signal hooks for the policy layer.
 
 An external signal is computed next to (not inside) the ML model and enters
-the risk as ``1 - Π(1 - w_i · s_i)`` with a configured weight. F3 ships the
-edge-burst (MIDAS-style microcluster) signal; the entity graph, APP scam
-engine and consortium deny-list plug in through the same protocol.
+the risk as ``1 - Π(1 - w_i · s_i)`` with a configured weight. Signals run in
+order and see the features produced so far (so the APP engine can use the
+graph's verdict on the beneficiary). A signal may expose values to the rule
+DSL (``SignalResult.features``, declared with ``register_external``) and may
+learn online from trusted (ALLOW) events via an optional ``learn`` method.
+
+Shipped signals: edge burst (below), entity graph (:mod:`app.graph.signal`),
+APP scam (:mod:`app.app_scam.engine`), online anomaly
+(:mod:`app.profile.online`).
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -28,7 +35,9 @@ class SignalResult:
 class ExternalSignal(Protocol):
     name: str
 
-    def evaluate(self, tx: dict[str, Any], extraction: Extraction) -> SignalResult: ...
+    def evaluate(
+        self, tx: dict[str, Any], extraction: Extraction, features: Mapping[str, float]
+    ) -> SignalResult: ...
 
 
 class BurstSignal:
@@ -39,7 +48,9 @@ class BurstSignal:
     def __init__(self, detector: MicroclusterDetector | None = None) -> None:
         self.detector = detector or MicroclusterDetector()
 
-    def evaluate(self, tx: dict[str, Any], extraction: Extraction) -> SignalResult:
+    def evaluate(
+        self, tx: dict[str, Any], extraction: Extraction, features: Mapping[str, float]
+    ) -> SignalResult:
         score = self.detector.update(tx, extraction.tx.epoch * 1000)
         reasons = []
         if score >= 1.0:

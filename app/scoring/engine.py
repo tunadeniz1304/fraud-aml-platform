@@ -23,7 +23,7 @@ import logging
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.config import get_settings
 from app.core.sanctions import SanctionScreener
@@ -33,6 +33,10 @@ from app.scoring.policy import PolicyDecision, PolicyEngine, PolicyInput
 from app.scoring.reasons import ReasonCode, ml_reasons, policy_reason, top_reasons
 from app.scoring.rules import RuleEvaluation, RuleSet, load_ruleset
 from app.scoring.signals import BurstSignal, ExternalSignal, SignalResult
+
+if TYPE_CHECKING:
+    from app.app_scam.cop import PayeeRegistry
+    from app.graph.entity_graph import EntityGraph
 
 logger = logging.getLogger("fraud.scoring")
 
@@ -108,9 +112,45 @@ class ScoreResult:
             "microcluster": burst.score if burst else 0.0,
             "mule_score": graph.score if graph else 0.0,
             "mule_signals": [r.text for r in graph.reasons] if graph else [],
+            "ring_id": graph.details.get("ring_id") if graph else None,
+            "graph": graph.details if graph else None,
+            "app": self.signals["app"].details if "app" in self.signals else None,
+            "app_warning": self.signals["app"].details.get("warning")
+            if "app" in self.signals and self.decision in ("HOLD", "STEP_UP")
+            else None,
             "high_risk_country": self.features.get("is_high_risk_country", 0.0) >= 1.0,
             **self.flags,
         }
+
+
+def build_signals(
+    customers: CustomerDirectory,
+) -> tuple[EntityGraph | None, PayeeRegistry, list[ExternalSignal]]:
+    """Default external signals: burst, entity graph, APP/CoP, online anomaly."""
+    from app.app_scam.cop import PayeeRegistry
+    from app.app_scam.engine import APPScamSignal
+    from app.graph.entity_graph import EntityGraph
+    from app.graph.signal import GraphSignal
+    from app.profile.online import OnlineAnomalySignal
+
+    settings = get_settings()
+    records = customers.records()
+    payees = PayeeRegistry.build(records, settings.resolved_payees_path)
+    signals: list[ExternalSignal] = [BurstSignal()]
+    graph = None
+    if settings.graph_enabled:
+        graph = EntityGraph()
+        for record in records:
+            graph.register_customer(
+                str(record["customer_id"]),
+                str(record.get("name", "")),
+                str(record.get("iban") or ""),
+            )
+        signals.append(GraphSignal(graph))
+    signals.append(APPScamSignal(payees))
+    if settings.online_anomaly_enabled:
+        signals.append(OnlineAnomalySignal())
+    return graph, payees, signals
 
 
 class ScoringEngine:
@@ -124,8 +164,12 @@ class ScoringEngine:
         model: ModelBundle | None = None,
         challenger: ModelBundle | None = None,
         signals: Sequence[ExternalSignal] = (),
+        graph: EntityGraph | None = None,
+        payees: PayeeRegistry | None = None,
     ) -> None:
         self.extractor = extractor
+        self.graph = graph
+        self.payees = payees
         self.ruleset = ruleset
         self.policy = policy
         self.sanctions = sanctions
@@ -159,6 +203,7 @@ class ScoringEngine:
                 model = challenger = None
         if model is None:
             logger.warning("[Scoring] champion model yok — kural + politika ile skorlanıyor")
+        graph, payees, default = build_signals(extractor.customers)
         return cls(
             extractor,
             ruleset=ruleset or load_ruleset(settings.resolved_rules_path),
@@ -166,7 +211,9 @@ class ScoringEngine:
             sanctions=SanctionScreener().load(),
             model=model,
             challenger=challenger,
-            signals=signals if signals is not None else [BurstSignal()],
+            signals=signals if signals is not None else default,
+            graph=graph,
+            payees=payees,
         )
 
     def set_ruleset(self, ruleset: RuleSet) -> None:
@@ -237,7 +284,7 @@ class ScoringEngine:
         features = dict(extraction.features)
         signal_results: dict[str, SignalResult] = {}
         for signal in self.signals:
-            sig = signal.evaluate(tx, extraction)
+            sig = signal.evaluate(tx, extraction, features)
             signal_results[signal.name] = sig
             features.update(sig.features)
         rules = self.ruleset.evaluate(features)
@@ -252,6 +299,7 @@ class ScoringEngine:
                 signals={name: r.score for name, r in signal_results.items()},
                 action_hint=rules.action_hint,
                 sanctions_hit=bool(sanctions),
+                cap=self._typology_cap(rules, signal_results, features),
             )
         )
         if (
@@ -274,7 +322,7 @@ class ScoringEngine:
             reasons=reasons,
         )
         if self.challenger is not None:
-            shadow = self.challenger.score(features)
+            shadow = self.challenger.score(features, explain=False)
             result.challenger_version = self.challenger.version
             result.challenger_score = round(
                 self.challenger.stacker.predict(
@@ -284,6 +332,28 @@ class ScoringEngine:
             )
         result.latency_ms = (time.perf_counter() - started) * 1000
         return result
+
+    @staticmethod
+    def _typology_cap(
+        rules: RuleEvaluation, signals: dict[str, SignalResult], features: dict[str, float]
+    ) -> str | None:
+        """APP victims and (possibly unwitting) mules: HOLD + warn, not BLOCK —
+        unless account-takeover evidence says the customer is not in control."""
+        settings = get_settings()
+        if any("takeover" in h.tags for h in rules.hits):
+            return None
+        app = signals.get("app")
+        graph = signals.get("graph")
+        app_pattern = app is not None and app.score >= settings.app_confirm_threshold
+        mule_pattern = graph is not None and (
+            graph.details.get("pass_through", 0.0) >= 0.7 or bool(graph.details.get("cycle"))
+        )
+        # AML (structuring/layering): hold + ŞİB, never a visible block — MASAK
+        # tipping-off prohibition (the suspect must not be alerted).
+        aml_pattern = (
+            any("aml" in h.tags for h in rules.hits) or features.get("near_threshold", 0.0) >= 1.0
+        )
+        return "HOLD" if app_pattern or mule_pattern or aml_pattern else None
 
     def _reasons(
         self,
@@ -311,4 +381,10 @@ class ScoringEngine:
         """Record the event; the profile learns only from ALLOW decisions."""
         if result.extraction is None or not result.scored:
             return
-        await self.extractor.commit(result.extraction, learn_profile=result.decision == "ALLOW")
+        trusted = result.decision == "ALLOW"
+        await self.extractor.commit(result.extraction, learn_profile=trusted)
+        if trusted:
+            for signal in self.signals:
+                learn = getattr(signal, "learn", None)
+                if learn is not None:
+                    learn(result.transaction_id)

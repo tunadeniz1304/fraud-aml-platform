@@ -19,7 +19,10 @@ Deterministic overrides (never learned, never LLM-driven):
 * account already ``BLOKE`` → BLOCK before scoring;
 * sanctions/PEP hit → at least HOLD + mandatory case;
 * unknown customer → HOLD (human review);
-* a fired rule's ``action_hint`` is a floor.
+* a fired rule's ``action_hint`` is a floor;
+* a typology cap: an APP scam victim or a (possibly unwitting) mule gets a
+  HOLD with cooling-off and a warning instead of a hard BLOCK, unless account
+  takeover signals are present.
 
 Thresholds come from configuration and can be changed at runtime (admin API).
 """
@@ -75,6 +78,8 @@ class PolicyInput:
     sanctions_hit: bool = False
     account_blocked: bool = False
     unknown_customer: bool = False
+    #: typology cap (e.g. APP / mule → at most HOLD: hold and warn, don't block)
+    cap: str | None = None
 
 
 @dataclass(frozen=True)
@@ -159,6 +164,9 @@ class PolicyEngine:
         if inp.action_hint and ACTIONS.index(inp.action_hint) > ACTIONS.index(decision):
             decision = inp.action_hint
             overrides.append("RULE_FLOOR")
+        if inp.cap and ACTIONS.index(decision) > ACTIONS.index(inp.cap):
+            decision = inp.cap
+            overrides.append("TYPOLOGY_CAP")
         case_required = decision in ("HOLD", "BLOCK")
         if inp.sanctions_hit:
             overrides.append("SANCTIONS_HIT")

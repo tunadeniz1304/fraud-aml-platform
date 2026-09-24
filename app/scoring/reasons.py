@@ -91,6 +91,9 @@ POLICY_CODES: dict[str, str] = {
     "UNKNOWN_CUSTOMER": "Bilinmeyen müşteri — insan incelemesine yönlendirildi",
     "RULE_FLOOR": "Kural aksiyon tabanı uygulandı",
     "ANOMALY_HIGH": "Davranış anomali skoru çok yüksek (IsolationForest/ECOD)",
+    "TYPOLOGY_CAP": (
+        "APP/mule/AML örüntüsü: sert bloke yerine bekletme (mağdur koruması, tipping-off yasağı)"
+    ),
 }
 
 
@@ -138,6 +141,11 @@ def policy_reason(code: str, weight: float = 1.0, text: str | None = None) -> Re
     return ReasonCode(code, text or POLICY_CODES.get(code, code), "policy", weight)
 
 
+#: at most this many reasons from one source (keeps rules/signals visible next
+#: to the model's own explanation)
+MAX_PER_SOURCE = {"ml": 2, "signal": 2}
+
+
 def top_reasons(
     *groups: Iterable[ReasonCode], k: int = 5, min_weight: float = 0.0
 ) -> list[ReasonCode]:
@@ -152,4 +160,23 @@ def top_reasons(
         (r for r in merged.values() if r.source == "policy" or r.weight >= min_weight),
         key=lambda r: (r.source != "policy", -r.weight),
     )
-    return ordered[:k]
+    # policy overrides first, then the strongest reason of every source (rule,
+    # model, signal) so the analyst sees *why* from each layer, then by weight
+    out = [r for r in ordered if r.source == "policy"]
+    leaders: dict[str, ReasonCode] = {}
+    for reason in ordered:
+        if reason.source != "policy":
+            leaders.setdefault(reason.source, reason)
+    out += sorted(leaders.values(), key=lambda r: -r.weight)
+    used: dict[str, int] = {}
+    for reason in out:
+        used[reason.source] = used.get(reason.source, 0) + 1
+    for reason in ordered:
+        if reason in out:
+            continue
+        limit = MAX_PER_SOURCE.get(reason.source)
+        if limit is not None and used.get(reason.source, 0) >= limit:
+            continue
+        used[reason.source] = used.get(reason.source, 0) + 1
+        out.append(reason)
+    return out[:k]

@@ -44,7 +44,7 @@ def _normalise(text: str) -> str:
     """
     decomposed = unicodedata.normalize("NFD", text.casefold())
     stripped = "".join(ch for ch in decomposed if unicodedata.category(ch) != "Mn")
-    return " ".join(stripped.split())
+    return " ".join(stripped.replace("ı", "i").split())  # Türkçe noktasız ı -> i
 
 
 _PUNCT = re.compile(r"[^\w\s]")

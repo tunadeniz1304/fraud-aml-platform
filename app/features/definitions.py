@@ -341,6 +341,25 @@ def register_external(name: str, description: str) -> None:
     EXTERNAL_FEATURES[name] = description
 
 
+# Signals computed outside the feature store (graph, APP/CoP, online model).
+# Declared here so the rule DSL can reference them; they are not ML inputs.
+for _name, _desc in (
+    ("graph_score", "Varlık grafı risk skoru (0-1)"),
+    ("graph_pass_through", "30 dk içinde gelen paranın aktarılma oranı (fan-in → fan-out)"),
+    ("graph_fan_in_30m", "Son 30 dakikada hesaba para gönderen farklı müşteri"),
+    ("graph_cycle", "Para döngüsü (katmanlama) tespit edildi"),
+    ("graph_fraud_distance", "Doğrulanmış fraud düğümüne mesafe (-1: yok)"),
+    ("graph_known_mule_payee", "Alıcı doğrulanmış fraud/mule ağında"),
+    ("app_score", "APP dolandırıcılığı skoru (0-1)"),
+    ("cop_no_match", "Alıcı adı IBAN sahibiyle eşleşmiyor (CoP)"),
+    ("cop_unknown", "Alıcı IBAN'ı CoP kaydında yok"),
+    ("payee_account_age_d", "Alıcı hesabın açılışından bu yana gün (-1: bilinmiyor)"),
+    ("online_anomaly", "Çevrimiçi (river HST) davranış anomali skoru"),
+    ("consortium_hit", "Konsorsiyum ortak kara listesinde eşleşme"),
+):
+    register_external(_name, _desc)
+
+
 def feature_names() -> list[str]:
     return [*FEATURES, *EXTERNAL_FEATURES]
 

@@ -140,13 +140,48 @@ class Settings(BaseSettings):
     policy_block: float = 0.85
     # Weights of external signals in risk = 1-(1-stack)·Π(1-w·s).
     policy_signal_weights: dict[str, float] = Field(
-        default_factory=lambda: {"graph": 0.20, "burst": 0.25, "app": 0.50, "consortium": 0.60}
+        default_factory=lambda: {
+            "graph": 0.60,
+            "burst": 0.25,
+            "app": 0.55,
+            "online": 0.15,
+            "consortium": 0.60,
+        }
     )
     hold_cooling_off_minutes: int = 30
     reason_top_k: int = 5
     # TreeSHAP (~2 ms) runs for non-ALLOW decisions and for risk >= this value.
     explain_min_risk: float = 0.2
     sanctions_fuzzy_threshold: float = 0.93
+
+    # --- Entity graph / APP scam / online profile (P1.1–P1.3) ---------------
+    payees_path: Path | None = Field(default=None, validation_alias="FRAUD_PAYEES_PATH")
+    graph_enabled: bool = True
+    ring_detect_interval_s: int = 120
+    batch_rebase_ts: bool = False
+    app_high_amount_ratio: float = 3.0
+    app_long_session_s: float = 900.0
+    app_young_payee_days: int = 90
+    app_confirm_threshold: float = 0.5
+    app_weights: dict[str, float] = Field(
+        default_factory=lambda: {
+            "new_payee_high": 0.30,
+            "first_large": 0.15,
+            "purpose": 0.45,
+            "active_call": 0.45,
+            "remote_access": 0.50,
+            "long_session": 0.15,
+            "vulnerable": 0.20,
+            "cop_no_match": 0.45,
+            "cop_close": 0.10,
+            "young_payee": 0.20,
+            "mule_payee": 0.50,
+            "known_payee_damping": 0.3,
+        }
+    )
+    online_anomaly_enabled: bool = True
+    auto_sib_case_types: list[str] = Field(default_factory=lambda: ["AML", "MULE", "YAPTIRIM"])
+    online_anomaly_reason_min: float = 0.9
 
     # --- Case management (P0.6) ----------------------------------------------
     case_group_window_hours: int = 24
@@ -225,6 +260,10 @@ class Settings(BaseSettings):
     @property
     def resolved_models_dir(self) -> Path:
         return self.models_dir or BASE_DIR / "models"
+
+    @property
+    def resolved_payees_path(self) -> Path:
+        return self.payees_path or self.data_dir / "payees.json"
 
     @property
     def resolved_customers_path(self) -> Path:

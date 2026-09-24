@@ -38,7 +38,7 @@ rules:
     score: 0.5
     reason_template: "Yeni cihazda oturum açıldıktan {login_to_transfer_s:.0f} sn sonra transfer"
     severity: high
-    tags: [ato]
+    tags: [ato, takeover]
 
   - id: R_ATO_TAKEOVER
     name: Hesap ele geçirme örüntüsü
@@ -48,7 +48,7 @@ rules:
     reason_template: "Yeni cihaz, anonim/yabancı ağ ve ortalamanın {amount_ratio:.1f} katı tutar: hesap ele geçirme örüntüsü"
     action_hint: BLOCK
     severity: critical
-    tags: [ato]
+    tags: [ato, takeover]
 
   - id: R_ANON_IP
     name: Anonim IP (VPN/Tor)
@@ -196,7 +196,7 @@ rules:
     score: 0.25
     reason_template: "Yazma ritmi müşteri profilinden {typing_deviation:.1f} standart sapma farklı"
     severity: medium
-    tags: [biometrics, ato]
+    tags: [biometrics, ato, takeover]
 
   - id: R_SHARED_DEVICE
     name: Paylaşılan cihaz
@@ -234,3 +234,62 @@ rules:
     reason_template: "Müşterinin daha önce kullanmadığı kanal"
     severity: low
     tags: [channel]
+
+  # --- Harici sinyaller: varlık grafı, APP/CoP, konsorsiyum (F5) -----------------
+  - id: R_MULE_PASS_THROUGH
+    name: Para aktarım noktası (mule)
+    description: Son 30 dakikada birden çok kaynaktan gelen para hızla başka hesaba aktarılıyor.
+    when: graph_pass_through >= 0.7 and graph_fan_in_30m >= 2
+    score: 0.5
+    reason_template: "Son 30 dakikada {graph_fan_in_30m:.0f} farklı kaynaktan gelen para aktarılıyor (fan-in → fan-out)"
+    action_hint: HOLD
+    severity: critical
+    tags: [mule]
+
+  - id: R_KNOWN_MULE_PAYEE
+    name: Bilinen mule alıcı
+    description: Alıcı hesap analistçe doğrulanmış bir fraud/mule ağında.
+    when: graph_known_mule_payee
+    score: 0.6
+    reason_template: "Alıcı hesap doğrulanmış fraud ağında"
+    action_hint: HOLD
+    severity: critical
+    tags: [mule]
+
+  - id: R_LAYERING_CYCLE
+    name: Katmanlama döngüsü
+    description: Para kısa zincirle gönderene geri dönüyor (A → B → C → A).
+    when: graph_cycle
+    score: 0.45
+    reason_template: "Para döngüsü tespit edildi (katmanlama)"
+    action_hint: HOLD
+    severity: high
+    tags: [mule, aml]
+
+  - id: R_COP_MISMATCH_NEW_PAYEE
+    name: CoP uyuşmazlığı + yeni alıcı
+    description: Alıcı adı IBAN sahibinin kayıtlı adıyla eşleşmiyor ve alıcı yeni.
+    when: cop_no_match and is_new_payee and amount_ratio >= 2
+    score: 0.35
+    reason_template: "Alıcı adı IBAN sahibinin adıyla eşleşmiyor (CoP) — yeni alıcıya ortalamanın {amount_ratio:.1f} katı"
+    severity: high
+    tags: [app]
+
+  - id: R_YOUNG_PAYEE_HIGH
+    name: Yeni açılmış alıcı hesap
+    description: Alıcı hesap 30 günden yeni ve tutar yüksek.
+    when: 0 <= payee_account_age_d < 30 and amount_ratio >= 3
+    score: 0.3
+    reason_template: "Alıcı hesap {payee_account_age_d:.0f} gün önce açılmış; tutar ortalamanın {amount_ratio:.1f} katı"
+    severity: medium
+    tags: [app, mule]
+
+  - id: R_CONSORTIUM_HIT
+    name: Konsorsiyum kara listesi
+    description: Alıcı IBAN'ı veya cihaz, konsorsiyumdaki başka bir bankada fraud olarak bildirilmiş.
+    when: consortium_hit
+    score: 0.7
+    reason_template: "Alıcı/cihaz konsorsiyum ortak kara listesinde (başka bankada fraud)"
+    action_hint: HOLD
+    severity: critical
+    tags: [consortium]
