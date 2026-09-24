@@ -23,7 +23,7 @@ COPY . .
 
 RUN useradd --create-home --uid 10001 fraud \
     && mkdir -p /app/var /app/logs \
-    && chown -R fraud:fraud /app/var /app/logs /app/data
+    && chown -R fraud:fraud /app/var /app/logs /app/data /app/models
 USER fraud
 
 # RAG için yerel MiniLM (ONNX) modelini imaja önceden indir; ağ yoksa build
