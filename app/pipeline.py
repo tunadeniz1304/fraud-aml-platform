@@ -45,6 +45,10 @@ from app.features.extractor import CustomerDirectory, FeatureExtractor
 from app.features.store import FeatureStateStore, MemoryFeatureStore, RedisFeatureStore
 from app.llm.config import LLMSettings
 from app.llm.service import LLMService
+from app.ml.registry import ModelRegistry
+from app.scoring import rule_store
+from app.scoring.engine import ScoringEngine
+from app.scoring.rules import load_rule_file
 from app.services.accounts import AccountService
 
 logger = logging.getLogger("fraud.pipeline")
@@ -106,6 +110,10 @@ class Pipeline:
     def store(self) -> AccountService:
         return self.accounts
 
+    @property
+    def engine(self) -> ScoringEngine:
+        return self.analyst.engine
+
     # --- bookkeeping -------------------------------------------------------------------
     def _remember(self, event: dict[str, Any]) -> None:
         tx_id = str(event.get("transaction_id", ""))
@@ -144,6 +152,7 @@ class Pipeline:
                 "beneficiary_id",
                 "device_id",
                 "risk_score",
+                "decision",
                 "decision_legacy",
             )
         }
@@ -277,8 +286,16 @@ async def build_pipeline(
     if settings.db_auto_create:
         await db.create_all()
     customers = CustomerDirectory.from_file(settings.resolved_customers_path)
+    registry = ModelRegistry(settings.resolved_models_dir)
     async with db.transaction() as session:
         await repo.upsert_customers(session, customers.records())
+        seeded = await rule_store.seed_rules(session, load_rule_file(settings.resolved_rules_path))
+        await repo.upsert_models(session, registry.models())
+    async with db.session() as session:
+        ruleset = rule_store.build_ruleset(await rule_store.load_rules(session))
+    logger.info(
+        "[Rules] %d kural etkin (%s, %d yeni tohum)", len(ruleset.rules), ruleset.version, seeded
+    )
     writer = PersistenceWriter(
         db,
         batch_size=settings.writer_batch_size,
@@ -309,9 +326,16 @@ async def build_pipeline(
             max_retries=settings.bus_max_retries,
             claim_idle_ms=settings.bus_claim_idle_ms,
         )
+    engine = ScoringEngine.from_settings(extractor, ruleset=ruleset, registry=registry)
+    logger.info(
+        "[Scoring] champion=%s challenger=%s eşikler=%s",
+        engine.model.version if engine.model else "-",
+        engine.challenger.version if engine.challenger else "-",
+        engine.policy.thresholds.as_dict(),
+    )
     monitor = TransactionMonitor(bus)
-    analyst = ContextAnalyst(bus, account_status=accounts.get_status, extractor=extractor)
-    action = ActionAgent(bus, accounts=accounts, writer=writer)
+    analyst = ContextAnalyst(bus, account_status=accounts.get_status, engine=engine)
+    action = ActionAgent(bus, accounts=accounts, writer=writer, policy=engine.policy)
     return Pipeline(
         settings=settings,
         db=db,

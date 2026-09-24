@@ -18,6 +18,7 @@ from app.db.models import (
     AuditLog,
     Customer,
     Decision,
+    ModelVersion,
     Transaction,
 )
 
@@ -206,3 +207,25 @@ async def list_audit(session: AsyncSession, limit: int = 100) -> list[dict[str, 
 
 def decimal_to_float(value: Decimal | float | None) -> float | None:
     return None if value is None else float(value)
+
+
+async def upsert_models(session: AsyncSession, models: Iterable[dict[str, Any]]) -> int:
+    """Mirror ``models/registry.json`` into the ``models`` table."""
+    count = 0
+    for m in models:
+        values = {
+            "version": str(m["version"]),
+            "kind": "lightgbm",
+            "status": str(m.get("status", "archived")),
+            "path": str(m.get("path", m["version"])),
+            "metrics": m.get("metrics") or {},
+            "created_at": utcnow(),
+        }
+        stmt = _insert(session, ModelVersion).values(**values)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[ModelVersion.version],
+            set_={k: stmt.excluded[k] for k in ("status", "path", "metrics")},
+        )
+        await session.execute(stmt)
+        count += 1
+    return count
