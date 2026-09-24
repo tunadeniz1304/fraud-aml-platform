@@ -77,18 +77,6 @@ class TransactionIn(BaseModel):
         return _CTRL_RE.sub("", v).strip()
 
 
-class RiskFactorsOut(BaseModel):
-    amount: float
-    device: float
-    location: float
-    time: float
-    velocity: float
-    country: float = 0.0
-    purpose: float = 0.0
-    ip: float = 0.0
-    channel: float = 0.0
-
-
 class AnalyzedTransactionOut(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -105,10 +93,20 @@ class AnalyzedTransactionOut(BaseModel):
     purpose: str | None = None
     beneficiary_id: str | None = None
     risk_score: float
-    risk_score_rule: float | None = None
+    decision: str | None = None
     decision_legacy: str | None = None
-    risk_factors: RiskFactorsOut | None = None
+    decision_reason: str | None = None
+    components: dict[str, float | None] = Field(default_factory=dict)
+    reason_codes: list[dict[str, Any]] = Field(default_factory=list)
+    rule_hits: list[dict[str, Any]] = Field(default_factory=list)
     risk_explanation: list[str] = Field(default_factory=list)
+    case_required: bool = False
+    hold_minutes: int | None = None
+    rule_version: str | None = None
+    model_version: str | None = None
+    challenger_version: str | None = None
+    challenger_score: float | None = None
+    latency_ms: float | None = None
     high_risk_country: bool = False
     peer_group_avg: float | None = None
     peer_amount_ratio: float | None = None

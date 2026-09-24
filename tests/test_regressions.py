@@ -351,12 +351,15 @@ class TestBug12CurrencyNormalisation:
         )
         eur = analyst.analyzed[-1]
         assert eur["amount_try"] == 45_000.0
-        assert eur["risk_factors"]["amount"] > 0.0  # 45k TRY vs 2.5k TRY average
+        # F3: the v1 factor breakdown is gone; the TRY-normalised amount now
+        # drives the feature store (45k TRY vs 2.5k TRY average).
+        assert eur["features"]["amount_ratio"] > 10
         await bus.publish(
             TransactionMonitor.CREATED,
             {**CLEAN_TX, "transaction_id": "TX-T", "amount": 1000, "currency": "TRY"},
         )
-        assert analyst.analyzed[-1]["risk_factors"]["amount"] == 0.0
+        assert analyst.analyzed[-1]["features"]["amount_ratio"] < 1.0
+        assert analyst.analyzed[-1]["risk_score"] < eur["risk_score"]
 
 
 # --- #13 ------------------------------------------------------------------------

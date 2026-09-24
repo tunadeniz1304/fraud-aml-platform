@@ -130,9 +130,6 @@ class Settings(BaseSettings):
     amount_saturation_ratio: float = 10.0
     # Score contribution of an off-hours transfer (0..1).
     off_hours_score: float = 0.7
-    # Extra score for a MIDAS-style microcluster burst and mule graph signal.
-    microcluster_weight: float = 0.25
-    mule_weight: float = 0.20
 
     # --- Hybrid scoring / policy (P0.5) --------------------------------------
     rules_path: Path | None = Field(default=None, validation_alias="RULES_PATH")
