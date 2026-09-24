@@ -1,0 +1,136 @@
+"""Background worker (compose ``worker`` service).
+
+Consumes the ``decision.made`` egress stream with its own consumer group and
+runs periodic batch jobs over the database. Jobs are registered in
+:data:`JOBS`; later phases add ring detection, drift snapshots and
+label-driven retraining checks. The worker never touches the synchronous
+scoring path.
+
+    python -m app.worker
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+import signal
+from collections import Counter
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from typing import Any
+
+from app.config import get_settings
+from app.db.audit import verify_chain
+from app.db.database import Database
+from app.monitoring.logging import configure_logging
+
+logger = logging.getLogger("fraud.worker")
+
+
+@dataclass
+class WorkerContext:
+    db: Database
+    redis: Any
+    decisions_seen: Counter[str] = field(default_factory=Counter)
+    last_results: dict[str, Any] = field(default_factory=dict)
+
+
+JobFn = Callable[[WorkerContext], Awaitable[dict[str, Any]]]
+
+
+@dataclass(frozen=True)
+class Job:
+    name: str
+    interval_s: float
+    fn: JobFn
+
+
+JOBS: list[Job] = []
+
+
+def job(name: str, interval_s: float) -> Callable[[JobFn], JobFn]:
+    def deco(fn: JobFn) -> JobFn:
+        JOBS.append(Job(name, interval_s, fn))
+        return fn
+
+    return deco
+
+
+@job("audit_verify", interval_s=600)
+async def audit_verify(ctx: WorkerContext) -> dict[str, Any]:
+    async with ctx.db.session() as session:
+        result = await verify_chain(session)
+    level = logging.INFO if result.ok else logging.CRITICAL
+    logger.log(level, "[Worker] audit zinciri: %s (%d satır)", result.detail, result.checked)
+    return result.as_dict()
+
+
+@job("decision_stats", interval_s=60)
+async def decision_stats(ctx: WorkerContext) -> dict[str, Any]:
+    stats = dict(ctx.decisions_seen)
+    logger.info("[Worker] karar dağılımı (egress): %s", stats)
+    return stats
+
+
+async def _run_job(ctx: WorkerContext, item: Job, stop: asyncio.Event) -> None:
+    while not stop.is_set():
+        try:
+            ctx.last_results[item.name] = await item.fn(ctx)
+        except Exception:  # one failing job must not stop the worker
+            logger.exception("[Worker] iş '%s' başarısız", item.name)
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stop.wait(), timeout=item.interval_s)
+
+
+async def run_worker(stop: asyncio.Event | None = None) -> WorkerContext:
+    import redis.asyncio as aioredis
+
+    from app.bus.redis_streams import RedisStreamsBus
+
+    settings = get_settings()
+    stop = stop or asyncio.Event()
+    db = Database(settings.resolved_database_url)
+    redis = (
+        aioredis.from_url(settings.redis_url, decode_responses=True) if settings.redis_url else None
+    )
+    ctx = WorkerContext(db=db, redis=redis)
+    bus = None
+    if redis is not None:
+        bus = RedisStreamsBus(redis, prefix=settings.redis_stream_prefix, consumer="worker")
+
+        async def on_decision(event: dict[str, Any]) -> None:
+            ctx.decisions_seen[str(event.get("decision_legacy") or event.get("decision"))] += 1
+
+        bus.subscribe("decision.made", on_decision, group="worker")
+        await bus.start()
+    logger.info("[Worker] başladı: %d iş (%s)", len(JOBS), ", ".join(j.name for j in JOBS))
+    tasks = [asyncio.create_task(_run_job(ctx, j, stop), name=f"job-{j.name}") for j in JOBS]
+    await stop.wait()
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    if bus is not None:
+        await bus.stop()
+    if redis is not None:
+        await redis.aclose()
+    await db.dispose()
+    return ctx
+
+
+def main() -> None:
+    configure_logging(get_settings())
+    stop = asyncio.Event()
+
+    async def runner() -> None:
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            with contextlib.suppress(NotImplementedError):  # Windows
+                loop.add_signal_handler(sig, stop.set)
+        await run_worker(stop)
+
+    asyncio.run(runner())
+
+
+if __name__ == "__main__":
+    main()
