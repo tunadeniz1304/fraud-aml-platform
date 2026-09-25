@@ -202,3 +202,16 @@ def test_default_dataset_is_the_demo_population(monkeypatch):
     s = Settings(_env_file=None)
     assert s.resolved_customers_path.parent.name == "demo"
     assert s.resolved_customers_path.exists() and s.resolved_payees_path.exists()
+
+
+@pytest.mark.parametrize("name", sorted(SCENARIOS))
+async def test_every_scenario_meets_its_declared_outcome(pipeline, name):
+    out = await pipeline.run_scenario(name)
+    decisions = [r["decision"] for r in out["results"]]
+    assert decisions, name
+    # ``expected`` is the minimum action the scenario guarantees; the model may escalate
+    severity = ["ALLOW", "STEP_UP", "HOLD", "BLOCK"]
+    assert severity.index(decisions[0]) >= severity.index(SCENARIOS[name]["expected"]), (
+        name,
+        decisions,
+    )

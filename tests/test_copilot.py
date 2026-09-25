@@ -360,3 +360,19 @@ def test_drift_monitor_detects_shift():
         monitor.observe({}, rng.gauss(1.5, 1))
     status = monitor.status()
     assert status["alerts"] == ["score"] and status["psi"]["score"] > 0.25
+
+
+def test_drift_reference_keeps_model_edges_for_an_empty_series():
+    from app.ml import metrics as M
+
+    edges = M.reference_bins([0.1, 0.2, 0.3, 0.4])
+    monitor = DriftMonitor(
+        {
+            "score": {"edges": edges, "share": M.distribution([0.1, 0.2], edges)},
+            "amount": {"edges": edges, "share": M.distribution([0.1, 0.2, 0.3, 0.4], edges)},
+        },
+        pending=True,
+    )
+    monitor.replace_reference({"score": [0.2, 0.5, 0.9], "amount": []}, source="population")
+    assert monitor.reference["amount"]["edges"] == edges
+    assert monitor.source == "population" and not monitor.pending

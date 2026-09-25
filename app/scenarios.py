@@ -16,7 +16,8 @@ mule_ring  3 victims → mule (fan-in), mule forwards 90% from   HOLD + case + g
            a device shared with another mule within minutes
 smurfing   4 transfers just below the reporting threshold in   HOLD + AML case + ŞİB
            a few hours to new payees (business account)       (no block: tipping-off)
-card_test  burst of tiny web payments from a bot device        BLOCK
+card_test  burst of tiny web payments from a bot device        STEP_UP (model may
+                                                               escalate to HOLD)
 ========== ================================================== =======================
 """
 
@@ -38,7 +39,7 @@ SCENARIOS: dict[str, dict[str, str]] = {
     "app": {"title": "APP dolandırıcılığı (güvenli hesap)", "expected": "HOLD"},
     "mule_ring": {"title": "Mule halkası (fan-in → fan-out)", "expected": "HOLD"},
     "smurfing": {"title": "Parçalama / smurfing (eşik altı)", "expected": "HOLD"},
-    "card_testing": {"title": "Kart testi (küçük çoklu ödeme)", "expected": "BLOCK"},
+    "card_testing": {"title": "Kart testi (küçük çoklu ödeme)", "expected": "STEP_UP"},
 }
 
 

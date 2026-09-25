@@ -64,6 +64,8 @@ class DriftMonitor:
         with self._lock:
             for name in list(self.reference):
                 values = samples.get(name) or []
+                if not values:  # feature absent from the sample: keep the model reference
+                    continue
                 edges = score_edges() if name == "score" else reference_bins(values)
                 self.reference[name] = {"edges": edges, "share": distribution(values, edges)}
                 self.windows[name].clear()

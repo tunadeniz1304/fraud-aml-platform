@@ -4,7 +4,7 @@ Bu belge denetim bulgusu **B11**'in (Anil3v2 §2.B.11) kapanış raporudur. Öl�
 
 Üç ayrı ölçüm vardır ve bunlar birbirinin yerine kullanılmamalıdır:
 
-- **Motor**, süreç içi `ScoringEngine.score` çağrısıdır. Feature store, kurallar, LightGBM, IForest/ECOD, graf, APP, river ve politika katmanını kapsar; HTTP, veriyolu ve veritabanı yoktur. README'deki "p99 < 50 ms" rozeti yalnız bu ölçümü anlatır.
+- **Motor**, süreç içi `ScoringEngine.score` çağrısıdır. Feature store, kurallar, LightGBM, IForest/ECOD, graf, APP, river ve politika katmanını kapsar; HTTP, veriyolu ve veritabanı yoktur. README'deki "p99 < 50 ms" hedefi yalnız bu ölçümü anlatır.
 - **HTTP tek istemci**, kimlikli `POST /api/transactions` isteğinin sıralı gönderildiği durumdur; her istek bir öncekinin yanıtını bekler. Doğrulama, idempotency, skor, karar ve HTTP yığını dahil, istemcinin gördüğü uçtan uca süreyi verir.
 - **HTTP eşzamanlı**, açık döngülü yük üretimidir. İstekler sabit hızla zamanlanır ve yavaş yanıtlar yeni isteklerin gönderilmesini geciktirmez; böylece *coordinated omission* hatasına düşülmez. "Planlanan p99" sütunu, isteğin planlandığı andan yanıt alınana kadar geçen süredir. Sistem hedef hıza yetişemiyorsa bu sütun büyür.
 

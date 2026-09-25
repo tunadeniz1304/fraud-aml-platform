@@ -13,7 +13,7 @@ Ayrıntılı yöntem ve tablolar şu dokümanlardadır:
 | Konu | Sonuç |
 |---|---|
 | 2.0 denetimi | 31 bulgunun 30'u kapatıldı ve her biri için regresyon testi var. B11'in eşzamanlı hedefi (500 TPS, p99 < 150 ms) tek düğümde karşılanamadı; gerekçesi §4'te. |
-| 2.1 denetimi, tur 1 | 7/10. 37 bulgunun 36'sı kapatıldı. L12'nin git geçmişi kısmı açık kaldı, çünkü geçmiş yeniden yazılmıyor (§2.F). |
+| 2.1 denetimi, tur 1 | 7/10. 37 bulgunun hepsi için düzeltme commit'i yazıldı. Tur 2 bunların 23'ünü kapalı, 14'ünü kısmi buldu; kalanların durumu ve gerekçeleri §6'da. |
 | Gerçek veri | PaySim (tam dosya, %10 alıcı örneği), Elliptic (tam graf) ve ULB (OpenML 1597) indirildi. Checksum'lar `scripts/public_data_checksums.json` içinde. Repoda internetsiz çalışan fixture'lar var. |
 | PaySim replay | Tam hibrit PR-AUC **0,3919** [0,3463; 0,4417]; kurallar tek başına 0,0462. Graf katmanı ve anomali girdisi PaySim'de **katkı yapmıyor**. |
 | Sentetik veri | Parmak izleri ve kâhin step-up geri bildirimi kaldırıldı. GBM PR-AUC **0,8423** [0,7929; 0,8865]. Eski 0,971'in bir sızıntıdan geldiği ölçüldü. |
@@ -149,11 +149,16 @@ aralıklarıyla verilir. Ayrıntı: `VALIDATION_REPORT.md` §2.
 
 ### 3.1 PaySim (%10 alıcı-hash örneği, 743 adım, 70/15/15 satır bölmesi, test 95.634 işlem / 382 fraud)
 
-| Katman | PR-AUC [95 % GA] | ROC-AUC |
-|---|---|---|
-| `rules` | 0,0462 | 0,7412 |
-| `gbm` | 0,3732 | 0,9125 |
-| `rules+gbm` (= `+anomaly` = `+graph` = `full`) | **0,3919** [0,3463; 0,4417] | 0,8721 |
+| Katman | PR-AUC [95 % GA] | ROC-AUC | Recall @ 1 % FPR |
+|---|---|---|---|
+| `rules` | 0,0462 | 0,7412 | 0,0681 |
+| `gbm` | 0,3732 | 0,9125 | 0,5995 |
+| `rules+gbm` (= `+anomaly` = `+graph` = `full`) | **0,3919** [0,3463; 0,4417] | 0,8721 | 0,5864 |
+
+Son dört katman PaySim'de aynı skoru ürettiği için tek satırda gösterildi; güven aralığı `full`
+katmanının bootstrap'ından alındı ve bu dört katmanın her biri için aynıdır. Stacker PR-AUC'yi
+artırırken ROC-AUC'yi (0,9125 → 0,8721) ve 1 % FPR'deki recall'ı (0,5995 → 0,5864) düşürüyor:
+kazanç yalnız en üst sıralardaki kesinlikte, sıralamanın geri kalanında GBM tek başına daha iyi.
 
 1 % alarm bütçesinde recall 0,5471 [0,5026; 0,5975], precision 0,2186 ve tutar ağırlıklı recall
 0,907. Test dönemindeki 382 fraud işleminin 280'i ALLOW aldı. Eşleştirilmiş bootstrap ile

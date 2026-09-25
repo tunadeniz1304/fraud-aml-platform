@@ -4,6 +4,9 @@
   :class:`FeatureLockTimeout` (it used to score without the lock); the pipeline
   turns it into a ``HOLD`` with reason ``FEATURE_LOCK_TIMEOUT`` and does not
   commit the event to the windows;
+* the lease is renewed while held (a slow scoring step does not outlive it)
+  and the commit is fenced on the lease token: a worker that lost the lease
+  writes nothing;
 * the per-process lock table is size-capped, but a held or awaited lock is
   never evicted (evicting it let a second coroutine run concurrently).
 """
@@ -24,6 +27,7 @@ from app.features.store import (
     RedisFeatureStore,
     _LockTable,
 )
+from app.features.types import ProfileState, TxView
 from app.pipeline import Pipeline, build_pipeline
 
 CID = "CUST-0003"
@@ -67,6 +71,40 @@ async def test_lease_is_retried_until_the_holder_releases(redis):
     await releaser
     assert store.lock_timeouts == 0
     assert await redis.get("fs:lock:C1") is None  # owner-checked release
+
+
+# --- renewal and fencing ---------------------------------------------------------------
+async def test_lease_is_renewed_while_the_body_runs(redis):
+    store = _store(redis)
+    store.lock_ttl_ms = 60
+    async with store.customer_lock("C1"):
+        token = await redis.get("fs:lock:C1")
+        await asyncio.sleep(0.2)  # > 3x the TTL
+        assert await redis.get("fs:lock:C1") == token
+    assert await redis.get("fs:lock:C1") is None
+
+
+def _tx(tid: str) -> TxView:
+    return TxView.from_payload(
+        {"transaction_id": tid, "customer_id": "C1", "ts": "2026-09-25T10:00:00", "amount": 10}
+    )
+
+
+async def test_commit_is_fenced_on_the_lease_token(redis):
+    store = _store(redis)
+    async with store.customer_lock("C1"):
+        await redis.set("fs:lock:C1", "other-worker")  # lease expired and was taken over
+        await store.commit(_tx("F1"), ProfileState())
+        assert store.lease_lost == 1
+        assert await redis.zcard("fs:ev:C1") == 0
+        assert await redis.get("fs:done:F1") is None  # a retry may still commit it
+    assert await redis.get("fs:lock:C1") == "other-worker"  # foreign lease untouched
+    async with store.customer_lock("C2"):
+        pass
+    await redis.delete("fs:lock:C1")
+    async with store.customer_lock("C1"):
+        await store.commit(_tx("F1"), ProfileState())
+    assert await redis.zcard("fs:ev:C1") == 1
 
 
 async def test_timeout_does_not_leak_the_local_lock(redis):

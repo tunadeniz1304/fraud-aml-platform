@@ -230,9 +230,11 @@ class MemoryFeatureStore:
         }
 
 
-#: Atomic, idempotent commit: nothing is written if the transaction id was
-#: already committed (``done`` key), and every key gets a TTL.
+#: Atomic, idempotent, fenced commit: nothing is written if the caller no longer
+#: owns the customer lease (``KEYS[9]``/``ARGV[17]``, returns -1) or the
+#: transaction id was already committed (``done`` key); every key gets a TTL.
 _COMMIT_LUA = """
+if ARGV[17] ~= '' and redis.call('GET', KEYS[9]) ~= ARGV[17] then return -1 end
 if redis.call('SET', KEYS[8], '1', 'NX', 'EX', ARGV[16]) == false then return 0 end
 redis.call('ZADD', KEYS[1], ARGV[1], ARGV[2])
 redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[3])
@@ -258,6 +260,10 @@ _UNLOCK_LUA = """
 if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end
 return 0
 """
+_RENEW_LUA = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('PEXPIRE', KEYS[1], ARGV[2]) end
+return 0
+"""
 
 
 class RedisFeatureStore:
@@ -271,6 +277,8 @@ class RedisFeatureStore:
         self.lock_ttl_ms = settings.feature_lock_ttl_ms
         self.lock_wait_s = settings.feature_lock_wait_ms / 1000
         self.lock_timeouts = 0
+        self.lease_lost = 0
+        self._tokens: dict[str, str] = {}
         self._local = _LockTable(settings.feature_max_entities)
 
     def _k(self, *parts: str) -> str:
@@ -305,10 +313,24 @@ class RedisFeatureStore:
                 int(self.lock_wait_s * 1000),
             )
             raise FeatureLockTimeout(customer_id)
+        # a slow scoring step must not outlive the lease: renew it (owner-checked)
+        # every third of the TTL; ``commit`` is fenced on the same token
+        self._tokens[customer_id] = token
+        renew = asyncio.create_task(self._renew(key, token))
         try:
             yield
         finally:
+            renew.cancel()
+            self._tokens.pop(customer_id, None)
+            with contextlib.suppress(asyncio.CancelledError):
+                await renew
             await self.redis.eval(_UNLOCK_LUA, 1, key, token)
+
+    async def _renew(self, key: str, token: str) -> None:
+        while True:
+            await asyncio.sleep(self.lock_ttl_ms / 3000)
+            if not await self.redis.eval(_RENEW_LUA, 1, key, token, self.lock_ttl_ms):
+                return
 
     async def snapshot(self, tx: TxView) -> StateSnapshot:
         now = tx.epoch
@@ -350,6 +372,7 @@ class RedisFeatureStore:
             self._k("dev_cust", tx.device_id or "-"),
             self._k("prof", tx.customer_id),
             self._k("done", tx.transaction_id),
+            self._k("lock", tx.customer_id),
         ]
         args = [
             repr(now),
@@ -368,8 +391,14 @@ class RedisFeatureStore:
             json.dumps(profile.to_dict()),
             PROFILE_TTL_S,
             self.entity_ttl_s,
+            self._tokens.get(tx.customer_id, ""),
         ]
-        await self.redis.eval(_COMMIT_LUA, len(keys), *keys, *args)
+        if await self.redis.eval(_COMMIT_LUA, len(keys), *keys, *args) == -1:
+            self.lease_lost += 1
+            logger.warning(
+                "[Features] %s kilidi commit öncesi kaybedildi — pencereler yazılmadı",
+                tx.customer_id,
+            )
 
     async def put_profile(self, customer_id: str, profile: ProfileState) -> None:
         await self.redis.set(
