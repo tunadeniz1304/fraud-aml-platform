@@ -141,7 +141,8 @@ class ContextAnalyst:
             peer = self._peer_cache.get(customer_id) or 0.0
             analyzed["peer_group_avg"] = round(peer, 2) if peer else None
             analyzed["peer_amount_ratio"] = round(result.amount_try / peer, 3) if peer > 0 else None
-            logger.info(
+            logger.log(
+                logging.DEBUG if result.decision == "ALLOW" else logging.INFO,
                 "[Analyst] %s risk %.2f → %s (kural %.2f, ML %s, yaptırım=%s, %.1f ms)",
                 tx["transaction_id"],
                 result.risk_score,

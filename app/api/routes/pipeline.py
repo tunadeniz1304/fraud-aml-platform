@@ -72,7 +72,7 @@ async def accounts() -> list[AccountOut]:
 @router.get("/audit", response_model=list[AuditRowOut], dependencies=[analyst_only])
 async def audit(limit: int = Query(100, ge=1, le=1000)) -> list[AuditRowOut]:
     pipeline = require_pipeline()
-    await pipeline.writer.flush()
+    await pipeline.settle()
     async with pipeline.db.session() as session:
         return [AuditRowOut(**r) for r in await repo.list_audit(session, limit)]
 
@@ -81,7 +81,7 @@ async def audit(limit: int = Query(100, ge=1, le=1000)) -> list[AuditRowOut]:
 async def audit_verify() -> dict[str, Any]:
     """Recompute the SHA-256 hash chain of the whole audit log."""
     pipeline = require_pipeline()
-    await pipeline.writer.flush()
+    await pipeline.settle()
     async with pipeline.db.session() as session:
         result = await verify_chain(session)
     return result.as_dict()

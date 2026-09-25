@@ -124,7 +124,7 @@ async def export_audit() -> str:
     """Compliance export of the audit log."""
     if state.pipeline is None:
         return audit_csv([])
-    await state.pipeline.writer.flush()
+    await state.pipeline.settle()
     async with state.pipeline.db.session() as session:
         rows = await repo.list_audit(session, limit=50_000)
     return audit_csv(rows)

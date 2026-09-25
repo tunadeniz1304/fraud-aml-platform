@@ -23,6 +23,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 from collections import OrderedDict, deque
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -35,6 +36,7 @@ from app.agents.context_analyst import ContextAnalyst
 from app.agents.transaction_monitor import TransactionMonitor
 from app.bus.memory import InMemoryBus
 from app.bus.redis_streams import RedisStreamsBus
+from app.bus.writebehind import WriteBehindQueue
 from app.cases.service import OPEN_STATUSES, CaseService
 from app.config import Settings, get_settings
 from app.copilot.agent import CopilotAgent
@@ -51,6 +53,7 @@ from app.db.writer import PersistenceWriter
 from app.features.extractor import CustomerDirectory, FeatureExtractor
 from app.features.store import FeatureStateStore, MemoryFeatureStore, RedisFeatureStore
 from app.graph.entity_graph import EntityGraph
+from app.idempotency import IdempotencyIndex
 from app.llm.config import LLMSettings
 from app.llm.service import LLMService, OutputRejected
 from app.ml.registry import ModelRegistry
@@ -149,6 +152,11 @@ class Pipeline:
             ),
         )
         self._background: set[asyncio.Task[Any]] = set()
+        self._enrich_slots = asyncio.Semaphore(max(1, settings.enrich_concurrency))
+        self.idempotency = IdempotencyIndex(redis, ttl_s=settings.idempotency_ttl_s)
+        # V6: only score + decision + idempotency record stay on the request
+        # path; case intake, live fan-out and egress run write-behind.
+        self.effects = WriteBehindQueue(queue_size=settings.write_behind_queue_size)
         self._live: set[asyncio.Queue[dict[str, Any]]] = set()
         self.recent_live: deque[dict[str, Any]] = deque(maxlen=2000)
         self.cases.handlers["MODEL_PROMOTE"] = self._approve_promotion
@@ -161,13 +169,16 @@ class Pipeline:
         self.rings: list[dict[str, Any]] = []
         self.stream_done = asyncio.Event()
         bus.subscribe(ActionAgent.DECIDED, self._remember)
-        bus.subscribe(ActionAgent.DECIDED, self._to_cases)
-        bus.subscribe(ActionAgent.DECIDED, self._to_live)
+        # graph feedback is in-memory scoring state (like the feature-store
+        # commit): it stays in decision order so the next transfer sees it
         bus.subscribe(ActionAgent.DECIDED, self._graph_feedback)
+        bus.subscribe(ActionAgent.DECIDED, self.effects.submit)
         bus.subscribe(TransactionMonitor.REJECTED, self._remember)
+        self.effects.subscribe(self._to_cases)
+        self.effects.subscribe(self._to_live)
         if ingress is not None:
             ingress.subscribe(TransactionMonitor.CREATED, self._from_ingress, group="pipeline")
-            bus.subscribe(ActionAgent.DECIDED, self._to_egress)
+            self.effects.subscribe(self._to_egress)
 
     # --- compatibility shim -------------------------------------------------------------
     @property
@@ -318,7 +329,7 @@ class Pipeline:
             result = await self.ingest(tx)
             if result is not None:
                 results[tx["transaction_id"]] = result
-        await self.writer.flush()
+        await self.drain()
         await self.wait_background()
         rings = await self.refresh_rings() if name == "mule_ring" else []
         key = []
@@ -360,6 +371,7 @@ class Pipeline:
             return
         self.results[tx_id] = event
         self.results.move_to_end(tx_id)
+        self.idempotency.add(tx_id)
         waiter = self._waiters.pop(tx_id, None)
         if waiter is not None and not waiter.done():
             waiter.set_result(event)
@@ -438,9 +450,19 @@ class Pipeline:
         task.add_done_callback(self._background.discard)
 
     async def wait_background(self) -> None:
-        """Await copilot enrichment tasks (tests / scenario runner)."""
-        while self._background:
+        """Await the write-behind side effects (case intake, live feed, egress)
+        and the copilot enrichment tasks they spawn (tests / scenario runner)."""
+        while True:
+            await self.effects.join()
+            if not self._background:
+                return
             await asyncio.gather(*list(self._background), return_exceptions=True)
+
+    async def settle(self) -> None:
+        """Read-your-writes: every decision so far has its case, alerts and
+        audit rows committed (enrichment tasks are not awaited)."""
+        await self.effects.join()
+        await self.writer.flush()
 
     async def _enrich_case(self, case_id: int, event: dict[str, Any]) -> None:
         """Async, off the scoring path: APP text triage + automatic ŞİB draft.
@@ -450,6 +472,10 @@ class Pipeline:
         a deterministic minimal draft; the failure is recorded on the case
         (``COPILOT_ERROR``) and counted — never silently dropped.
         """
+        async with self._enrich_slots:  # bounded: shares the CPU with scoring
+            await self._enrich_case_now(case_id, event)
+
+    async def _enrich_case_now(self, case_id: int, event: dict[str, Any]) -> None:
         try:
             await self.writer.flush()
             case = await self.cases.get_case(case_id)
@@ -634,6 +660,8 @@ class Pipeline:
 
     async def start(self) -> None:
         await self.writer.start()
+        await self.effects.start()
+        await self.idempotency.load(self.db)
         await self.bus.start()
         if self.ingress is not None:
             await self.ingress.start()
@@ -651,6 +679,8 @@ class Pipeline:
         if self.graph is not None and self.settings.ring_detect_interval_s > 0:
             self._ring_task = asyncio.create_task(self._ring_loop(), name="ring-detection")
         mode = self.settings.stream_mode
+        if mode == "batch" and not await self._warmup_leader():
+            mode = "off"  # another worker replays the history into the shared store
         if mode == "batch":
             batch = load_transactions(self.settings.resolved_transactions_path)
             if self.settings.batch_rebase_ts:
@@ -674,9 +704,23 @@ class Pipeline:
         else:
             self.stream_done.set()
 
+    async def _warmup_leader(self) -> bool:
+        """With a shared (Redis) feature store only one worker may replay the
+        warm-up history, otherwise every ``uvicorn --workers N`` process would
+        add the same events to the shared windows/profiles N times."""
+        if self.redis is None or self.settings.resolved_feature_store != "redis":
+            return True
+        key = f"{self.settings.redis_stream_prefix}:warmup:leader"
+        if await self.redis.set(key, str(os.getpid()), nx=True, ex=120):
+            return True
+        logger.info("[Pipeline] ısınma geçmişini başka bir worker yüklüyor — atlandı")
+        return False
+
     async def drain(self) -> None:
-        """Wait until the bus is idle and every write is committed."""
+        """Wait until the bus is idle, every decision's side effects have run
+        and every write is committed."""
         await self.bus.drain()
+        await self.effects.join()
         await self.writer.flush()
 
     async def stop(self) -> None:
@@ -689,6 +733,8 @@ class Pipeline:
         if self.ingress is not None:
             await self.ingress.stop()
         await self.bus.stop()
+        await self.effects.stop()
+        await self.wait_background()
         await self.writer.stop()
         await self.extractor.store.close()
         await self.db.dispose()
@@ -737,19 +783,60 @@ class Pipeline:
             "persisted_only": True,
         }
 
+    @staticmethod
+    def _summary(result: dict[str, Any]) -> dict[str, Any]:
+        """Response fields of a decision (the Redis idempotency record)."""
+        from app.api.schemas import AnalyzedTransactionOut
+
+        fields = AnalyzedTransactionOut.model_fields
+        return {k: v for k, v in result.items() if k in fields or k in ("well_formed", "issues")}
+
     async def ingest(self, tx: dict[str, Any]) -> dict[str, Any] | None:
-        """Publish one transaction and return its decision (idempotent per id)."""
+        """Score one transaction and return its decision (idempotent per id).
+
+        Request path (V6): in-memory result -> in-flight waiter -> idempotency
+        claim (Redis, multi-worker) -> stored decision only when the Bloom
+        index says the id may be persisted -> score + decide. Case intake,
+        audit, live feed and egress follow write-behind.
+        """
         tx_id = str(tx.get("transaction_id") or "")
         if tx_id and tx_id in self.results:
             return {**self.results[tx_id], "duplicate": True}
-        if tx_id:
-            stored = await self.stored_result(tx_id)
-            if stored is not None:
-                return stored
-        if not tx_id or not self.bus.running:
-            await self.bus.publish(TransactionMonitor.CREATED, tx, key=tx_id or None)
+        if not tx_id:
+            await self.bus.publish(TransactionMonitor.CREATED, tx)
             if self.bus.running:
                 await self.bus.drain()
+            return None
+        waiter = self._waiters.get(tx_id)
+        if waiter is not None:  # same id already in flight in this process
+            return await self._await_decision(tx_id, waiter)
+        claimed = await self.idempotency.claim(tx_id)
+        if not claimed:  # another worker (or an earlier request) owns this id
+            other = await self.idempotency.claimed_result(tx_id)
+            if other is not None:
+                return {**other, "duplicate": True}
+        if not claimed or self.idempotency.maybe_persisted(tx_id):
+            stored = await self.stored_result(tx_id)
+            if stored is not None:
+                if claimed:
+                    await self.idempotency.record(tx_id, self._summary(stored))
+                return stored
+        try:
+            result = await self._decide(tx_id, tx)
+        except BaseException:
+            if claimed:
+                await self.idempotency.release(tx_id)
+            raise
+        if claimed:
+            if result is None:
+                await self.idempotency.release(tx_id)
+            else:
+                await self.idempotency.record(tx_id, self._summary(result))
+        return result
+
+    async def _decide(self, tx_id: str, tx: dict[str, Any]) -> dict[str, Any] | None:
+        if not self.bus.running:  # direct dispatch: handlers run inline
+            await self.bus.publish(TransactionMonitor.CREATED, tx, key=tx_id)
             return self.results.get(tx_id)
         # wait for *this* transaction's decision only (no global drain under load)
         waiter = self._waiters.get(tx_id)
@@ -757,6 +844,11 @@ class Pipeline:
             waiter = asyncio.get_running_loop().create_future()
             self._waiters[tx_id] = waiter
             await self.bus.publish(TransactionMonitor.CREATED, tx, key=tx_id)
+        return await self._await_decision(tx_id, waiter)
+
+    async def _await_decision(
+        self, tx_id: str, waiter: asyncio.Future[dict[str, Any]]
+    ) -> dict[str, Any] | None:
         try:
             return await asyncio.wait_for(asyncio.shield(waiter), timeout=30)
         except TimeoutError:

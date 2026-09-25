@@ -86,6 +86,13 @@ def cases_service() -> CaseService:
     return service
 
 
+async def settled_cases() -> CaseService:
+    """Case service after the write-behind queue caught up (read your writes:
+    a decision returned by POST /api/transactions has its case/alert)."""
+    await require_pipeline().settle()
+    return cases_service()
+
+
 async def _call(fn: Callable[..., Awaitable[T]], *args: Any, **kwargs: Any) -> T:
     try:
         return await fn(*args, **kwargs)
@@ -109,7 +116,7 @@ async def list_cases(
 ) -> list[dict[str, Any]]:
     if status and status != "OPEN" and status not in STATUSES:
         raise HTTPException(status_code=422, detail="Geçersiz vaka durumu")
-    return await cases_service().list_cases(
+    return await (await settled_cases()).list_cases(
         status=status,
         assigned_to=assigned_to,
         customer_id=customer_id,
@@ -132,7 +139,7 @@ async def page_cases(
     """Server-side paginated + filtered case queue (``total`` for the pager)."""
     if status and status != "OPEN" and status not in STATUSES:
         raise HTTPException(status_code=422, detail="Geçersiz vaka durumu")
-    service = cases_service()
+    service = await settled_cases()
     filters = {
         "status": status,
         "assigned_to": assigned_to,
@@ -150,14 +157,13 @@ async def page_cases(
 
 @router.get("/cases/stats", dependencies=[Depends(analyst)])
 async def case_stats() -> dict[str, Any]:
-    service = cases_service()
+    service = await settled_cases()
     return {"by_status": await service.counts(), "sla": await service.sla_scan()}
 
 
 @router.get("/cases/{case_id}", dependencies=[Depends(analyst)])
 async def get_case(case_id: int) -> dict[str, Any]:
-    await require_pipeline().writer.flush()  # decisions are written behind; read your writes
-    return await _call(cases_service().get_case, case_id)
+    return await _call((await settled_cases()).get_case, case_id)
 
 
 @router.post("/cases/{case_id}/assign")
@@ -241,7 +247,7 @@ async def submit_sib(
 # --- alerts / accounts ------------------------------------------------------------------
 @router.get("/alerts", dependencies=[Depends(analyst)])
 async def alerts(limit: int = Query(100, ge=1, le=1000)) -> list[dict[str, Any]]:
-    return await cases_service().list_alerts(limit)
+    return await (await settled_cases()).list_alerts(limit)
 
 
 @router.post("/accounts/{customer_id}/unblock-request", status_code=202)

@@ -107,3 +107,14 @@ BUS_EVENTS = Counter(
     "fraud_bus_events_total", "Olay veriyolu mesajları", ["topic", "outcome"], registry=REGISTRY
 )
 BUS_BACKLOG = Gauge("fraud_bus_backlog", "Tüketilmeyi bekleyen mesajlar", registry=REGISTRY)
+WRITE_BEHIND_BACKLOG = Gauge(
+    "fraud_write_behind_backlog",
+    "Karar sonrası yan etki kuyruğu (vaka, canlı akış, egress) bekleyen olaylar",
+    registry=REGISTRY,
+)
+WRITE_BEHIND_ERRORS = Counter(
+    "fraud_write_behind_errors_total",
+    "Başarısız karar sonrası yan etkiler",
+    ["handler"],
+    registry=REGISTRY,
+)

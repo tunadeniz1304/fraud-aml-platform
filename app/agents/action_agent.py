@@ -123,7 +123,7 @@ class ActionAgent:
             logger.warning("[Action] %s → %s (risk %.2f)", tx["transaction_id"], decision, risk)
         else:
             self.passed.append(entry)
-            logger.info("[Action] %s normal akışta (risk %.2f)", tx["transaction_id"], risk)
+            logger.debug("[Action] %s normal akışta (risk %.2f)", tx["transaction_id"], risk)
         metrics.DECISIONS.labels(decision=decision).inc()
         metrics.RISK_SCORE.observe(risk)
 
