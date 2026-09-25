@@ -1,10 +1,17 @@
 """KVKK pseudonymisation before any text leaves for an external LLM (§3.3).
 
-TCKN (checksum-validated), IBAN, phone, e-mail and known person names are
-replaced by stable placeholders (``MUSTERI_7``, ``IBAN_…1234``, ``TCKN_1`` …);
+TCKN (checksum-validated), IBAN, phone, e-mail and person names are replaced
+by stable placeholders (``MUSTERI_7``, ``KISI_2``, ``IBAN_…1234``, ``TCKN_1`` …);
 the mapping stays in process memory for one call and the model's answer is
 mapped back with :meth:`Redactor.restore`. Placeholders are chosen so that no
 original value can be reconstructed from them.
+
+Names are matched **after Turkish → ASCII folding on both sides** ("Ayse
+Yilmaz", "AYŞE YILMAZ" and "Ayşe Yılmaz" are the same person). Besides the
+customer directory, values of name-like fields (``beneficiary_name``,
+``ad_soyad`` …) are added to the dictionary, and free text (``purpose``, notes)
+is scanned with a simple heuristic: a common Turkish first name followed by a
+capitalised surname (``KISI_n``).
 """
 
 from __future__ import annotations
@@ -36,6 +43,96 @@ def _fold(text: str) -> str:
     return "".join(ch for ch in decomposed if unicodedata.category(ch) != "Mn")
 
 
+def _fold_aligned(text: str) -> str:
+    """:func:`_fold` character by character, **same length** as ``text`` so a
+    match position in the folded string is the position in the original."""
+    return "".join((_fold(ch) or ch)[:1] for ch in text)
+
+
+#: keys whose values are person names (added to the name dictionary)
+NAME_KEYS = frozenset(
+    {"name", "ad_soyad", "beneficiary_name", "customer_name", "musteri_adi", "alici_adi"}
+)
+#: common Turkish first names for the free-text heuristic (folded)
+FIRST_NAMES = frozenset(
+    _fold(n)
+    for n in [
+        "Ahmet",
+        "Mehmet",
+        "Mustafa",
+        "Ali",
+        "Hüseyin",
+        "Hasan",
+        "İbrahim",
+        "İsmail",
+        "Osman",
+        "Yusuf",
+        "Murat",
+        "Ömer",
+        "Ramazan",
+        "Halil",
+        "Süleyman",
+        "Abdullah",
+        "Mahmut",
+        "Recep",
+        "Salih",
+        "Fatih",
+        "Kadir",
+        "Emre",
+        "Hakan",
+        "Kemal",
+        "Burak",
+        "Serkan",
+        "Can",
+        "Cem",
+        "Deniz",
+        "Tuna",
+        "Mert",
+        "Onur",
+        "Volkan",
+        "Kerem",
+        "Emir",
+        "Arda",
+        "Barış",
+        "Tolga",
+        "Selim",
+        "Kaan",
+        "Anıl",
+        "Ayşe",
+        "Fatma",
+        "Emine",
+        "Hatice",
+        "Zeynep",
+        "Elif",
+        "Meryem",
+        "Şerife",
+        "Zehra",
+        "Sultan",
+        "Hanife",
+        "Merve",
+        "Özlem",
+        "Esra",
+        "Büşra",
+        "Selin",
+        "Derya",
+        "Ebru",
+        "Gül",
+        "Sevgi",
+        "Aslı",
+        "Ceren",
+        "Ece",
+        "Buse",
+        "Damla",
+        "Gizem",
+        "İrem",
+        "Nur",
+        "Sibel",
+    ]
+)
+_NAME_WORD = r"[A-ZÇĞİÖŞÜ][a-zçğıöşü]+|[A-ZÇĞİÖŞÜ]{2,}"
+_PERSON_RE = re.compile(rf"(?<!\w)({_NAME_WORD})\s+({_NAME_WORD})(?![a-zçğıöşüA-ZÇĞİÖŞÜ])")
+
+
 class Redactor:
     """Reversible, per-call pseudonymiser."""
 
@@ -43,9 +140,13 @@ class Redactor:
         self._forward: dict[str, str] = {}  # original -> placeholder
         self._reverse: dict[str, str] = {}  # placeholder -> original
         self._counters: dict[str, int] = {}
+        self._names: list[str] = []
+        self.add_names(names)
+
+    def add_names(self, names: Iterable[str]) -> None:
         # Longest names first so "Ayşe Yılmaz Kaya" wins over "Ayşe Yılmaz".
         cleaned = {n.strip() for n in names if n and len(n.strip()) >= 3}
-        self._names = sorted(cleaned, key=len, reverse=True)
+        self._names = sorted(set(self._names) | cleaned, key=len, reverse=True)
 
     # --- placeholder bookkeeping -------------------------------------------
     def _placeholder(self, kind: str, original: str, suffix: str = "") -> str:
@@ -88,23 +189,50 @@ class Redactor:
         )
         out = _PHONE_RE.sub(lambda m: self._placeholder("TELEFON", m.group(0)), out)
         for name in self._names:
-            pattern = re.compile(
-                r"(?<!\w)" + r"\s+".join(re.escape(p) for p in name.split()) + r"(?!\w)",
-                re.IGNORECASE,
-            )
-            token = self._placeholder("MUSTERI", name) if pattern.search(out) else None
-            if token is not None:
-                out = pattern.sub(token, out)
-        return out
+            out = self._replace_folded(out, name, "MUSTERI")
+        return self._heuristic_names(out)
+
+    def _replace_folded(self, text: str, name: str, kind: str) -> str:
+        """Replace ``name`` in ``text`` comparing Turkish→ASCII folded forms."""
+        folded = _fold_aligned(text)
+        pattern = re.compile(
+            r"(?<!\w)" + r"\s+".join(re.escape(_fold(p)) for p in name.split()) + r"(?!\w)"
+        )
+        spans = [m.span() for m in pattern.finditer(folded)]
+        if not spans:
+            return text
+        token = self._placeholder(kind, name)
+        for start, end in reversed(spans):
+            text = text[:start] + token + text[end:]
+        return text
+
+    def _heuristic_names(self, text: str) -> str:
+        """First name from :data:`FIRST_NAMES` + capitalised surname → ``KISI_n``."""
+
+        def repl(match: re.Match[str]) -> str:
+            first, last = match.group(1), match.group(2)
+            if _fold(first) not in FIRST_NAMES:
+                return match.group(0)
+            return self._placeholder("KISI", f"{first} {last}")
+
+        return _PERSON_RE.sub(repl, text)
 
     def redact_obj(self, value: Any) -> Any:
-        """Recursively redact every string inside dicts/lists (keys preserved)."""
+        """Recursively redact every string inside dicts/lists (keys preserved).
+
+        Values of name-like keys (:data:`NAME_KEYS`) join the name dictionary
+        first, so a beneficiary name is also masked wherever else it appears.
+        """
+        self.add_names(_name_values(value))
+        return self._redact_obj(value)
+
+    def _redact_obj(self, value: Any) -> Any:
         if isinstance(value, str):
             return self.redact(value)
         if isinstance(value, dict):
-            return {k: self.redact_obj(v) for k, v in value.items()}
+            return {k: self._redact_obj(v) for k, v in value.items()}
         if isinstance(value, list | tuple):
-            return [self.redact_obj(v) for v in value]
+            return [self._redact_obj(v) for v in value]
         return value
 
     def restore(self, text: str) -> str:
@@ -122,6 +250,20 @@ class Redactor:
         if isinstance(value, list):
             return [self.restore_obj(v) for v in value]
         return value
+
+
+def _name_values(value: Any) -> list[str]:
+    out: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in NAME_KEYS and isinstance(item, str):
+                out.append(item)
+            else:
+                out += _name_values(item)
+    elif isinstance(value, list | tuple):
+        for item in value:
+            out += _name_values(item)
+    return out
 
 
 class StreamRestorer:

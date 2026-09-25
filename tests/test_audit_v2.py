@@ -544,13 +544,13 @@ def test_c19_ingest_limit_is_per_client_and_hmac_nonce_blocks_replay() -> None:
 
 
 # --- C20: ASCII-folded / beneficiary names are redacted ---------------------------------------
-@open_finding("C20")
 def test_c20_redaction_handles_ascii_folding_and_beneficiaries() -> None:
     from app.llm.redaction import Redactor
 
     r = Redactor(["Ayşe Yılmaz"])
     text = r.redact("Ayse Yilmaz ve AYŞE YILMAZ, Selin Demirtaş'a gönderdi")
-    assert "Ayse" not in text and "AYŞE" not in text
+    assert "Ayse" not in text and "AYŞE" not in text and "Selin" not in text
+    assert r.restore(text).count("Ayşe Yılmaz") == 2
     payload = r.redact_obj({"beneficiary_name": "Kemal Sunal", "purpose": "Hakan Tas borcu"})
     assert "Kemal" not in json.dumps(payload, ensure_ascii=False)
     assert "Hakan" not in json.dumps(payload, ensure_ascii=False)
