@@ -17,7 +17,7 @@ docker compose up --build   # postgres, redis, migrate, api, worker, simulator
 Demo kullanıcıları: `analist / analist123`, `kidemli_analist / kidemli123`, `admin / admin123`.
 Gözlemlenebilirlik: `docker compose --profile observability up` → Prometheus `:9090`, Grafana `:3000` (hazır pano).
 
-**LLM modu:** `.env`'de `LLM_API_KEY` varsa başlangıç logu `LLM: CANLI (deepseek-v4-flash @ evren-llmapi.ssyz.org.tr)` der ve copilot canlı modeli kullanır; yoksa deterministik **DEMO** moduna düşer — tüm akışlar (özet, karar önerisi, ŞİB, sohbet) yine çalışır. Canlı çağrı hata verirse o çağrı `llm_mode="fallback"` ile demo çıktısına düşer. Anahtar hiçbir log/yanıtta görünmez; LLM'e giden veride TCKN/IBAN/telefon/e-posta/isim pseudonimleştirilir (KVKK).
+**LLM modu:** `.env`'de `LLM_API_KEY` varsa başlangıç logu `LLM: CANLI (<model> @ <LLM_BASE_URL sunucusu>)` der ve copilot canlı modeli kullanır; yoksa deterministik **DEMO** moduna düşer — tüm akışlar (özet, karar önerisi, ŞİB, sohbet) yine çalışır. Canlı çağrı hata verirse o çağrı `llm_mode="fallback"` ile demo çıktısına düşer. Anahtar hiçbir log/yanıtta görünmez; LLM'e giden veride TCKN/IBAN/telefon/e-posta/isim pseudonimleştirilir (KVKK).
 
 ## Mimari
 

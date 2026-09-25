@@ -11,17 +11,23 @@ from app.api.deps import require_pipeline
 from app.api.schemas import LLMStatusOut
 from app.api.state import state
 from app.llm.tasks import narrate_transaction
-from app.security.deps import require_role
+from app.security.auth import Principal
+from app.security.deps import current_principal, require_role
 
 router = APIRouter(prefix="/api/llm", tags=["llm"], dependencies=[Depends(require_role("analist"))])
 
 
 @router.get("/status", response_model=LLMStatusOut)
-async def llm_status() -> LLMStatusOut:
-    """LLM mode/model/latency counters — the API key is never included."""
+async def llm_status(principal: Principal = Depends(current_principal)) -> LLMStatusOut:
+    """LLM mode/model/latency counters — the API key is never included and the
+    server host is shown to admins only (internal hostnames are infrastructure
+    detail)."""
     if state.llm is None:
         raise HTTPException(status_code=503, detail="LLM servisi henüz hazır değil")
-    return LLMStatusOut(**state.llm.status())
+    status = state.llm.status()
+    if not principal.has_role("admin"):
+        status["base_url_host"] = None
+    return LLMStatusOut(**status)
 
 
 @router.post("/explain/{transaction_id}")

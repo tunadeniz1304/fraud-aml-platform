@@ -557,7 +557,6 @@ def test_c20_redaction_handles_ascii_folding_and_beneficiaries() -> None:
 
 
 # --- C21: no internal hostnames in tracked files ----------------------------------------------
-@open_finding("C21")
 def test_c21_no_internal_llm_host_in_repository() -> None:
     out = subprocess.run(
         ["git", "grep", "-n", "ss" + "yz"],
@@ -567,3 +566,17 @@ def test_c21_no_internal_llm_host_in_repository() -> None:
         check=False,
     )
     assert out.stdout.strip() == ""
+
+
+def test_c21_llm_status_hides_host_from_non_admins(
+    demo_env: Path, analyst_headers: dict[str, str], admin_headers: dict[str, str]
+) -> None:
+    from fastapi.testclient import TestClient
+
+    from app.api.dashboard import create_app
+
+    with TestClient(create_app()) as client:
+        analyst = client.get("/api/llm/status", headers=analyst_headers).json()
+        admin = client.get("/api/llm/status", headers=admin_headers).json()
+    assert analyst["base_url_host"] is None
+    assert admin["base_url_host"]

@@ -22,7 +22,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 import app.config  # noqa: F401  - ensures .env files are loaded first
 
-DEFAULT_BASE_URL = "https://evren-llmapi.ssyz.org.tr/v1"
+DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-v4-flash"
 KEY_ENV_NAMES = ("LLM_API_KEY", "DEEPSEEK_API_KEY", "EVREN_API_KEY", "OPENAI_API_KEY")
 

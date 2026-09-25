@@ -150,7 +150,7 @@ class TestSettings:
         assert LLMSettings().startup_line() == "LLM: DEMO modu (anahtar bulunamadı)"
         clean_env.setenv("LLM_API_KEY", FAKE_KEY)
         line = LLMSettings().startup_line()
-        assert line == "LLM: CANLI (deepseek-v4-flash @ evren-llmapi.ssyz.org.tr)"
+        assert line == "LLM: CANLI (deepseek-v4-flash @ api.deepseek.com)"
         assert FAKE_KEY not in line
         clean_env.setenv("LLM_MODE", "live")
         clean_env.delenv("LLM_API_KEY")

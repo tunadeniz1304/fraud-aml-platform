@@ -183,7 +183,7 @@ class TokenOut(BaseModel):
 class LLMStatusOut(BaseModel):
     mode: str
     model: str
-    base_url_host: str
+    base_url_host: str | None = None
     key_present: bool
     last_latency_ms: float | None = None
     calls: int
