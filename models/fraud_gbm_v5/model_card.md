@@ -22,7 +22,7 @@ Maliyet ağırlıklı recall: işlemlerin en riskli %1'i alert olduğunda yakala
 ## Kalibrasyon (test dönemi)
 | Çıktı | Brier | ECE (10 kutu) | Ort. tahmin | Gözlenen oran |
 |---|---|---|---|---|
-| LightGBM (izotonik) | 0.00869 | 0.00838 | 0.0149 | 0.0232 |
+| LightGBM (ham çıktı) | 0.00869 | 0.00838 | 0.0149 | 0.0232 |
 | Hibrit (stacker) | 0.00662 | 0.00378 | 0.0207 | 0.0232 |
 
 Kalibrasyon doğrulama dağılımında yapılır; test döneminde taban oran kayarsa ECE büyür. Etiket gürültüsü (kaçan fraud) gözlenen oranı gerçek oranın altında tutar.

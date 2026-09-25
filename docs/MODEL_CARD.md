@@ -24,7 +24,7 @@ Maliyet ağırlıklı recall: işlemlerin en riskli %1'i alert olduğunda yakala
 ## Kalibrasyon (test dönemi)
 | Çıktı | Brier | ECE (10 kutu) | Ort. tahmin | Gözlenen oran |
 |---|---|---|---|---|
-| LightGBM (izotonik) | 0.00869 | 0.00838 | 0.0149 | 0.0232 |
+| LightGBM (ham çıktı) | 0.00869 | 0.00838 | 0.0149 | 0.0232 |
 | Hibrit (stacker) | 0.00662 | 0.00378 | 0.0207 | 0.0232 |
 
 Kalibrasyon doğrulama dağılımında yapılır; test döneminde taban oran kayarsa ECE büyür. Etiket gürültüsü (kaçan fraud) gözlenen oranı gerçek oranın altında tutar.
@@ -89,7 +89,7 @@ Model yalnızca sentetik veriyle eğitildi. Halka açık verilerdeki (PaySim, El
 - **Seçim kuralı (yalnız doğrulama dönemi):** %1 alarm bütçesinde kaçan fraud tutarı payı en düşük olan aday seçilir; eşitlikte doğrulama PR-AUC'si belirler. Doğrulama dönemindeki değerler: v5 0,1449, v6 0,1982. Test ve PaySim sonuçları karardan sonra bir kez raporlanır, seçimde kullanılmaz. Test dönemi: v5 hibrit PR-AUC 0,8355, Brier 0,00662, ECE 0,00378; v6 0,8401 / 0,00626 / 0,00375. Terfi dört göz ilkesiyle yapıldı: talep `admin`, onay `kidemli_analist`; kendi kendini onaylama 403 döner. Kaynaklar: `scripts/champion_selection.py`, `artifacts/validation/champion_selection.json`.
 - **Champion / challenger:** Challenger her işlemde gölge olarak skorlanır, karara etki etmez. `GET /api/models/compare` çevrimdışı ve çevrimiçi karşılaştırma yapar.
 - **Terfi:** Admin talebi ve farklı bir kıdemli kullanıcının onayı gerekir (maker-checker). Sonra canlı motor yeniden yüklenir.
-- **Kalibrasyon:** Politika eşikleri (0,35 / 0,60 / 0,85) kalibre bir olasılık üzerinde çalışır. Stacker kural tabanını kaldırınca bazı açık vakalarda risk skoru BLOCK eşiğinin altına iner; bu olaylar kural aksiyon tabanıyla (`RULE_FLOOR`) BLOCK'a taşınır.
+- **Kalibrasyon:** Yalnız stacker çıktısı doğrulama diliminde (negatif olmayan Platt/lojistik) kalibre edilir; LightGBM ham çıktısına ayrı bir kalibratör uygulanmaz. Politika eşikleri (0,35 / 0,60 / 0,85) elle seçildi, veriyle optimize edilmedi. Stacker kural tabanını kaldırınca bazı açık vakalarda risk skoru BLOCK eşiğinin altına iner; bu olaylar kural aksiyon tabanıyla (`RULE_FLOOR`) BLOCK'a taşınır.
 - **Drift:** Skor ve en etkili 10 feature için PSI izlenir (0,10 izle / 0,25 alarm): `fraud_drift_psi`, `GET /api/models/drift`. Prod dışında (`drift_reference=auto`) PSI referansı modelin eğitim dağılımından değil, açılıştaki demo popülasyonundan kurulur. Böylece demo açılışında yanlış alarm oluşmaz. Prod'da modelin referansı kullanılır.
 - **Geri besleme:** Profil öğrenmesi tek bir kurala bağlıdır (`app/features/learning.py::should_learn`):
   - Doğrulanmış fraud hiç öğrenilmez.

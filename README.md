@@ -53,7 +53,7 @@ Ayrıntı: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · kararlar: [`docs/ad
 
 | Yetkinlik | Anil3'teki uygulama |
 |---|---|
-| Skor motoru | Güvenli YAML/DB kural DSL + LightGBM + IForest/ECOD + graf + APP + online model → kalibre lojistik stacker |
+| Skor motoru | Güvenli YAML/DB kural DSL + LightGBM + IForest/ECOD + graf + APP + online model → lojistik stacker (yalnız stacker çıktısı kalibre; eşikler elle seçildi) |
 | Davranış profili | EWMA profil + river Half-Space Trees. Öğrenme kuralı tek yerde (`app/features/learning.py::should_learn`), backfill ve canlı sistem aynı kuralı kullanır |
 | Feature store | 1dk/1s/24s/7g adet+tutar, yeni alıcı, cihaz yaşı, fan-in, yazma ritmi… (Redis / bellek, online = offline). Müşteri başına kilit, Redis'te idempotent Lua commit |
 | Mule ağı | networkx grafı: fan-in→fan-out, 24 saatlik katmanlama döngüsü, fraud yakınlığı, Louvain halkaları, PageRank |

@@ -455,7 +455,7 @@ def render_model_card(meta: dict[str, Any]) -> str:
     cal_rows = [
         f"| {label} | {cal[k]['brier']:.5f} | {cal[k]['ece_10bin']:.5f} | "
         f"{cal[k]['mean_predicted']:.4f} | {cal[k]['observed_rate']:.4f} |"
-        for k, label in (("ml", "LightGBM (izotonik)"), ("hybrid", "Hibrit (stacker)"))
+        for k, label in (("ml", "LightGBM (ham çıktı)"), ("hybrid", "Hibrit (stacker)"))
         if k in cal
     ]
     fit = st.get("fit") or {}
