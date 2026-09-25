@@ -26,6 +26,15 @@ realistic rate, part of the account takeovers run from the victim's *known*
 device (session hijack / remote access), mule rings do not always share a
 device and a configurable share of labels is flipped (label noise). A leakage
 detector test checks that identifier fields alone cannot predict fraud.
+
+**Fewer free-text/network artefacts (v3).** Purposes come from one shared
+vocabulary for every typology (fraudsters coach victims to type innocuous
+purposes; only a minority of scam payments carry urgency text, and legitimate
+customers occasionally write alarming-looking ones too), legitimate customers
+shop online at the same merchants the card testers hit, and VPN / travel IPs
+are common enough in normal traffic that the network prefix is a weak signal.
+Label noise is asymmetric: most noise is *missed fraud* (fraud → 0), only a
+tiny share of legitimate payments become false positives (disputes).
 """
 
 from __future__ import annotations
@@ -163,6 +172,10 @@ CITIES = [
     "Diyarbakır",
 ]
 NORMAL_PURPOSES = (
+    "Ödeme",
+    "Borç",
+    "Emanet",
+    "Yatırım",
     "Kira",
     "Market",
     "Fatura",
@@ -175,6 +188,7 @@ NORMAL_PURPOSES = (
     "Yemek",
     "Sağlık",
     "Tatil",
+    "",
     "",
 )
 URGENT_PURPOSES = (
@@ -195,6 +209,8 @@ BILLERS = (
     "Site Yönetimi",
     "Özel Okul AŞ",
     "Sigorta AŞ",
+    "Vergi Dairesi Tahsilat",
+    "Yatırım Danışmanı",
 )
 BIG_PURCHASES = (
     "Araç kaporası",
@@ -235,11 +251,20 @@ class SyntheticConfig:
     mule_shared_device_rate: float = 0.35
     #: card-testing bursts run from an already known device (infected browser)
     card_known_device_rate: float = 0.25
-    #: share of labels flipped (missed chargebacks / friendly-fraud disputes)
-    label_noise_rate: float = 0.01
+    #: share of fraud labels flipped to 0 (missed fraud: no chargeback, unreported)
+    label_noise_fn_rate: float = 0.10
+    #: share of legitimate labels flipped to 1 (friendly-fraud disputes); kept tiny
+    #: so flipped normals stay a small share of the positives
+    label_noise_fp_rate: float = 0.0005
     legit_new_payee_rate: float = 0.07
-    legit_travel_rate: float = 0.006
-    legit_vpn_rate: float = 0.006
+    #: legitimate online shopping at the merchants card testers also hit
+    legit_online_shop_rate: float = 0.06
+    #: legitimate payment whose purpose text looks urgent (real tax office, investment)
+    legit_urgent_purpose_rate: float = 0.002
+    #: APP-scam payment whose purpose carries the coached urgency text
+    app_urgent_purpose_rate: float = 0.3
+    legit_travel_rate: float = 0.012
+    legit_vpn_rate: float = 0.015
 
 
 @dataclass
@@ -320,6 +345,7 @@ class _Builder:
         self.roles: dict[str, str] = {}
         self.rings: list[dict[str, Any]] = []
         self._used_names: set[str] = set()
+        self._merchants: dict[str, str] = {}
         s = get_settings()
         self.threshold = s.structuring_threshold_try
         self.band = s.structuring_band
@@ -364,6 +390,15 @@ class _Builder:
             "account_opened": opened.date().isoformat(),
             "is_mule": mule,
         }
+        return iban
+
+    def _merchant(self) -> str:
+        """IBAN of a (shared) online merchant — the same registry for every typology."""
+        name = self.rng.choice(MERCHANTS)
+        iban = self._merchants.get(name)
+        if iban is None:
+            iban = self._payee(name, kind="merchant")
+            self._merchants[name] = iban
         return iban
 
     def _session(self, c: dict[str, Any], **over: Any) -> dict[str, Any]:
@@ -557,6 +592,15 @@ class _Builder:
             tx["amount"] = round(self.threshold * rng.uniform(self.band, 0.999), 2)
             tx["purpose"] = "Tedarikçi ödemesi"
             self._to(tx, rng.choice(self.regular[c["customer_id"]]))
+        elif (
+            self.cfg.legit_new_payee_rate
+            <= roll
+            < self.cfg.legit_new_payee_rate + self.cfg.legit_online_shop_rate
+        ):
+            tx["amount"] = round(max(5.0, rng.lognormvariate(math.log(250), 0.9)), 2)
+            tx["purpose"] = "Online alışveriş"
+            tx["channel"] = "web" if rng.random() < 0.7 else tx["channel"]
+            self._to(tx, self._merchant())
         elif roll < self.cfg.legit_new_payee_rate:
             iban = self._payee(self._name(), kind="person")
             self.regular[c["customer_id"]].append(iban)
@@ -568,6 +612,8 @@ class _Builder:
             regular = self.regular[c["customer_id"]]
             weights = [1.0 / (i + 1) for i in range(len(regular))]
             self._to(tx, rng.choices(regular, weights=weights)[0])
+        if rng.random() < self.cfg.legit_urgent_purpose_rate:
+            tx["purpose"] = rng.choice(URGENT_PURPOSES)
         if rng.random() < self.cfg.legit_new_device_rate:
             # one-off legitimate new device (e.g. a borrowed phone) — never added to KYC
             tx["device_id"] = self._device()
@@ -614,7 +660,6 @@ class _Builder:
                 device_id=rng.choice(ring["devices"])
                 if rng.random() < self.cfg.mule_shared_device_rate
                 else tx["device_id"],
-                purpose=rng.choice(("", "Borç", "Ödeme", "Emanet")),
                 label=1,
                 typology="mule",
                 session=self._session(member, login_to_transfer_s=round(rng.uniform(15, 60), 1)),
@@ -664,7 +709,6 @@ class _Builder:
                     country=country,
                     location=city,
                     channel=rng.choice(("web", "mobile")),
-                    purpose=rng.choice(("", "Ödeme", "Borç")),
                     label=1,
                     typology="ato",
                     session=self._session(
@@ -688,13 +732,12 @@ class _Builder:
             day = rng.randint(8, self.cfg.days - 1)
             ts = self._time(day, rng.choice(c["typical_hours"]))
             mule_iban, ring = self._mule_iban()
-            typed = rng.choice(
-                (
-                    "Emniyet Güvenli Hesap",
-                    "Vergi Dairesi Tahsilat",
-                    "Yatırım Danışmanı",
-                    self._name(),
-                )
+            # most scammers have the victim type a plausible person name; the
+            # "official" names also appear as legitimate billers (tax office)
+            typed = (
+                rng.choice(("Emniyet Güvenli Hesap", "Vergi Dairesi Tahsilat", "Yatırım Danışmanı"))
+                if rng.random() < 0.3
+                else self._name()
             )
             call = rng.random() < 0.55
             remote = (not call and rng.random() < 0.45) or rng.random() < 0.1
@@ -702,10 +745,9 @@ class _Builder:
                 ts = ts + timedelta(minutes=rng.uniform(2, 40) * k)
                 tx = self._base_tx(c, ts, c["avg_amount"] * rng.uniform(2, 30))
                 ltt = rng.uniform(300, 1800)
+                if rng.random() < self.cfg.app_urgent_purpose_rate:
+                    tx["purpose"] = rng.choice(URGENT_PURPOSES)
                 tx.update(
-                    purpose=rng.choice(URGENT_PURPOSES)
-                    if rng.random() < 0.6
-                    else rng.choice(("Ödeme", "Borç", "Kira")),
                     label=1,
                     typology="app",
                     session=self._session(
@@ -738,7 +780,6 @@ class _Builder:
                         device_id=rng.choice(ring["devices"])
                         if rng.random() < self.cfg.mule_shared_device_rate
                         else tx["device_id"],
-                        purpose="Emanet",
                         label=1,
                         typology="mule",
                     )
@@ -754,7 +795,7 @@ class _Builder:
             ip = self._ip(rng.choice(ANON_IP_PREFIXES + DOMESTIC_IP_PREFIXES * 2))
             for _ in range(rng.randint(6, 16)):
                 ts = ts + timedelta(seconds=rng.uniform(10, 90))
-                merchant = self._payee(rng.choice(MERCHANTS), kind="merchant")
+                merchant = self._merchant()
                 tx = self._base_tx(c, ts, rng.uniform(1, 90))
                 tx.update(
                     device_id=device,
@@ -783,9 +824,7 @@ class _Builder:
                 amount = self.threshold * rng.uniform(self.band + 0.005, 0.998)
                 target = self._payee(self._name(), kind="person")
                 tx = self._base_tx(c, ts, amount)
-                tx.update(
-                    purpose=rng.choice(("", "Ödeme", "Borç")), label=1, typology="structuring"
-                )
+                tx.update(label=1, typology="structuring")
                 self._emit(self._to(tx, target))
 
     def sanctions(self) -> None:
@@ -804,12 +843,20 @@ class _Builder:
 
     # --- assembly ---------------------------------------------------------------------------
     def label_noise(self) -> None:
-        """Flip a small share of labels (missed chargebacks, friendly fraud)."""
+        """Asymmetric label noise.
+
+        Real fraud labels come from chargebacks and customer reports, so the
+        dominant error is *missed fraud* (fraud labelled 0,
+        ``label_noise_fn_rate``); a legitimate payment is only rarely disputed as
+        fraud (``label_noise_fp_rate``), so flipped normals stay a small share
+        of the positives.
+        """
         rng = self.rng
         for tx in self.tx:
             if tx.get("exclude_from_training"):
                 continue
-            if rng.random() < self.cfg.label_noise_rate:
+            rate = self.cfg.label_noise_fn_rate if tx["label"] else self.cfg.label_noise_fp_rate
+            if rng.random() < rate:
                 tx["label"] = 1 - int(tx["label"])
                 tx["label_noise"] = True
 

@@ -29,6 +29,13 @@ SMALL = {
     "sanctions_hits": 3,
 }
 MAX_FEATURE_SHARE = 0.35
+#: flipped legitimate payments may be at most this share of the positive labels
+MAX_FLIPPED_NORMAL_SHARE = 0.10
+#: depth-4 tree on purpose + IP + beneficiary name only. Before v3 these fields
+#: alone reached AP 0.88; what remains is typology semantics (fraud never pays
+#: utility bills or withdraws cash at an ATM), not generator artefacts.
+MAX_TEXT_NETWORK_AP = 0.30
+MAX_TEXT_NETWORK_LIFT = 8.0
 #: detector AUC that still counts as "chance" for a few hundred positives
 CHANCE_AUC = 0.60
 
@@ -87,19 +94,45 @@ def test_label_noise_is_applied(data) -> None:
     assert all(t["label"] == (0 if t["typology"] == "normal" else 1) ^ 1 for t in noisy)
 
 
+def test_label_noise_is_asymmetric(data) -> None:
+    """Noise is mostly missed fraud; flipped normals are a small share of positives."""
+    noisy = [t for t in data.transactions if t.get("label_noise")]
+    missed = sum(t["typology"] != "normal" for t in noisy)
+    disputed = sum(t["typology"] == "normal" for t in noisy)
+    positives = sum(t["label"] for t in data.transactions if not t["exclude_from_training"])
+    assert missed > disputed
+    assert disputed / positives < MAX_FLIPPED_NORMAL_SHARE
+
+
+def test_label_noise_rates_are_configurable() -> None:
+    clean = generate(
+        SyntheticConfig(seed=3, label_noise_fn_rate=0.0, label_noise_fp_rate=0.0, **SMALL)
+    )
+    assert not any(t.get("label_noise") for t in clean.transactions)
+    only_missed = generate(
+        SyntheticConfig(seed=3, label_noise_fn_rate=0.5, label_noise_fp_rate=0.0, **SMALL)
+    )
+    flipped = [t for t in only_missed.transactions if t.get("label_noise")]
+    assert flipped
+    assert all(t["typology"] != "normal" and t["label"] == 0 for t in flipped)
+
+
 def test_identifier_fields_alone_predict_fraud_at_chance(data) -> None:
     from sklearn.ensemble import HistGradientBoostingClassifier
     from sklearn.metrics import roc_auc_score
-    from sklearn.model_selection import cross_val_predict
+    from sklearn.model_selection import GroupKFold, cross_val_predict
 
     rows = [t for t in data.transactions if not t["exclude_from_training"]]
     x = np.asarray([_id_features(t) for t in rows])
     y = np.asarray([int(t["typology"] != "normal") for t in rows])
+    # Folds grouped by device: a card-testing burst reuses one device 6-16 times,
+    # and memorising that device's digit count is entity identity, not a format leak.
     proba = cross_val_predict(
         HistGradientBoostingClassifier(max_iter=60, random_state=0),
         x,
         y,
-        cv=3,
+        cv=GroupKFold(3),
+        groups=[t["device_id"] for t in rows],
         method="predict_proba",
     )[:, 1]
     assert roc_auc_score(y, proba) < CHANCE_AUC
@@ -119,3 +152,38 @@ def test_no_single_feature_dominates_the_model(data, tmp_path) -> None:
     assert share <= MAX_FEATURE_SHARE, (top, share)
     device_share = importance.get("is_new_device", 0) + importance.get("device_age_d", 0)
     assert device_share <= MAX_FEATURE_SHARE
+
+
+def _text_network_features(tx: dict, purposes: list[str]) -> list[float]:
+    """Purpose, IP prefix and beneficiary-name shape (the audit's L9 probe)."""
+    octets = [*str(tx.get("ip_address") or "0.0.0.0").split("."), "0", "0"][:2]
+    name = str(tx.get("beneficiary_name") or "")
+    return [
+        float(purposes.index(tx["purpose"])),
+        float(octets[0]),
+        float(octets[1]),
+        float(len(name.split())),
+        float(len(name)),
+        float(any(ch.isdigit() for ch in name)),
+    ]
+
+
+def test_purpose_ip_and_name_alone_are_weak_predictors(data) -> None:
+    from sklearn.metrics import average_precision_score
+    from sklearn.model_selection import StratifiedKFold, cross_val_predict
+    from sklearn.tree import DecisionTreeClassifier
+
+    rows = [t for t in data.transactions if not t["exclude_from_training"]]
+    purposes = sorted({t["purpose"] for t in rows})
+    x = np.asarray([_text_network_features(t, purposes) for t in rows])
+    y = np.asarray([int(t["typology"] != "normal") for t in rows])
+    proba = cross_val_predict(
+        DecisionTreeClassifier(max_depth=4, random_state=0),
+        x,
+        y,
+        cv=StratifiedKFold(3, shuffle=True, random_state=0),
+        method="predict_proba",
+    )[:, 1]
+    ap = average_precision_score(y, proba)
+    assert ap < MAX_TEXT_NETWORK_AP, ap
+    assert ap / y.mean() < MAX_TEXT_NETWORK_LIFT, (ap, y.mean())

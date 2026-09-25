@@ -124,7 +124,7 @@ class TestTraining:
         a, b = reports
         assert a.metrics["test"] == b.metrics["test"]
         hybrid = a.metrics["test"]["hybrid"]
-        assert hybrid["pr_auc"] > 0.6
+        assert hybrid["pr_auc"] > 0.5  # v3 generator: fewer text/network artefacts
         assert a.metrics["test"]["ml"]["roc_auc"] > 0.8
         assert a.seconds < 120
         card = (a.path / "model_card.md").read_text(encoding="utf-8")
