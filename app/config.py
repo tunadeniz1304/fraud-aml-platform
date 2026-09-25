@@ -84,6 +84,8 @@ class Settings(BaseSettings):
     writer_max_retries: int = 2
     writer_retry_base_ms: int = 50
     writer_retry_max_ms: int = 2_000
+    #: a batch failing transiently this long is re-checked against a DB ping (A2)
+    writer_transient_timeout_s: float = 30.0
 
     # --- Event bus (P0.2) --------------------------------------------------
     event_bus: Literal["memory", "redis"] = "memory"

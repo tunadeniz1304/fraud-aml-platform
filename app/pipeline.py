@@ -1027,6 +1027,7 @@ async def build_pipeline(
         max_retries=settings.writer_max_retries,
         retry_base=settings.writer_retry_base_ms / 1000,
         retry_max=settings.writer_retry_max_ms / 1000,
+        transient_timeout=settings.writer_transient_timeout_s,
     )
     accounts = AccountService(db, writer)
     await accounts.load()
