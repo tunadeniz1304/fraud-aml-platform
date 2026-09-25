@@ -15,7 +15,7 @@ const NAV: { hash: string; label: string; senior?: boolean }[] = [
   { hash: "#/rules", label: "Kural stüdyosu" },
   { hash: "#/models", label: "Model izleme" },
   { hash: "#/validation", label: "Doğrulama", senior: true },
-  { hash: "#/scenarios", label: "Senaryo (demo)" },
+  { hash: "#/scenarios", label: "Senaryo (demo)", senior: true },
 ];
 
 const FOCUS = "focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-950";

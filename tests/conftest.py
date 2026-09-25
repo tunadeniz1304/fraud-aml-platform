@@ -45,11 +45,14 @@ pytest_plugins = ["pytest_asyncio"]
 
 @pytest.fixture(autouse=True)
 def _reset_rate_limits() -> Iterator[None]:
+    from app.security.challenges import CHALLENGES
     from app.security.ratelimit import limiter
 
     limiter.reset()
+    CHALLENGES.reset()
     yield
     limiter.reset()
+    CHALLENGES.reset()
 
 
 @pytest.fixture()

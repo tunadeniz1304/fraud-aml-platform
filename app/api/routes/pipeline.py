@@ -6,7 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi import status as http_status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.api.deps import require_pipeline
 from app.api.schemas import (
@@ -20,8 +20,9 @@ from app.api.schemas import (
 from app.db import repository as repo
 from app.db.audit import verify_chain
 from app.security.auth import Principal
-from app.security.deps import ingest_principal, require_role
-from app.security.ratelimit import ingest_limit, ingest_rate_key, limiter
+from app.security.challenges import CHALLENGES
+from app.security.deps import ingest_principal, require_role, service_principal
+from app.security.ratelimit import ingest_limit, limiter, principal_rate_key, step_up_limit
 
 router = APIRouter(prefix="/api", tags=["pipeline"])
 analyst_only = Depends(require_role("analist"))
@@ -100,13 +101,17 @@ async def dead_letters(limit: int = Query(50, ge=1, le=500)) -> dict[str, Any]:
 
 
 @router.post("/transactions", response_model=AnalyzedTransactionOut)
-@limiter.limit(ingest_limit, key_func=ingest_rate_key)
+@limiter.limit(ingest_limit, key_func=principal_rate_key)
 async def ingest(
     request: Request,
     tx: TransactionIn,
     principal: Principal = Depends(ingest_principal),
 ) -> AnalyzedTransactionOut:
-    """Live-ingest a transaction (service key / HMAC / analyst JWT required)."""
+    """Live-ingest a transaction (service key / HMAC; analyst JWT outside prod).
+
+    A ``STEP_UP`` decision carries a one-time ``step_up_challenge_id`` that the
+    channel must present with the OTP outcome.
+    """
     pipeline = require_pipeline()
     payload: dict[str, Any] = tx.model_dump(mode="json", exclude_none=True)
     payload["ts"] = tx.ts.isoformat()
@@ -122,28 +127,47 @@ async def ingest(
             status_code=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={"message": "İşlem reddedildi", "issues": result.get("issues", [])},
         )
-    return AnalyzedTransactionOut(**result)
+    out = AnalyzedTransactionOut(**result)
+    if out.decision == "STEP_UP":
+        challenge = await CHALLENGES.issue(out.transaction_id, out.customer_id)
+        if challenge is not None:  # None: already issued (duplicate / replayed ingest)
+            out.step_up_challenge_id = challenge.challenge_id
+    return out
 
 
 class StepUpResultIn(BaseModel):
+    challenge_id: str = Field(min_length=1, max_length=128)
     success: bool
 
 
+_INVALID_CHALLENGE = "Step-up doğrulaması geçersiz, süresi dolmuş ya da zaten kullanılmış"
+
+
 @router.post("/transactions/{transaction_id}/step-up-result")
+@limiter.limit(step_up_limit, key_func=principal_rate_key)
 async def step_up_result(
+    request: Request,
     transaction_id: str,
     body: StepUpResultIn,
-    principal: Principal = Depends(ingest_principal),
+    principal: Principal = Depends(service_principal),
 ) -> dict[str, Any]:
-    """OTP / step-up challenge outcome (simulated channel callback).
+    """OTP / step-up challenge outcome (channel callback, service credentials only).
 
-    A passed challenge adds the device and payee to the customer's profile as
-    verified, so the same legitimate device is not challenged forever.
+    The one-time challenge issued with the ``STEP_UP`` decision is consumed
+    here; it must belong to this transaction. Only a verified pass adds the
+    device and payee to the customer's profile, so the same legitimate device
+    is not challenged forever.
     """
     pipeline = require_pipeline()
+    challenge = await CHALLENGES.consume(body.challenge_id)
+    if challenge is None or challenge.transaction_id != transaction_id:
+        raise HTTPException(status_code=http_status.HTTP_409_CONFLICT, detail=_INVALID_CHALLENGE)
     try:
         return await pipeline.step_up_result(
-            transaction_id, success=body.success, actor=principal.username
+            transaction_id,
+            success=body.success,
+            actor=principal.username,
+            expected_customer=challenge.customer_id,
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="İşlem bulunamadı") from None

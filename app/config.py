@@ -288,8 +288,15 @@ class Settings(BaseSettings):
     cors_origins: list[str] = Field(default_factory=list)
     rate_limit_default: str = "1200/minute"
     rate_limit_login: str = "10/minute"
-    # per client (API key / token / IP — see ingest_rate_key), not global
+    # per authenticated principal (IP until authentication succeeds — see
+    # principal_rate_key), not global
     rate_limit_ingest: str = "6000/minute"
+    rate_limit_step_up: str = "120/minute"
+    rate_limit_copilot: str = "30/minute"
+    # 401 answers per client IP; beyond this every request from it gets 429
+    rate_limit_auth_failures: str = "30/minute"
+    # Step-up (OTP) challenge: one-time id bound to transaction + customer
+    step_up_challenge_ttl_s: int = 600
 
     # --- Convenience -------------------------------------------------------
     @property

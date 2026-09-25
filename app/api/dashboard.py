@@ -88,6 +88,8 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> FastAPI:
     app.include_router(rules.router)
     app.include_router(cases.router)
     app.include_router(network.router)
+    if settings.environment != "prod":
+        app.include_router(network.scenario_router)
     app.include_router(copilot.router)
     app.include_router(models.router)
     app.include_router(live.router)

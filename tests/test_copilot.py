@@ -186,7 +186,7 @@ def ticket(client) -> str:
 class TestApi:
     def test_copilot_endpoints_sib_export_chat_and_models(self, demo_env):
         with TestClient(create_app()) as client:
-            run = client.post("/api/scenarios/smurfing", headers=ANALYST).json()
+            run = client.post("/api/scenarios/smurfing", headers=SENIOR).json()
             cid = run["cases"][0]["id"]
             s = client.post(f"/api/cases/{cid}/copilot/summary", headers=ANALYST)
             assert s.status_code == 200 and len(s.json()["summary"]["bullets"]) == 5
@@ -248,7 +248,7 @@ class TestApi:
             )
             ok = client.post(f"/api/approvals/{req.json()['id']}/approve", headers=SENIOR)
             assert ok.status_code == 200 and ok.json()["result"]["champion"] == "fraud_gbm_v4"
-            ready = client.get("/api/health/ready").json()
+            ready = client.get("/api/health/ready", headers=ADMIN).json()
             assert ready["info"]["model"] == "fraud_gbm_v4"
             back = client.put("/api/models/fraud_gbm_v3/challenger", headers=ADMIN)
             assert back.status_code == 200 and back.json()["challenger"] == "fraud_gbm_v3"

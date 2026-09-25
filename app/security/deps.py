@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from app.config import get_settings
 from app.security.auth import (
     AuthError,
     NonceStore,
@@ -52,12 +53,20 @@ def principal_from_token(token: str) -> Principal:
         raise _unauthorized(str(exc)) from None
 
 
+def _bind(request: Request, principal: Principal) -> Principal:
+    """Remember the authenticated principal: the rate-limit key switches from
+    the client IP to the principal only after authentication succeeded."""
+    request.state.principal = principal
+    return principal
+
+
 async def current_principal(
+    request: Request,
     creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
 ) -> Principal:
     if creds is None or not creds.credentials:
         raise _unauthorized()
-    return principal_from_token(creds.credentials)
+    return _bind(request, principal_from_token(creds.credentials))
 
 
 async def stream_principal(
@@ -68,12 +77,12 @@ async def stream_principal(
     ``POST /api/stream/ticket``. JWTs in the query string (``?access_token=``)
     are refused: they end up in access logs and browser history."""
     if creds is not None and creds.credentials:
-        return principal_from_token(creds.credentials)
+        return _bind(request, principal_from_token(creds.credentials))
     ticket = request.query_params.get("ticket")
     principal = await TICKETS.redeem(ticket) if ticket else None
     if principal is None:
         raise _unauthorized("Geçerli bir SSE bileti gerekli (POST /api/stream/ticket)")
-    return principal
+    return _bind(request, principal)
 
 
 def require_role(minimum: Role) -> Callable[..., Awaitable[Principal]]:
@@ -90,16 +99,13 @@ def require_role(minimum: Role) -> Callable[..., Awaitable[Principal]]:
     return _dep
 
 
-async def ingest_principal(
-    request: Request,
-    creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
-) -> Principal:
-    """Service key, HMAC signature or an analyst JWT may ingest transactions."""
+async def _service_credentials(request: Request) -> Principal | None:
+    """``X-API-Key`` or HMAC-signed body; ``None`` when neither header is sent."""
     api_key = request.headers.get("x-api-key")
     configured_key = service_api_key()
     if api_key:
         if configured_key and constant_time_equals(api_key, configured_key):
-            return Principal("ingest-service", "service", "Servis", via="api_key")
+            return _bind(request, Principal("ingest-service", "service", "Servis", via="api_key"))
         raise _unauthorized("Geçersiz servis anahtarı")
     signature = request.headers.get("x-signature")
     if signature:
@@ -109,9 +115,35 @@ async def ingest_principal(
             service_hmac_secret(), request.headers.get("x-timestamp"), signature, body, nonce=nonce
         ):
             if nonce and await nonce_store(request).claim(nonce):
-                return Principal("ingest-service", "service", "Servis", via="hmac")
+                return _bind(request, Principal("ingest-service", "service", "Servis", via="hmac"))
             raise _unauthorized("HMAC nonce daha önce kullanıldı (tekrar saldırısı)")
         raise _unauthorized("Geçersiz HMAC imzası")
+    return None
+
+
+async def ingest_principal(
+    request: Request,
+    creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
+) -> Principal:
+    """Service key or HMAC signature; an analyst JWT only outside prod
+    (demo/test convenience — in prod ingest is a machine-to-machine path)."""
+    service = await _service_credentials(request)
+    if service is not None:
+        return service
     if creds is not None and creds.credentials:
-        return principal_from_token(creds.credentials)
+        if get_settings().environment == "prod":
+            raise _unauthorized(
+                "Prod ortamında işlem girişi yalnızca servis kimliğiyle "
+                "(X-API-Key / X-Signature) yapılabilir"
+            )
+        return _bind(request, principal_from_token(creds.credentials))
     raise _unauthorized("Servis kimliği (X-API-Key / X-Signature) veya oturum gerekli")
+
+
+async def service_principal(request: Request) -> Principal:
+    """Service credentials only (API key / HMAC) — never an analyst session.
+    Used by channel callbacks such as the step-up (OTP) result."""
+    service = await _service_credentials(request)
+    if service is None:
+        raise _unauthorized("Servis kimliği (X-API-Key / X-Signature) gerekli")
+    return service

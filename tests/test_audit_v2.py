@@ -601,9 +601,14 @@ def test_c19_rate_limit_bucket_is_per_client() -> None:
         raw = [(k.lower().encode(), v.encode()) for k, v in headers.items()]
         return Request({"type": "http", "headers": raw, "client": ("10.0.0.1", 1)})
 
+    from app.security.auth import Principal
+
+    # one bucket per authenticated principal; the credential never becomes a key
     a, b = req({"X-API-Key": "key-a"}), req({"X-API-Key": "key-b"})
+    a.state.principal = Principal("svc-a", "service", via="api_key")
+    b.state.principal = Principal("svc-b", "service", via="api_key")
     assert ingest_rate_key(a) != ingest_rate_key(b)
-    assert "key-a" not in ingest_rate_key(a)  # only a hash prefix
+    assert "key-a" not in ingest_rate_key(a)
     assert ingest_rate_key(req({})) == "ip:10.0.0.1"
 
 
