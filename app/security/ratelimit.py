@@ -14,6 +14,9 @@ limiter = Limiter(
     key_func=get_remote_address,
     default_limits=[get_settings().rate_limit_default],
     headers_enabled=False,
+    # "memory://" counts per process; with uvicorn --workers N point it at Redis
+    # (RATE_LIMIT_STORAGE_URI=redis://...) so the limit is global, not N x limit
+    storage_uri=get_settings().rate_limit_storage_uri,
 )
 
 

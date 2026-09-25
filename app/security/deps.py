@@ -70,7 +70,7 @@ async def stream_principal(
     if creds is not None and creds.credentials:
         return principal_from_token(creds.credentials)
     ticket = request.query_params.get("ticket")
-    principal = TICKETS.redeem(ticket) if ticket else None
+    principal = await TICKETS.redeem(ticket) if ticket else None
     if principal is None:
         raise _unauthorized("Geçerli bir SSE bileti gerekli (POST /api/stream/ticket)")
     return principal

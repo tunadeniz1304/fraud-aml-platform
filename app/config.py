@@ -85,6 +85,14 @@ class Settings(BaseSettings):
     bus_max_retries: int = 2
     bus_partitions: int = 0
     bus_queue_size: int = 1_000
+    # V6: decision side effects (cases, live feed, egress) run after the response
+    write_behind_queue_size: int = 20_000
+    # concurrent copilot enrichments (ŞİB drafts) — CPU work shared with scoring
+    enrich_concurrency: int = 2
+    # Redis idempotency window of POST /api/transactions (multi-worker replays)
+    idempotency_ttl_s: int = 86_400
+    # slowapi storage: "memory://" (per process) or e.g. "redis://redis:6379/1"
+    rate_limit_storage_uri: str = "memory://"
     bus_claim_idle_ms: int = 5_000
 
     # --- Feature store (P0.4) ----------------------------------------------

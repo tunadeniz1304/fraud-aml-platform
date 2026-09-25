@@ -62,5 +62,5 @@ async def auth_config(request: Request) -> dict[str, bool]:
 @stream_router.post("/ticket")
 async def stream_ticket(principal: Principal = Depends(current_principal)) -> dict[str, object]:
     """Single-use, short-lived ticket for one SSE connection (``?ticket=``)."""
-    ticket, ttl = TICKETS.issue(principal)
+    ticket, ttl = await TICKETS.issue(principal)
     return {"ticket": ticket, "expires_in": ttl}
