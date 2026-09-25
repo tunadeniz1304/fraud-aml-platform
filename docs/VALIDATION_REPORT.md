@@ -38,6 +38,13 @@ Bu rapordaki bütün sayılar `artifacts/validation/` altındaki JSON dosyaları
 - **Politika katmanı (`full`) sentetik veride PR-AUC'yi düşürüyor.** Δ = −0.0118
   (GA [−0.0196, −0.0046], "zarar"). Politika sıralamayı kural taban eylemleri ve tipoloji
   tavanlarıyla değiştiriyor; bu bir sıralama metriği için zarar, bir karar kuralı olarak bilinçli.
+- **Politika katmanı sentetik veride tutar ağırlıklı recall'ı yarıya indiriyor.** 1 % alarm
+  bütçesinde yakalanan fraud tutarı oranı `rules+gbm` için 0.488, `full` için 0.248
+  (`budget_0.01/cost`); yani politika yeniden sıralaması alarm bütçesini daha düşük tutarlı
+  olaylara kaydırıyor. 2 % bütçede sıra tersine dönüyor (`full` 0.920, `rules+gbm` 0.885). PaySim'de bu etki yok
+  (`full` = `rules+gbm`).
+- **PaySim'de stacker sıralamanın genelinde GBM'den zayıf.** ROC-AUC 0.9125 → 0.8721, 1 % FPR'de
+  recall 0.5995 → 0.5864; yalnız PR-AUC (+0.0187) iyileşiyor.
 - **Elliptic'te yapısal graf özellikleri, veriyle gelen özelliklerin üstüne bir şey eklemiyor.**
   Tek başına `graph` (4 özellik) illicit F1 0.1177. `all` (165 özellik) F1 0.7984
   [0.7798, 0.817], `all+graph` 0.7891 [0.7705, 0.8065].

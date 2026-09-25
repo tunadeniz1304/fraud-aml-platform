@@ -56,7 +56,7 @@ Bağımsız denetim bulgularını kapatan sürüm. Bulgular önce `tests/test_au
 ### Dokümantasyon
 - README: ürün eşitliği tablosu ve statik kapsam/p99 rozetleri kaldırıldı; "İlham alınan desenler" ve "Sınırlamalar" bölümleri, CI durum rozeti, gecikme iddiaları "motor (süreç içi)" olarak etiketlendi.
 - `docs/COMPLIANCE.md`: her yasal referans resmî URL ve uygulayan modülle eşlendi; doğrulanamayanlar işaretlendi.
-- `docs/MODEL_CARD.md`, `docs/ARCHITECTURE.md` v3 modeline ve v2 değişikliklerine göre güncellendi; `docs/DATA.md`, `docs/VALIDATION_REPORT.md`, `docs/PLAN_v2.md` eklendi.
+- `docs/MODEL_CARD.md`, `docs/ARCHITECTURE.md` champion `fraud_gbm_v5` modeline ve v2 değişikliklerine göre güncellendi; `docs/DATA.md`, `docs/VALIDATION_REPORT.md`, `docs/PLAN_v2.md` eklendi.
 
 ## [2.0.0] — 2026-09-25
 
