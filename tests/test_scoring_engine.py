@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import statistics
 
@@ -14,6 +15,11 @@ from app.ml.registry import ModelRegistry
 from app.scoring.engine import ScoringEngine
 from app.scoring.rules import RuleDef, RuleSet
 from app.synthetic.generator import SyntheticConfig, generate, strip_labels
+
+# champion / challenger come from the committed registry, so a retrain and
+# promotion (scripts/champion_selection.py) does not need test edits
+_REGISTRY = json.loads((BASE_DIR / "models" / "registry.json").read_text(encoding="utf-8"))
+CHAMPION, CHALLENGER = _REGISTRY["champion"], _REGISTRY["challenger"]
 
 CLEAN = {
     "transaction_id": "TX-E1",
@@ -50,7 +56,7 @@ class TestHybridScoring:
         assert result.decision == "ALLOW" and result.scored
         comps = result.components()
         assert set(comps) >= {"rule", "ml", "anomaly", "stacked", "burst"}
-        assert result.model_version == "fraud_gbm_v3"
+        assert result.model_version == CHAMPION
         assert result.rule_version.startswith("rs-")
         fields = result.event_fields()
         assert fields["decision_legacy"] == "GECTI" and fields["latency_ms"] > 0
@@ -116,7 +122,7 @@ class TestHybridScoring:
         assert again.decision == "BLOCK" and again.rule_version == custom.version
 
     async def test_challenger_shadow_scoring(self, tmp_path):
-        src = BASE_DIR / "models" / "fraud_gbm_v3"
+        src = BASE_DIR / "models" / CHAMPION
         for version in ("champ", "chall"):
             shutil.copytree(src, tmp_path / version)
         registry = ModelRegistry(tmp_path)

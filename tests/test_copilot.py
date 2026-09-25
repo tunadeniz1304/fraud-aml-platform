@@ -20,6 +20,11 @@ from app.security.auth import Principal, issue_token
 
 DEMO = BASE_DIR / "data" / "demo"
 
+# champion / challenger come from the committed registry, so a retrain and
+# promotion (scripts/champion_selection.py) does not need test edits
+_REGISTRY = json.loads((BASE_DIR / "models" / "registry.json").read_text(encoding="utf-8"))
+CHAMPION, CHALLENGER = _REGISTRY["champion"], _REGISTRY["challenger"]
+
 
 def _h(user: str, role: str) -> dict[str, str]:
     token, _ = issue_token(Principal(user, role, user))  # type: ignore[arg-type]
@@ -218,7 +223,7 @@ class TestApi:
             assert missing.status_code == 404
 
             compare = client.get("/api/models/compare", headers=ANALYST).json()
-            assert compare["champion"] == "fraud_gbm_v3" and compare["challenger"] == "fraud_gbm_v4"
+            assert compare["champion"] == CHAMPION and compare["challenger"] == CHALLENGER
             assert compare["online"]["shadow_decisions"] > 0 and "agreement" in compare["online"]
             # de-fingerprinted synthetic data: honest PR-AUC ~0.56 (was 0.97 with leaks)
             assert compare["offline"]["challenger"]["pr_auc"] > 0.4
@@ -229,7 +234,7 @@ class TestApi:
             )
             assert client.post("/api/models/nope/promote", headers=ADMIN).status_code == 404
             assert (
-                client.post("/api/models/fraud_gbm_v4/promote", headers=ANALYST).status_code == 403
+                client.post(f"/api/models/{CHALLENGER}/promote", headers=ANALYST).status_code == 403
             )
 
     def test_promotion_is_maker_checker(self, demo_env, tmp_path, monkeypatch):
@@ -240,20 +245,20 @@ class TestApi:
         monkeypatch.setenv("MODELS_DIR", str(models))
         get_settings.cache_clear()
         with TestClient(create_app()) as client:
-            req = client.post("/api/models/fraud_gbm_v4/promote", headers=ADMIN)
+            req = client.post(f"/api/models/{CHALLENGER}/promote", headers=ADMIN)
             assert req.status_code == 202 and req.json()["kind"] == "MODEL_PROMOTE"
             assert (
                 client.post(f"/api/approvals/{req.json()['id']}/approve", headers=ADMIN).status_code
                 == 403
             )
             ok = client.post(f"/api/approvals/{req.json()['id']}/approve", headers=SENIOR)
-            assert ok.status_code == 200 and ok.json()["result"]["champion"] == "fraud_gbm_v4"
+            assert ok.status_code == 200 and ok.json()["result"]["champion"] == CHALLENGER
             ready = client.get("/api/health/ready").json()
-            assert ready["info"]["model"] == "fraud_gbm_v4"
-            back = client.put("/api/models/fraud_gbm_v3/challenger", headers=ADMIN)
-            assert back.status_code == 200 and back.json()["challenger"] == "fraud_gbm_v3"
+            assert ready["info"]["model"] == CHALLENGER
+            back = client.put(f"/api/models/{CHAMPION}/challenger", headers=ADMIN)
+            assert back.status_code == 200 and back.json()["challenger"] == CHAMPION
             assert (
-                client.put("/api/models/fraud_gbm_v4/challenger", headers=ADMIN).status_code == 409
+                client.put(f"/api/models/{CHALLENGER}/challenger", headers=ADMIN).status_code == 409
             )
 
 

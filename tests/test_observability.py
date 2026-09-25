@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
 from app.api.dashboard import create_app
+from app.config import BASE_DIR
 from app.monitoring import tracing
 from app.security.auth import Principal, issue_token
+
+# champion / challenger come from the committed registry, so a retrain and
+# promotion (scripts/champion_selection.py) does not need test edits
+_REGISTRY = json.loads((BASE_DIR / "models" / "registry.json").read_text(encoding="utf-8"))
+CHAMPION, CHALLENGER = _REGISTRY["champion"], _REGISTRY["challenger"]
 
 _TOKEN, _ = issue_token(Principal("analist", "analist", "analist"))
 ANALYST = {"Authorization": f"Bearer {_TOKEN}"}
@@ -52,7 +60,7 @@ class TestObservability:
         assert 'route="/api/cases/stats"' in text
         ready = client.get("/api/health/ready").json()
         assert ready["status"] == "ready"
-        assert ready["info"]["model"] == "fraud_gbm_v3" and ready["info"]["model_loaded"] is True
+        assert ready["info"]["model"] == CHAMPION and ready["info"]["model_loaded"] is True
         assert client.get("/api/health/live").json() == {"status": "live"}
 
 

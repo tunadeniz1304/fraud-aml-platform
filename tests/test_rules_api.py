@@ -8,7 +8,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.dashboard import create_app
+from app.config import BASE_DIR
 from app.security.auth import Principal, issue_token
+
+# champion / challenger come from the committed registry, so a retrain and
+# promotion (scripts/champion_selection.py) does not need test edits
+_REGISTRY = json.loads((BASE_DIR / "models" / "registry.json").read_text(encoding="utf-8"))
+CHAMPION, CHALLENGER = _REGISTRY["champion"], _REGISTRY["challenger"]
 
 
 def _headers(role: str) -> dict[str, str]:
@@ -174,7 +180,7 @@ class TestPolicyApi:
     def test_get_and_set_thresholds(self, client):
         policy = client.get("/api/policy", headers=ANALYST).json()
         assert policy["thresholds"] == {"step_up": 0.35, "hold": 0.6, "block": 0.85}
-        assert policy["model_version"] == "fraud_gbm_v3" and policy["stacker"]["coef"]
+        assert policy["model_version"] == CHAMPION and policy["stacker"]["coef"]
         new = {"step_up": 0.3, "hold": 0.5, "block": 0.8}
         r = client.put("/api/policy/thresholds", json=new, headers=ADMIN)
         assert r.status_code == 200 and r.json()["thresholds"] == new
@@ -189,5 +195,5 @@ class TestPolicyApi:
 
     def test_models_listing(self, client):
         body = client.get("/api/models", headers=ANALYST).json()
-        assert body["champion"] == "fraud_gbm_v3"
+        assert body["champion"] == CHAMPION
         assert body["models"][0]["metrics"]["pr_auc"] > 0.6
