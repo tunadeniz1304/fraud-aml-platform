@@ -143,6 +143,15 @@ rules:
     severity: high
     tags: [card]
 
+  - id: R_CARD_TEST_PROBE
+    name: Kart testi sondası
+    description: Tanınmayan cihazdan, oturum açılır açılmaz çok küçük tutarlı ödeme (çalıntı kart denemesi).
+    when: is_new_device and amount_try <= 100 and 0 <= login_to_transfer_s < 30
+    score: 0.35
+    reason_template: "Yeni cihazdan oturum açıldıktan {login_to_transfer_s:.0f} sn sonra küçük tutarlı ödeme (kart testi sondası)"
+    severity: high
+    tags: [card]
+
   - id: R_URGENT_PURPOSE
     name: Aciliyet ifadesi
     description: Açıklamada aciliyet / sosyal mühendislik kalıbı (tek başına düşük ağırlık).

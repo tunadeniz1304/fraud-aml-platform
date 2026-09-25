@@ -64,16 +64,21 @@ _TYPE_BY_TAG = (
     ("aml", "AML"),
     ("ato", "ATO"),
     ("app", "APP"),
-    ("card", "KART_TESTI"),
+    ("card", "CARD_TESTING"),
 )
-_TYPE_RANK = ["DAVRANIS", "KART_TESTI", "ATO", "APP", "MULE", "AML", "YAPTIRIM"]
+#: typology tags that describe the pattern itself and win over generic
+#: account-takeover evidence (card testing often runs from a fresh bot device)
+_SPECIFIC_TAGS = ("card",)
+_TYPE_RANK = ["DAVRANIS", "ATO", "CARD_TESTING", "APP", "MULE", "AML", "YAPTIRIM"]
+#: pre-v2 names still present in older databases
+LEGACY_TYPES = {"KART_TESTI": "CARD_TESTING"}
 TYPE_TEXT = {
     "YAPTIRIM": "Yaptırım/PEP eşleşmesi",
     "AML": "Kara para aklama şüphesi (parçalama)",
     "MULE": "Para katırı (mule) ağı şüphesi",
     "APP": "Yetkili itme ödemesi (APP) dolandırıcılığı şüphesi",
     "ATO": "Hesap ele geçirme (ATO) şüphesi",
-    "KART_TESTI": "Kart testi şüphesi",
+    "CARD_TESTING": "Kart testi şüphesi",
     "DAVRANIS": "Davranışsal anomali",
     "BILINMEYEN_MUSTERI": "Bilinmeyen müşteri",
 }
@@ -103,6 +108,9 @@ def alert_type(event: dict[str, Any]) -> str:
     for hit in event.get("rule_hits") or []:
         for tag in hit.get("tags") or []:
             strength[tag] = max(strength.get(tag, 0.0), float(hit.get("score") or 0.0))
+    for tag, kind in _TYPE_BY_TAG:
+        if tag in _SPECIFIC_TAGS and tag in strength:
+            return kind
     best: tuple[float, int, str] | None = None
     for order, (tag, kind) in enumerate(_TYPE_BY_TAG):
         if tag in strength:
@@ -118,6 +126,7 @@ def _severity(event: dict[str, Any]) -> str:
 
 
 def _rank(kind: str) -> int:
+    kind = LEGACY_TYPES.get(kind, kind)
     return _TYPE_RANK.index(kind) if kind in _TYPE_RANK else 0
 
 

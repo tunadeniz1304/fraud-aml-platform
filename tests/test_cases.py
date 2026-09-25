@@ -70,7 +70,7 @@ class TestAlertIntake:
         assert alert_type({"unknown_customer": True}) == "BILINMEYEN_MUSTERI"
         hits = [{"tags": ["ato"]}, {"tags": ["aml", "network"]}]
         assert alert_type({"rule_hits": hits}) == "AML"
-        assert alert_type({"rule_hits": [{"tags": ["card"]}]}) == "KART_TESTI"
+        assert alert_type({"rule_hits": [{"tags": ["card"]}]}) == "CARD_TESTING"
         assert alert_type({}) == "DAVRANIS"
 
     async def test_only_hold_block_or_case_required_create_alerts(self, service):
