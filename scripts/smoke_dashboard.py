@@ -62,7 +62,12 @@ def run(client: Any) -> None:
     r = client.post(f"/api/llm/explain/{smoke_id}", headers=headers)
     check("LLM açıklaması", r.status_code == 200, r.json().get("llm_mode"))
     r = client.get("/")
-    check("dashboard", r.status_code == 200 and "api-base" in r.text)
+    check(
+        "dashboard (SPA veya klasik)",
+        r.status_code == 200 and ('id="root"' in r.text or "api-base" in r.text),
+    )
+    legacy = client.get("/legacy")
+    check("klasik pano /legacy", legacy.status_code == 200 and "api-base" in legacy.text)
     check("CSP", "unsafe-inline" not in r.headers.get("content-security-policy", ""))
     print("DASHBOARD SMOKE OK")
 
