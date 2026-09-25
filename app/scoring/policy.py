@@ -39,6 +39,8 @@ from app.scoring.rules import ACTIONS, noisy_or, strongest_action
 
 LEGACY = {"ALLOW": "GECTI", "STEP_UP": "GECTI", "HOLD": "INCELENIYOR", "BLOCK": "BLOKE"}
 ACCOUNT_TARGET = {"HOLD": "INCELENIYOR", "BLOCK": "BLOKE"}
+#: stacker input when no anomaly score exists: the median calibrated percentile (neutral)
+NEUTRAL_ANOMALY = 0.5
 
 
 class PolicyError(ValueError):
@@ -136,7 +138,9 @@ class PolicyEngine:
     # --- scoring ------------------------------------------------------------------
     def stack(self, rule: float, ml: float | None, anomaly: float | None) -> float:
         if self.stacker is not None and ml is not None:
-            return self.stacker.predict(rule, ml, anomaly if anomaly is not None else 0.5)
+            return self.stacker.predict(
+                rule, ml, anomaly if anomaly is not None else NEUTRAL_ANOMALY
+            )
         # Rules-only fallback (no trained model available).
         return rule
 

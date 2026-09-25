@@ -47,6 +47,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("fraud.scoring")
 
+#: share of inflow forwarded onward that marks a pass-through (mule) account
+MULE_PASS_THROUGH_MIN = 0.7
+#: calibrated anomaly percentile above which the reason list names the anomaly
+ANOMALY_REASON_MIN = 0.995
+#: display weight of the anomaly reason (ranking only, not part of the score)
+ANOMALY_REASON_WEIGHT = 0.5
+
 
 @dataclass
 class ScoreResult:
@@ -415,7 +422,8 @@ class ScoringEngine:
         graph = signals.get("graph")
         app_pattern = app is not None and app.score >= settings.app_confirm_threshold
         mule_pattern = graph is not None and (
-            graph.details.get("pass_through", 0.0) >= 0.7 or bool(graph.details.get("cycle"))
+            graph.details.get("pass_through", 0.0) >= MULE_PASS_THROUGH_MIN
+            or bool(graph.details.get("cycle"))
         )
         # AML (structuring/layering): hold + ŞİB, never a visible block — MASAK
         # tipping-off prohibition (the suspect must not be alerted).
@@ -438,9 +446,15 @@ class ScoringEngine:
         rule_reasons = [ReasonCode(h.reason_code, h.text, "rule", h.score) for h in rules.hits]
         ml = ml_reasons(model_score.contributions, features) if model_score else []
         anomaly: list[ReasonCode] = []
-        if model_score and model_score.anomaly is not None and model_score.anomaly >= 0.995:
+        if (
+            model_score
+            and model_score.anomaly is not None
+            and model_score.anomaly >= ANOMALY_REASON_MIN
+        ):
             anomaly.append(
-                ReasonCode("ANOMALY_HIGH", policy_reason("ANOMALY_HIGH").text, "ml", 0.5)
+                ReasonCode(
+                    "ANOMALY_HIGH", policy_reason("ANOMALY_HIGH").text, "ml", ANOMALY_REASON_WEIGHT
+                )
             )
         signal_reasons = [r for s in signals.values() for r in s.reasons]
         return top_reasons(
