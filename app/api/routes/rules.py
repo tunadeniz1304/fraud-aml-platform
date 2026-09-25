@@ -27,7 +27,7 @@ from app.scoring import rule_store
 from app.scoring.policy import PolicyError, Thresholds
 from app.scoring.rules import ACTIONS, SEVERITIES, RuleDef, RuleError, backtest, with_overrides
 from app.security.auth import Principal
-from app.security.deps import require_role
+from app.security.deps import forbid_break_glass_maker, require_role
 
 router = APIRouter(prefix="/api", tags=["rules"])
 analyst_only = Depends(require_role("analist"))
@@ -80,6 +80,7 @@ async def _request(
 ) -> JSONResponse:
     """Decision-logic changes are maker-checker: the request is stored and a
     second user applies it by approving (``/api/approvals/{id}/approve``)."""
+    forbid_break_glass_maker(principal)
     try:
         approval = await require_pipeline().cases.request_approval(
             kind, target, payload, principal.username, note

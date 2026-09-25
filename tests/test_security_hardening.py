@@ -22,7 +22,7 @@ from app.db.models import Approval
 from app.security.auth import BREAK_GLASS_USERNAME, Principal, UserDirectory, issue_token
 
 DEMO = BASE_DIR / "data" / "demo"
-SVC = "svc-credential-for-tests-01"
+SVC = "svc-credential-for-tests-" + "0" * 8 + "01"
 
 
 def _bearer(user: str, role: str) -> dict[str, str]:
@@ -47,12 +47,19 @@ def demo_env(app_env: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return app_env
 
 
+def _set_prod_extras(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Round-2 A9 prod requirements: keyed audit chain, shared rate-limit storage."""
+    monkeypatch.setenv("AUDIT_HMAC_KEY", "prod-audit-chain-" + "k" * 24)
+    monkeypatch.setenv("RATE_LIMIT_STORAGE_URI", "redis://127.0.0.1:6379/1")
+
+
 @pytest.fixture()
 def prod_env(demo_env: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("ENVIRONMENT", "prod")
     monkeypatch.setenv("JWT_SECRET", "prod-signing-material-" + "x" * 24)
     monkeypatch.setenv("CONSORTIUM_SALT", "prod-consortium-" + "y" * 24)
     monkeypatch.setenv("SEED_DEMO_USERS", "false")
+    _set_prod_extras(monkeypatch)
     get_settings.cache_clear()
     return demo_env
 
@@ -207,8 +214,10 @@ class TestRateLimits:
                 for i in range(5)
             ]
             assert codes[:3] == [401, 401, 401] and codes[3:] == [429, 429]
-            # the block applies to the client, whatever it presents next
-            assert c.get("/api/health").status_code == 429
+            # the block applies to unauthenticated requests from the client
+            # address; probes and valid sessions are exempt (A8, round 2)
+            assert c.get("/api/cases").status_code == 429
+            assert c.get("/api/health").status_code == 200
 
 
 def test_hsts_only_in_prod(demo_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -217,6 +226,7 @@ def test_hsts_only_in_prod(demo_env: Path, monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setenv("JWT_SECRET", "prod-signing-material-" + "x" * 24)
     monkeypatch.setenv("CONSORTIUM_SALT", "prod-consortium-" + "y" * 24)
     monkeypatch.setenv("SEED_DEMO_USERS", "false")
+    _set_prod_extras(monkeypatch)
     get_settings.cache_clear()
     r = TestClient(create_app()).get("/api/health")
     assert r.headers["strict-transport-security"].startswith("max-age=")
@@ -300,10 +310,15 @@ class TestApprovals:
         glass = {"Authorization": "Bearer break-glass-credential-for-tests"}
         with TestClient(create_app()) as c:
             c.post("/api/admin/accounts/CUST-0003/status?status=BLOKE", headers=glass)
-            req = c.post("/api/admin/accounts/CUST-0003/status?status=AKTIF", headers=glass)
+            # L11 (round 2): break-glass cannot be the maker either
+            refused = c.post("/api/admin/accounts/CUST-0003/status?status=AKTIF", headers=glass)
+            assert refused.status_code == 403 and "Break-glass" in refused.json()["detail"]
+            req = c.post(
+                "/api/admin/accounts/CUST-0003/status?status=AKTIF",
+                headers=_bearer("admin", "admin"),
+            )
             approval = req.json()["approval"]
-            # recorded as the break-glass identity, never as a directory user
-            assert approval["requested_by"] == BREAK_GLASS_USERNAME
+            assert approval["requested_by"] != BREAK_GLASS_USERNAME
             denied = c.post(f"/api/approvals/{approval['id']}/approve", headers=glass)
             assert denied.status_code == 403 and "break-glass" in denied.json()["detail"]
             ok = c.post(
@@ -434,6 +449,11 @@ def test_h6_several_workers_need_a_shared_jwt_secret(
     with pytest.raises(RuntimeError, match="WEB_CONCURRENCY"):
         create_app()
     monkeypatch.setenv("JWT_SECRET", "shared-signing-material-" + "w" * 16)
+    get_settings.cache_clear()
+    # several workers also need shared state (A9, round 2)
+    with pytest.raises(RuntimeError, match="REDIS_URL"):
+        create_app()
+    monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:6379/0")
     get_settings.cache_clear()
     assert create_app() is not None
 

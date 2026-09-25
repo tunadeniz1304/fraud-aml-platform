@@ -87,4 +87,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build image
+        # compose refuses to load without the prod secrets; build-only dummies
+        env:
+          JWT_SECRET: ci-build-only-not-a-secret
+          AUDIT_HMAC_KEY: ci-build-only-not-a-secret
+          CONSORTIUM_SALT: ci-build-only-not-a-secret
         run: docker compose build

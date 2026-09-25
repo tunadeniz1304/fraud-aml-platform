@@ -298,6 +298,9 @@ class Settings(BaseSettings):
     # (METRICS_TOKEN) is required, or the endpoint answers 404 when none is set
     metrics_public: bool = False
     metrics_token: SecretStr = SecretStr("")
+    # the background worker serves its own /metrics here (same token rules),
+    # e.g. the audit-chain verification counter; 0 disables it
+    worker_metrics_port: int = 9102
     # short-lived access tokens; logout revokes them earlier (jti denylist)
     jwt_ttl_minutes: int = 60
     admin_token: SecretStr = SecretStr("")

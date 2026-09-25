@@ -15,7 +15,7 @@ from app.db.models import Decision, Label
 from app.ml import metrics as M
 from app.ml.registry import ModelRegistry, RegistryError
 from app.security.auth import Principal
-from app.security.deps import require_role
+from app.security.deps import forbid_break_glass_maker, require_role
 
 router = APIRouter(prefix="/api/models", tags=["models"])
 analyst = Depends(require_role("analist"))
@@ -99,6 +99,7 @@ async def request_promotion(
     """Promotion is maker-checker: another senior user approves it."""
     if version not in _registry().read()["models"]:
         raise HTTPException(status_code=404, detail="Model bulunamadı")
+    forbid_break_glass_maker(principal)
     try:
         return await require_pipeline().cases.request_approval(
             "MODEL_PROMOTE", version, {"version": version}, principal.username

@@ -159,6 +159,12 @@ def _jwt_secret() -> str:
     return _EPHEMERAL_SECRET
 
 
+#: ``iss`` / ``aud`` claims: a token minted for another service that happens
+#: to share the signing secret is not accepted by this API
+JWT_ISSUER = "anil3-fraud"
+JWT_AUDIENCE = "anil3-api"
+
+
 def issue_token(principal: Principal, *, ttl_minutes: int | None = None) -> tuple[str, int]:
     ttl = (ttl_minutes or get_settings().jwt_ttl_minutes) * 60
     now = int(time.time())
@@ -168,7 +174,8 @@ def issue_token(principal: Principal, *, ttl_minutes: int | None = None) -> tupl
         "name": principal.display_name,
         "iat": now,
         "exp": now + ttl,
-        "iss": "anil3-fraud",
+        "iss": JWT_ISSUER,
+        "aud": JWT_AUDIENCE,
         "jti": secrets.token_urlsafe(16),
     }
     return jwt.encode(payload, _jwt_secret(), algorithm=_ALGORITHM), ttl
@@ -176,7 +183,14 @@ def issue_token(principal: Principal, *, ttl_minutes: int | None = None) -> tupl
 
 def decode_token(token: str) -> Principal:
     try:
-        data = jwt.decode(token, _jwt_secret(), algorithms=[_ALGORITHM], issuer="anil3-fraud")
+        data = jwt.decode(
+            token,
+            _jwt_secret(),
+            algorithms=[_ALGORITHM],
+            issuer=JWT_ISSUER,
+            audience=JWT_AUDIENCE,
+            options={"require": ["exp", "iat", "iss", "aud", "sub", "jti"]},
+        )
     except jwt.ExpiredSignatureError:
         raise AuthError("Oturum süresi doldu") from None
     except jwt.PyJWTError:
@@ -193,6 +207,24 @@ def decode_token(token: str) -> Principal:
         token_id=str(data["jti"]),
         expires_at=int(data.get("exp", 0)),
     )
+
+
+def signed_by_us(token: str) -> bool:
+    """True when ``token`` carries this API's signature, issuer and audience,
+    even if it has expired. Such a token cannot be a guess (only the server
+    can mint it); an expired or revoked session is not credential stuffing."""
+    try:
+        jwt.decode(
+            token,
+            _jwt_secret(),
+            algorithms=[_ALGORITHM],
+            issuer=JWT_ISSUER,
+            audience=JWT_AUDIENCE,
+            options={"verify_exp": False},
+        )
+    except jwt.PyJWTError:
+        return False
+    return True
 
 
 # --- static credentials ----------------------------------------------------------

@@ -44,3 +44,14 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "PSI > 0.25 — feature/skor dağılımında belirgin kayma"
+      - alert: AuditZinciriBozuk
+        expr: sum(increase(fraud_audit_chain_verify_failures_total[15m])) > 0 or (fraud_audit_chain_last_verify_ok == 0 and fraud_audit_chain_last_verify_timestamp_seconds > 0)
+        labels: {severity: critical}
+        annotations:
+          summary: "Audit zinciri doğrulaması başarısız — kayıtlar değiştirilmiş ya da zincir kopmuş olabilir"
+      - alert: AuditDogrulamasiCalismiyor
+        expr: up{job="anil3-worker"} == 0 or absent(up{job="anil3-worker"}) or time() - fraud_audit_chain_last_verify_timestamp_seconds{job="anil3-worker"} > 1800
+        for: 10m
+        labels: {severity: critical}
+        annotations:
+          summary: "Worker metrikleri okunamıyor ya da audit zinciri 30 dakikadır doğrulanmadı"

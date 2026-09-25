@@ -1,8 +1,12 @@
 # Anil3 fraud platformu
-#   docker compose up --build            -> http://localhost:8000 (API_PORT ile değişir)
+#   docker compose up --build            -> http://localhost:8000 (API_PORT ile değişir; prod modu)
 #   docker compose --profile observability up   (+ Prometheus :9090, Grafana :3000; PROMETHEUS_PORT / GRAFANA_PORT)
 #
-# JWT_SECRET zorunludur; demo kullanıcıları için SEED_DEMO_USERS=true verin.
+# Varsayılan ENVIRONMENT=prod: başlangıç politikası (app/security/startup.py)
+# demo sırlarıyla açılmayı reddeder. JWT_SECRET, AUDIT_HMAC_KEY ve
+# CONSORTIUM_SALT zorunludur (boşsa compose durur). Yerel demo için dev
+# moduna açıkça geçin:
+#   ENVIRONMENT=dev SEED_DEMO_USERS=true docker compose up --build
 # .env (opsiyonel) env_file ile verilir, imaja kopyalanmaz. Postgres parolası
 # yalnızca yerel demo içindir; üretimde secret yönetimiyle değiştirilir.
 name: anil3
@@ -14,6 +18,8 @@ x-app: &app
     - path: .env
       required: false
   environment: &app-env
+    # prod varsayılan; yerel demo için ENVIRONMENT=dev (bkz. README)
+    ENVIRONMENT: ${ENVIRONMENT:-prod}
     DATABASE_URL: postgresql+asyncpg://fraud:fraud@postgres:5432/fraud
     REDIS_URL: redis://redis:6379/0
     EVENT_BUS: redis
@@ -23,8 +29,14 @@ x-app: &app
     # Zorunlu: tüm süreçler aynı imza anahtarını paylaşır (boşsa compose durur).
     # Üretmek için: python -c "import secrets; print(secrets.token_urlsafe(48))"
     JWT_SECRET: ${JWT_SECRET:?JWT_SECRET tanımlayın (.env veya ortam değişkeni)}
+    # Zorunlu: denetim zincirinin HMAC anahtarı (>= 32 karakter, rastgele)
+    AUDIT_HMAC_KEY: ${AUDIT_HMAC_KEY:?AUDIT_HMAC_KEY tanımlayın (.env veya ortam değişkeni)}
+    # Zorunlu: konsorsiyum müşteri özetlerinin tuzu (repodaki demo tuzu prod'da reddedilir)
+    CONSORTIUM_SALT: ${CONSORTIUM_SALT:?CONSORTIUM_SALT tanımlayın (.env veya ortam değişkeni)}
+    # hız sınırı sayaçları Redis'te (prod'da memory:// reddedilir)
+    RATE_LIMIT_STORAGE_URI: redis://redis:6379/1
     # Demo kullanıcıları (bilinen parolalar) yalnızca açıkça istenirse:
-    #   SEED_DEMO_USERS=true docker compose up
+    #   ENVIRONMENT=dev SEED_DEMO_USERS=true docker compose up (prod reddeder)
     SEED_DEMO_USERS: ${SEED_DEMO_USERS:-false}
     FEATURE_STORE: redis
     DB_AUTO_CREATE: "false"
@@ -83,7 +95,6 @@ services:
       # uvicorn --workers (V6): idempotency claims, SSE tickets, warm-up
       # leadership and the rate limiter are shared through Redis
       WEB_CONCURRENCY: ${WEB_CONCURRENCY:-1}
-      RATE_LIMIT_STORAGE_URI: redis://redis:6379/1
     volumes:
       - fraud-var:/app/var
     depends_on:
@@ -95,6 +106,9 @@ services:
   worker:
     <<: *app
     command: ["python", "-m", "app.worker"]
+    # audit-chain verification metrics for Prometheus (METRICS_TOKEN protected)
+    expose:
+      - "9102"
     healthcheck:
       disable: true
     depends_on:

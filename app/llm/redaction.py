@@ -22,17 +22,24 @@ import unicodedata
 from collections.abc import Iterable
 from typing import Any
 
-_SEP = r"[ \-]?"  # optional single space or dash between digit groups
-#: Turkish IBAN, compact / spaced / dashed (no checksum: demo data uses fake IBANs)
-_TR_IBAN_RE = re.compile(rf"\bTR\d{{2}}(?:{_SEP}\d{{4}}){{5}}{_SEP}\d{{2}}\b", re.IGNORECASE)
+_SEP = r"[ \-.]?"  # optional single space, dash or dot between digit groups
+#: Turkish IBAN: "TR" + 24 digits, compact or with a single space / dash / dot
+#: anywhere ("TR33 0006 …", "TR 33 0006 …", "TR33.0006.…"); no checksum, the
+#: demo data uses fake IBANs
+_TR_IBAN_RE = re.compile(rf"\bTR(?:{_SEP}\d){{24}}(?![ \-.]?\d)", re.IGNORECASE)
 #: any other country's IBAN (grouped in 4s); masked only when the ISO 13616
 #: mod-97 checksum holds, so ordinary reference codes are left alone
 _IBAN_RE = re.compile(
-    rf"\b[A-Z]{{2}}\d{{2}}(?:{_SEP}[A-Z0-9]{{4}}){{2,7}}(?:{_SEP}[A-Z0-9]{{1,3}})?\b",
+    rf"\b[A-Z]{{2}}{_SEP}\d{{2}}(?:{_SEP}[A-Z0-9]{{4}}){{2,7}}(?:{_SEP}[A-Z0-9]{{1,3}})?\b",
     re.IGNORECASE,
 )
 #: payment card number, 13-19 digits, compact / spaced / dashed (Luhn-checked)
-_PAN_RE = re.compile(r"(?<![\w\-])[2-69]\d(?:[ \-]?\d){11,17}(?![ \-]?\d)")
+#: or dotted in groups of four ("4111.1111.1111.1111"); the dotted form is
+#: held to 4-digit groups so "1.234.567" style amounts are not candidates
+_PAN_RE = re.compile(
+    r"(?<![\w\-.])(?:[2-69]\d(?:[ \-]?\d){11,17}(?![ \-]?\d)"
+    r"|[2-69]\d{3}(?:\.\d{4}){3}(?:\.\d{1,3})?)(?!\.?\d)"
+)
 #: TCKN, also written as "100 000 001 46" or with dashes (checksum-validated)
 _TCKN_RE = re.compile(r"(?<!\d)(?<!\d[ \-])[1-9](?:[ \-]?\d){10}(?![ \-]?\d)")
 #: Turkish mobile: +90 / 90 / 0 prefix, spaces, dashes, dots, "(532)"
@@ -49,7 +56,7 @@ def _digits(value: str) -> str:
 
 def is_valid_iban(value: str) -> bool:
     """ISO 13616 mod-97 check on the compact form (any country)."""
-    compact = re.sub(r"[\s\-]", "", value).upper()
+    compact = re.sub(r"[\s\-.]", "", value).upper()
     if not 15 <= len(compact) <= 34 or not compact[:2].isalpha() or not compact.isalnum():
         return False
     rearranged = compact[4:] + compact[:4]
@@ -183,6 +190,8 @@ _NOT_SURNAMES = frozenset(
 # the surname is a lookahead so a rejected pair ("ve Ayşe") does not swallow
 # the first name of the next, real pair ("Ayşe Yılmaz")
 _PERSON_RE = re.compile(rf"(?<!\w)({_NAME_WORD})(?=(\s+)({_NAME_WORD})(?![a-zçğıöşüA-ZÇĞİÖŞÜ]))")
+#: one more name word right after a matched pair (third-token surname)
+_NEXT_NAME_WORD_RE = re.compile(rf"([ \t]+)({_NAME_WORD})(?![a-zçğıöşüA-ZÇĞİÖŞÜ])")
 
 
 class Redactor:
@@ -225,7 +234,7 @@ class Redactor:
         return dict(self._reverse)
 
     def _iban(self, match: re.Match[str]) -> str:
-        normalised = re.sub(r"[\s\-]", "", match.group(0)).upper()
+        normalised = re.sub(r"[\s\-.]", "", match.group(0)).upper()
         return self._placeholder("IBAN", normalised, normalised[-4:])
 
     def _foreign_iban(self, match: re.Match[str]) -> str:
@@ -281,14 +290,31 @@ class Redactor:
                 return False
             return not (last[0].islower() and (_fold(last) in _NOT_SURNAMES or len(last) < 3))
 
+        def is_surname(word: str, previous: str) -> bool:
+            if _fold(word) in _NOT_SURNAMES or len(word) < 2:
+                return False
+            # a capitalised name continues only with a capitalised word
+            return not (previous[0].isupper() and word[0].islower())
+
         parts: list[str] = []
         pos = 0
         while (match := _PERSON_RE.search(text, pos)) is not None:
             first, gap, last = match.group(1), match.group(2), match.group(3)
             if is_person(first, last):
+                words = [first, last]
+                end = match.end(1) + len(gap) + len(last)
+                # a middle name is itself a first name ("Mehmet Ali Öztürk",
+                # "Ayşe Nur Yılmaz"): keep consuming so the real surname in
+                # the third (or later) token is not left in clear text
+                while _fold(words[-1]) in FIRST_NAMES and len(words) < 4:
+                    more = _NEXT_NAME_WORD_RE.match(text, end)
+                    if more is None or not is_surname(more.group(2), words[-1]):
+                        break
+                    words.append(more.group(2))
+                    end = more.end()
                 parts.append(text[pos : match.start()])
-                parts.append(self._placeholder("KISI", f"{first} {last}"))
-                pos = match.end(1) + len(gap) + len(last)
+                parts.append(self._placeholder("KISI", " ".join(words)))
+                pos = end
             else:
                 parts.append(text[pos : match.end(1)])
                 pos = match.end(1)

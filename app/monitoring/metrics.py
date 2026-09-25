@@ -31,6 +31,18 @@ AUDIT_VERIFY_FAILURES = Counter(
     "Audit zinciri doğrulama hataları (alarm: > 0)",
     registry=REGISTRY,
 )
+# set by the worker's periodic ``audit_verify`` job; the worker serves its own
+# /metrics (``WORKER_METRICS_PORT``), scraped as job ``anil3-worker``
+AUDIT_VERIFY_LAST_OK = Gauge(
+    "fraud_audit_chain_last_verify_ok",
+    "Son periyodik audit zinciri doğrulaması başarılı mı (1/0)",
+    registry=REGISTRY,
+)
+AUDIT_VERIFY_LAST_RUN = Gauge(
+    "fraud_audit_chain_last_verify_timestamp_seconds",
+    "Son periyodik audit zinciri doğrulamasının zamanı (unix s)",
+    registry=REGISTRY,
+)
 RISK_SCORE = Histogram(
     "fraud_risk_score",
     "Politika risk skoru dağılımı",

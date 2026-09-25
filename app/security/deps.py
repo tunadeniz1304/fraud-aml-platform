@@ -65,7 +65,12 @@ async def _session_principal(request: Request, token: str) -> Principal:
     already issued, not only after they expire. The break-glass ADMIN_TOKEN
     has no directory entry and is not checked there.
     """
-    principal = principal_from_token(token)
+    return await _revalidate(request, principal_from_token(token))
+
+
+async def _revalidate(request: Request, principal: Principal) -> Principal:
+    """Revocation + user-directory check for a JWT-derived principal (also
+    applied to a principal redeemed from an SSE ticket)."""
     if principal.via != "jwt":
         return principal
     if await REVOKED.is_revoked(principal.token_id):
@@ -108,7 +113,23 @@ async def stream_principal(
     principal = await TICKETS.redeem(ticket) if ticket else None
     if principal is None:
         raise _unauthorized("Geçerli bir SSE bileti gerekli (POST /api/stream/ticket)")
-    return _bind(request, principal)
+    # the ticket carries the issuing token's jti: a logout (revocation) or a
+    # removed / demoted user between issue and redeem is honoured here too
+    return _bind(request, await _revalidate(request, principal))
+
+
+def forbid_break_glass_maker(principal: Principal) -> None:
+    """The break-glass ADMIN_TOKEN is a shared, non-personal, non-revocable
+    credential: it may neither approve (``decide_approval``) nor file a
+    maker-checker request, so every four-eyes action needs a named maker."""
+    if principal.via == "admin_token":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Break-glass anahtarı maker-checker talebi oluşturamaz — "
+                "kişisel bir oturumla giriş yapın"
+            ),
+        )
 
 
 def require_role(minimum: Role) -> Callable[..., Awaitable[Principal]]:
