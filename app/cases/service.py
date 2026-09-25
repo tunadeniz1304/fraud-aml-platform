@@ -304,6 +304,7 @@ class CaseService:
         assigned_to: str | None = None,
         customer_id: str | None = None,
         case_type: str | None = None,
+        ring_id: str | None = None,
         order: str = "priority",
         limit: int = 100,
     ) -> list[dict[str, Any]]:
@@ -318,6 +319,8 @@ class CaseService:
             query = query.where(Case.customer_id == customer_id)
         if case_type:
             query = query.where(Case.case_type == case_type)
+        if ring_id:
+            query = query.where(Case.ring_id == ring_id)
         ordering: tuple[Any, ...] = {
             "priority": (Case.priority.desc(), Case.id.desc()),
             "sla": (Case.internal_sla_due.asc(), Case.id.asc()),

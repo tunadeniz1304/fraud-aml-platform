@@ -148,6 +148,7 @@ class Pipeline:
         self.recent_live: deque[dict[str, Any]] = deque(maxlen=2000)
         self.cases.handlers["MODEL_PROMOTE"] = self._approve_promotion
         self.results: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self._waiters: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._stream_task: asyncio.Task[None] | None = None
         self._vector_task: asyncio.Task[None] | None = None
         self._ring_task: asyncio.Task[None] | None = None
@@ -279,6 +280,13 @@ class Pipeline:
         cases = []
         for cid in dict.fromkeys(x["customer_id"] for x in key if x["customer_id"]):
             cases += await self.cases.list_cases(customer_id=str(cid), limit=5)
+        for ring in dict.fromkeys(str(x["ring_id"]) for x in key if x.get("ring_id")):
+            known = {c["id"] for c in cases}
+            cases += [
+                c
+                for c in await self.cases.list_cases(ring_id=ring, limit=5)
+                if c["id"] not in known
+            ]
         return {
             **scenario.as_dict(),
             "results": key,
@@ -294,6 +302,9 @@ class Pipeline:
             return
         self.results[tx_id] = event
         self.results.move_to_end(tx_id)
+        waiter = self._waiters.pop(tx_id, None)
+        if waiter is not None and not waiter.done():
+            waiter.set_result(event)
         while len(self.results) > self.settings.analyzed_buffer:
             self.results.popitem(last=False)
 
@@ -597,10 +608,22 @@ class Pipeline:
             stored = await self.stored_result(tx_id)
             if stored is not None:
                 return stored
-        await self.bus.publish(TransactionMonitor.CREATED, tx, key=tx_id or None)
-        if self.bus.running:
-            await self.bus.drain()
-        return self.results.get(tx_id)
+        if not tx_id or not self.bus.running:
+            await self.bus.publish(TransactionMonitor.CREATED, tx, key=tx_id or None)
+            if self.bus.running:
+                await self.bus.drain()
+            return self.results.get(tx_id)
+        # wait for *this* transaction's decision only (no global drain under load)
+        waiter = self._waiters.get(tx_id)
+        if waiter is None:
+            waiter = asyncio.get_running_loop().create_future()
+            self._waiters[tx_id] = waiter
+            await self.bus.publish(TransactionMonitor.CREATED, tx, key=tx_id)
+        try:
+            return await asyncio.wait_for(asyncio.shield(waiter), timeout=30)
+        except TimeoutError:
+            self._waiters.pop(tx_id, None)
+            return self.results.get(tx_id)
 
 
 def build_feature_store(settings: Settings, redis: Any) -> FeatureStateStore:
