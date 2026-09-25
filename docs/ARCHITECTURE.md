@@ -20,7 +20,7 @@
 | Graf | `app/graph/` | pass-through, döngü, fraud yakınlığı, union-find halka, Louvain + PageRank |
 | APP / CoP | `app/app_scam/` | alıcı doğrulama, sosyal mühendislik sinyalleri, dinamik uyarı |
 | Online profil | `app/profile/online.py` | river Half-Space Trees, yüzdelik kalibrasyon |
-| Politika | `app/scoring/policy.py` | eşikler (runtime ayarlanabilir), override'lar, tipoloji tavanı; kural HOLD/BLOCK tabanı `floor_min_risk` altında bir kademe düşer |
+| Politika | `app/scoring/policy.py` | eşikler (runtime ayarlanabilir), override'lar, tipoloji tavanı; kural HOLD tabanı, risk `rule_floor_hold_min_risk` ve tutar `rule_floor_hold_min_amount_try` altındaysa STEP_UP'a yumuşar (`RULE_FLOOR_SOFTENED`) |
 | Yaptırım | `app/core/sanctions.py` | blocking indeksi, bulanık eşleşme, ikincil anahtarlarla eşleşme güveni |
 | Yüksek riskli ülke | `app/core/jurisdictions.py` | `data/jurisdictions/fatf_2026-06.json` (gri liste doğrulanmadı, bkz. `docs/COMPLIANCE.md`) |
 | Drift | `app/pipeline.py` | PSI referansı prod dışında demo popülasyonundan kurulur (`drift_reference=auto`) |
