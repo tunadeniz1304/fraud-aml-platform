@@ -19,6 +19,19 @@ Feature sets compared with LightGBM:
 * ``local`` — the 94 local transaction features shipped with the data set;
 * ``local+graph`` and ``all`` (all 165 shipped features) ``+graph``.
 
+Protocol (no test-period information reaches training):
+
+* graph features are **inductive**: every node's features are computed on the
+  subgraph of its own time step only, so no training feature is computed on a
+  graph that contains test-period nodes (``cross_step_edges`` in the output
+  confirms that no edge crosses steps, i.e. nothing is lost by this);
+* the number of boosting rounds comes from early stopping on a *temporal*
+  validation split inside training (steps 1–29 fit, 30–34 validate); the model
+  is then refitted on steps 1–34 with that round count;
+* the F1 decision threshold comes from expanding-window temporal folds inside
+  training (fit on all earlier steps, predict 20–24, 25–29, 30–34);
+* test metrics carry stratified bootstrap 95 % intervals.
+
 The literature baselines quoted in docs/VALIDATION_REPORT.md are copied from
 Weber et al. (2019), Table 1 / Table 2, same split.
 """
@@ -34,6 +47,22 @@ import numpy as np
 TRAIN_MAX_STEP = 34
 LOCAL_FEATURES = 93  # columns after txId + time step that are "local" (Weber: 94 incl. step)
 GRAPH_FEATURES = ("pagerank", "in_degree", "out_degree", "component_size")
+EARLY_STOP_VALID_FROM = 30  # training steps 30..34 validate the round count
+OOF_FOLDS = ((20, 24), (25, 29), (30, 34))  # expanding-window folds for the threshold
+MAX_ROUNDS = 1000
+EARLY_STOP_PATIENCE = 50
+BOOTSTRAP_ROUNDS = 1000
+
+_PARAMS: dict[str, Any] = {
+    "objective": "binary",
+    "learning_rate": 0.05,
+    "num_leaves": 31,
+    "bagging_fraction": 0.8,
+    "bagging_freq": 1,
+    "feature_fraction": 0.8,
+    "deterministic": True,
+    "verbose": -1,
+}
 
 
 @dataclass
@@ -63,56 +92,80 @@ def load(directory: Path) -> EllipticData:
     )
 
 
+def cross_step_edges(data: EllipticData) -> int:
+    """Edges whose endpoints lie in different time steps (0 on Elliptic)."""
+    step = dict(zip(data.ids.tolist(), data.step.tolist(), strict=True))
+    return sum(1 for a, b in data.edges.tolist() if step.get(a) != step.get(b))
+
+
 def graph_features(data: EllipticData) -> np.ndarray:
-    """Platform graph features for every node (see module docstring)."""
+    """Platform graph features per node, computed on the subgraph of the
+    node's own time step only (inductive; see module docstring)."""
     import networkx as nx
 
-    g = nx.DiGraph()
-    g.add_nodes_from(data.ids.tolist())
-    g.add_edges_from(map(tuple, data.edges.tolist()))
-    pagerank = nx.pagerank(g)
-    comp_size: dict[int, int] = {}
-    for comp in nx.weakly_connected_components(g):
-        for n in comp:
-            comp_size[n] = len(comp)
-    rows = [
-        [
-            pagerank.get(node, 0.0),
-            float(g.in_degree(node)),
-            float(g.out_degree(node)),
-            float(comp_size.get(node, 1)),
-        ]
-        for node in data.ids.tolist()
-    ]
-    return np.asarray(rows)
+    step_of = dict(zip(data.ids.tolist(), data.step.tolist(), strict=True))
+    by_step: dict[int, list[tuple[int, int]]] = {}
+    for a, b in data.edges.tolist():
+        if step_of.get(a) is not None and step_of.get(a) == step_of.get(b):
+            by_step.setdefault(int(step_of[a]), []).append((a, b))
+    feats: dict[int, list[float]] = {}
+    for step in np.unique(data.step).tolist():
+        nodes = data.ids[data.step == step].tolist()
+        g = nx.DiGraph()
+        g.add_nodes_from(nodes)
+        g.add_edges_from(by_step.get(int(step), []))
+        pagerank = nx.pagerank(g)
+        comp_size: dict[int, int] = {}
+        for comp in nx.weakly_connected_components(g):
+            for n in comp:
+                comp_size[n] = len(comp)
+        for node in nodes:
+            feats[node] = [
+                pagerank.get(node, 0.0) * len(nodes),  # comparable across step sizes
+                float(g.in_degree(node)),
+                float(g.out_degree(node)),
+                float(comp_size.get(node, 1)),
+            ]
+    return np.asarray([feats[n] for n in data.ids.tolist()])
 
 
-def _fit_predict(x_tr: np.ndarray, y_tr: np.ndarray, x_te: np.ndarray, seed: int) -> np.ndarray:
+def _rounds(x: np.ndarray, y: np.ndarray, step: np.ndarray, seed: int) -> int:
+    """Boosting rounds by early stopping on the last training steps."""
     import lightgbm as lgb
 
-    params = {
-        "objective": "binary",
-        "learning_rate": 0.05,
-        "num_leaves": 31,
-        "bagging_fraction": 0.8,
-        "bagging_freq": 1,
-        "feature_fraction": 0.8,
-        "seed": seed,
-        "deterministic": True,
-        "verbose": -1,
-    }
-    booster = lgb.train(params, lgb.Dataset(x_tr, label=y_tr), num_boost_round=300)
+    fit, valid = step < EARLY_STOP_VALID_FROM, step >= EARLY_STOP_VALID_FROM
+    booster = lgb.train(
+        {**_PARAMS, "seed": seed},
+        lgb.Dataset(x[fit], label=y[fit]),
+        num_boost_round=MAX_ROUNDS,
+        valid_sets=[lgb.Dataset(x[valid], label=y[valid])],
+        callbacks=[lgb.early_stopping(EARLY_STOP_PATIENCE, verbose=False)],
+    )
+    return max(10, int(booster.best_iteration or MAX_ROUNDS))
+
+
+def _fit_predict(
+    x_tr: np.ndarray, y_tr: np.ndarray, x_te: np.ndarray, seed: int, rounds: int
+) -> np.ndarray:
+    import lightgbm as lgb
+
+    booster = lgb.train(
+        {**_PARAMS, "seed": seed}, lgb.Dataset(x_tr, label=y_tr), num_boost_round=rounds
+    )
     return np.asarray(booster.predict(x_te))
 
 
-def _oof(x: np.ndarray, y: np.ndarray, seed: int, folds: int = 3) -> np.ndarray:
-    """Out-of-fold training predictions (threshold selection without test data)."""
-    from sklearn.model_selection import StratifiedKFold
-
-    out = np.zeros(len(y))
-    for tr, va in StratifiedKFold(folds, shuffle=True, random_state=seed).split(x, y):
-        out[va] = _fit_predict(x[tr], y[tr], x[va], seed)
-    return out
+def _oof(
+    x: np.ndarray, y: np.ndarray, step: np.ndarray, seed: int, rounds: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Expanding-window temporal out-of-fold predictions inside training, for
+    threshold selection without test data. Returns (labels, predictions)."""
+    ys, ps = [], []
+    for lo, hi in OOF_FOLDS:
+        tr, va = step < lo, (step >= lo) & (step <= hi)
+        ys.append(y[va])
+        ps.append(_fit_predict(x[tr], y[tr], x[va], seed, rounds))
+    return np.concatenate(ys), np.concatenate(ps)
 
 
 def _best_f1_threshold(y: np.ndarray, p: np.ndarray) -> float:
@@ -123,7 +176,28 @@ def _best_f1_threshold(y: np.ndarray, p: np.ndarray) -> float:
     return float(thresholds[int(np.argmax(f1[:-1]))]) if len(thresholds) else 0.5
 
 
-def evaluate(data: EllipticData, *, seed: int = 42) -> dict[str, Any]:
+def _bootstrap_ci(
+    y: np.ndarray, p: np.ndarray, thr: float, rounds: int, seed: int
+) -> dict[str, list[float]]:
+    """Stratified percentile bootstrap of illicit F1 (fixed threshold) and PR-AUC."""
+    from app.validation.evaluate import _ci, _rank_metrics
+
+    rng = np.random.default_rng(seed)
+    pos, neg = np.flatnonzero(y == 1), np.flatnonzero(y == 0)
+    f1s, aps = [], []
+    for _ in range(rounds):
+        idx = np.concatenate([rng.choice(pos, len(pos)), rng.choice(neg, len(neg))])
+        yb, pb = y[idx], p[idx]
+        pred = pb >= thr
+        tp = float((pred & (yb == 1)).sum())
+        f1s.append(2 * tp / max(1.0, float(pred.sum()) + float(yb.sum())))
+        aps.append(_rank_metrics(yb, pb, [1])[0])
+    return {"illicit_f1": _ci(f1s), "pr_auc": _ci(aps)}
+
+
+def evaluate(
+    data: EllipticData, *, seed: int = 42, rounds: int = BOOTSTRAP_ROUNDS
+) -> dict[str, Any]:
     from sklearn.metrics import average_precision_score, f1_score, precision_score, recall_score
 
     gf = graph_features(data)
@@ -139,19 +213,25 @@ def evaluate(data: EllipticData, *, seed: int = 42) -> dict[str, Any]:
         "all+graph": np.hstack([data.x, gf]),
     }
     y_tr, y_te = data.label[train], data.label[test]
+    step_tr = data.step[train]
     results: dict[str, Any] = {}
     for name, x in sets.items():
-        p_te = _fit_predict(x[train], y_tr, x[test], seed)
-        # decision threshold chosen on training data only (out-of-fold), never on test
-        thr = _best_f1_threshold(y_tr, _oof(x[train], y_tr, seed))
+        n_rounds = _rounds(x[train], y_tr, step_tr, seed)
+        p_te = _fit_predict(x[train], y_tr, x[test], seed, n_rounds)
+        # decision threshold chosen on training data only (temporal OOF), never on test
+        thr = _best_f1_threshold(*_oof(x[train], y_tr, step_tr, seed, n_rounds))
         pred = (p_te >= thr).astype(int)
+        ci = _bootstrap_ci(y_te, p_te, thr, rounds, seed)
         results[name] = {
             "illicit_f1": round(float(f1_score(y_te, pred)), 4),
+            "illicit_f1_ci95": ci["illicit_f1"],
             "illicit_precision": round(float(precision_score(y_te, pred, zero_division=0)), 4),
             "illicit_recall": round(float(recall_score(y_te, pred)), 4),
             "illicit_f1_at_0.5": round(float(f1_score(y_te, (p_te >= 0.5).astype(int))), 4),
             "pr_auc": round(float(average_precision_score(y_te, p_te)), 4),
+            "pr_auc_ci95": ci["pr_auc"],
             "threshold": round(thr, 4),
+            "boosting_rounds": n_rounds,
             "features": int(x.shape[1]),
         }
     return {
@@ -162,4 +242,15 @@ def evaluate(data: EllipticData, *, seed: int = 42) -> dict[str, Any]:
         "split": f"zaman adımı 1–{TRAIN_MAX_STEP} eğitim, {TRAIN_MAX_STEP + 1}+ test",
         "results": results,
         "graph_features": list(GRAPH_FEATURES),
+        "graph_features_mode": "inductive: her düğüm yalnızca kendi zaman adımının alt grafiğinde",
+        "cross_step_edges": cross_step_edges(data),
+        "early_stopping": (
+            f"adım 1–{EARLY_STOP_VALID_FROM - 1} fit, {EARLY_STOP_VALID_FROM}–{TRAIN_MAX_STEP} "
+            f"doğrulama (sabır {EARLY_STOP_PATIENCE}); sonra 1–{TRAIN_MAX_STEP} yeniden fit"
+        ),
+        "threshold_selection": (
+            "eğitim içi genişleyen pencere zamansal katlar: "
+            + ", ".join(f"{lo}–{hi}" for lo, hi in OOF_FOLDS)
+        ),
+        "bootstrap": {"rounds": rounds, "method": "stratified percentile, 95%"},
     }
