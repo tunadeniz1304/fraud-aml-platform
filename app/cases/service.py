@@ -140,8 +140,11 @@ class CaseService:
         customer_name: Callable[[str], str] | None = None,
         on_fraud_confirmed: Callable[[str, list[str]], None] | None = None,
         on_fraud_case: Callable[[dict[str, Any]], None] | None = None,
+        on_labelled: Callable[[list[str], str], Awaitable[None]] | None = None,
     ) -> None:
         self.on_fraud_case = on_fraud_case
+        #: profile feedback hook: labelled transaction ids + "clean" / "fraud"
+        self.on_labelled = on_labelled
         self.db = db
         #: feedback hook (graph risk propagation): customer id + beneficiary accounts
         self.on_fraud_confirmed = on_fraud_confirmed
@@ -637,6 +640,8 @@ class CaseService:
                 beneficiaries = [value for pair in rows.all() for value in pair if value]
             self.on_fraud_confirmed(customer, sorted(set(beneficiaries)))
         await self._settle_account(customer, outcome, actor, case_id)
+        if self.on_labelled is not None:
+            await self.on_labelled(list(tx_ids), "fraud" if label else "clean")
         if outcome == "FRAUD" and self.on_fraud_case is not None:
             try:
                 self.on_fraud_case(await self.get_case(case_id))

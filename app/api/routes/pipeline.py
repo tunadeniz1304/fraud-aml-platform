@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi import status as http_status
+from pydantic import BaseModel
 
 from app.api.deps import require_pipeline
 from app.api.schemas import (
@@ -122,3 +123,29 @@ async def ingest(
             detail={"message": "İşlem reddedildi", "issues": result.get("issues", [])},
         )
     return AnalyzedTransactionOut(**result)
+
+
+class StepUpResultIn(BaseModel):
+    success: bool
+
+
+@router.post("/transactions/{transaction_id}/step-up-result")
+async def step_up_result(
+    transaction_id: str,
+    body: StepUpResultIn,
+    principal: Principal = Depends(ingest_principal),
+) -> dict[str, Any]:
+    """OTP / step-up challenge outcome (simulated channel callback).
+
+    A passed challenge adds the device and payee to the customer's profile as
+    verified, so the same legitimate device is not challenged forever.
+    """
+    pipeline = require_pipeline()
+    try:
+        return await pipeline.step_up_result(
+            transaction_id, success=body.success, actor=principal.username
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="İşlem bulunamadı") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None

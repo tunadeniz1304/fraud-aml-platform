@@ -44,6 +44,7 @@ from app.copilot.tools import CopilotTools
 from app.core.behavior_store import BehaviorStore
 from app.core.stream_simulator import TransactionStreamSimulator
 from app.db import repository as repo
+from app.db.audit import AuditEntry
 from app.db.database import Database
 from app.db.models import Case, Decision, Label, Transaction
 from app.db.writer import PersistenceWriter
@@ -132,6 +133,7 @@ class Pipeline:
             customer_name=self._customer_name,
             on_fraud_confirmed=self._fraud_confirmed,
             on_fraud_case=self._index_fraud_case,
+            on_labelled=self._labelled,
         )
         self.copilot = CopilotAgent(
             llm,
@@ -192,6 +194,44 @@ class Pipeline:
         graph.flag_customer(customer_id)
         for account in beneficiaries:
             graph.flag_account(account)
+
+    async def _labelled(self, tx_ids: list[str], feedback: str) -> None:
+        """Analyst labels are profile feedback: a clean label teaches the profile."""
+        for tx_id in tx_ids:
+            await self.engine.apply_feedback(tx_id, "clean" if feedback == "clean" else "fraud")
+
+    async def step_up_result(self, tx_id: str, *, success: bool, actor: str) -> dict[str, Any]:
+        """Outcome of the step-up challenge (OTP) of a STEP_UP decision.
+
+        A passed challenge proves the customer made the payment, so the new
+        device and payee are learned as verified; a failed one teaches nothing
+        and is audited.
+        """
+        event = self.results.get(tx_id)
+        if event is None:
+            stored = await self.stored_result(tx_id)
+            if stored is None:
+                raise KeyError(tx_id)
+            event = stored
+        if event.get("decision") != "STEP_UP":
+            raise ValueError(f"{tx_id} için step-up istenmedi (karar {event.get('decision')})")
+        learned = await self.engine.apply_feedback(
+            tx_id, "step_up_passed" if success else "step_up_failed"
+        )
+        await self.writer.record_audit(
+            AuditEntry(
+                event_type="STEP_UP_RESULT",
+                entity_type="transaction",
+                entity_id=tx_id,
+                transaction_id=tx_id,
+                actor=actor,
+                reason="OTP doğrulandı" if success else "OTP başarısız",
+                customer_id=str(event.get("customer_id") or ""),
+                payload={"success": success, "profile_learned": learned},
+            )
+        )
+        metrics.STEP_UP_RESULTS.labels(outcome="passed" if success else "failed").inc()
+        return {"transaction_id": tx_id, "success": success, "profile_learned": learned}
 
     async def load_graph_flags(self) -> int:
         """Re-flag nodes of analyst-labelled fraud (restart safe)."""

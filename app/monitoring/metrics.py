@@ -83,6 +83,9 @@ LLM_LATENCY = Histogram(
     registry=REGISTRY,
 )
 LLM_USAGE = Counter("fraud_llm_tokens_total", "LLM token kullanımı", ["type"], registry=REGISTRY)
+STEP_UP_RESULTS = Counter(
+    "fraud_step_up_results_total", "Step-up (OTP) sonuçları", ["outcome"], registry=REGISTRY
+)
 COPILOT_ERRORS = Counter(
     "fraud_copilot_errors_total",
     "Şemayı geçemeyen copilot çıktıları (deterministik minimal taslağa düşülen)",
