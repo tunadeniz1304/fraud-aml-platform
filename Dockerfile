@@ -25,8 +25,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends libgomp1 fonts-dejavu-core curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install -r requirements.txt
+COPY requirements.txt requirements.lock ./
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 
 COPY . .
 COPY --from=frontend /frontend/dist /app/frontend/dist
