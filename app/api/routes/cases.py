@@ -182,7 +182,12 @@ async def set_status(
     case_id: int, body: StatusIn, principal: Principal = Depends(analyst)
 ) -> dict[str, Any]:
     return await _call(
-        cases_service().set_status, case_id, body.status, principal.username, body.note
+        cases_service().set_status,
+        case_id,
+        body.status,
+        principal.username,
+        body.note,
+        role=principal.role,
     )
 
 
@@ -227,7 +232,14 @@ async def download_evidence(case_id: int, evidence_id: int) -> Response:
 async def decide(
     case_id: int, body: DecisionIn, principal: Principal = Depends(analyst)
 ) -> dict[str, Any]:
-    return await _call(cases_service().decide, case_id, body.outcome, principal.username, body.note)
+    return await _call(
+        cases_service().decide,
+        case_id,
+        body.outcome,
+        principal.username,
+        body.note,
+        role=principal.role,
+    )
 
 
 @router.put("/cases/{case_id}/sib")

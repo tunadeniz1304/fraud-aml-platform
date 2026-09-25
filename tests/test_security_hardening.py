@@ -368,3 +368,27 @@ class TestApprovals:
                 session.add(Approval(kind="UNBLOCK", target_id="C1", payload={}, requested_by="b"))
         with pytest.raises(CaseError, match="bekleyen"):
             await service.request_approval("UNBLOCK", "C1", {}, "b")
+
+
+class TestCaseClosure:
+    async def test_m5_fraud_closure_and_reopen_need_a_senior(self, service: CaseService) -> None:
+        case_id = await service.on_decision(
+            {
+                "transaction_id": "TX-M5-1",
+                "customer_id": "CUST-0001",
+                "decision": "HOLD",
+                "risk_score": 0.7,
+                "amount_try": 10_000,
+                "reason_codes": [],
+                "rule_hits": [],
+            }
+        )
+        with pytest.raises(MakerCheckerError, match="kıdemli"):
+            await service.decide(case_id, "FRAUD", "analist", role="analist")
+        closed = await service.decide(case_id, "FRAUD", "kidemli_analist", role="kidemli_analist")
+        assert closed["status"] == "KAPANDI_FRAUD"
+        # a junior cannot reopen it and re-close it as TEMIZ either
+        with pytest.raises(MakerCheckerError, match="yeniden açmak"):
+            await service.set_status(case_id, "INCELENIYOR", "analist", role="analist")
+        reopened = await service.set_status(case_id, "INCELENIYOR", "admin", role="admin")
+        assert reopened["status"] == "INCELENIYOR"

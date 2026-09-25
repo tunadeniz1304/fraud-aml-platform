@@ -107,6 +107,11 @@ class MakerCheckerError(PermissionError):
 ApprovalHandler = Callable[[dict[str, Any], str], Awaitable[dict[str, Any]]]
 
 
+def _require_senior(role: str | None, action: str) -> None:
+    if role is not None and ROLE_RANK.get(role, -1) < ROLE_RANK["kidemli_analist"]:
+        raise MakerCheckerError(f"{action} en az kıdemli analist yetkisi gerektirir")
+
+
 def alert_type(event: dict[str, Any]) -> str:
     if event.get("sanctions_hit"):
         return "YAPTIRIM"
@@ -515,10 +520,12 @@ class CaseService:
         return await self.get_case(case_id)
 
     async def set_status(
-        self, case_id: int, status: str, actor: str, note: str = ""
+        self, case_id: int, status: str, actor: str, note: str = "", *, role: str | None = None
     ) -> dict[str, Any]:
         async with self.db.transaction() as session:
             case = await self._case(session, case_id)
+            if case.status in CLOSED_STATUSES:
+                _require_senior(role, "kapalı bir vakayı yeniden açmak")
             allowed = MANUAL_TRANSITIONS.get(case.status, ())
             if status not in allowed:
                 raise CaseError(
@@ -615,11 +622,18 @@ class CaseService:
             return dict(event.payload)
 
     async def decide(
-        self, case_id: int, outcome: str, actor: str, note: str = ""
+        self, case_id: int, outcome: str, actor: str, note: str = "", *, role: str | None = None
     ) -> dict[str, Any]:
-        """Close the case as FRAUD / TEMIZ, write labels, settle held payments."""
+        """Close the case as FRAUD / TEMIZ, write labels, settle held payments.
+
+        A FRAUD closure blocks payments, feeds the model labels and opens the
+        ŞİB path, so it needs at least ``kidemli_analist`` (``role`` is the
+        caller's role; internal callers pass ``None``).
+        """
         if outcome not in OUTCOMES:
             raise CaseError("karar FRAUD veya TEMIZ olmalı")
+        if outcome == "FRAUD":
+            _require_senior(role, "vakayı FRAUD olarak kapatmak")
         status, label = OUTCOMES[outcome]
         now = utcnow()
         async with self.db.transaction() as session:

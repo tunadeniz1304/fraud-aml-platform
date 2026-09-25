@@ -320,7 +320,7 @@ export default function CaseDetailPage({ caseId }: { caseId: number }) {
       <ErrorNote error={error} />
       <div className="flex flex-wrap gap-2">
         {!c.assigned_to && !closed && <Button variant="ghost" onClick={() => act("assign")}>Üstlen</Button>}
-        {!closed && <Button variant="danger" onClick={() => act("decision", { outcome: "FRAUD" })}>Fraud olarak kapat</Button>}
+        {!closed && canSenior() && <Button variant="danger" onClick={() => act("decision", { outcome: "FRAUD" })}>Fraud olarak kapat</Button>}
         {!closed && <Button variant="success" onClick={() => act("decision", { outcome: "TEMIZ" })}>Temiz olarak kapat</Button>}
         {closed && canSenior() && <Button variant="ghost" onClick={() => act("status", { status: "INCELENIYOR" })}>Yeniden aç</Button>}
       </div>
