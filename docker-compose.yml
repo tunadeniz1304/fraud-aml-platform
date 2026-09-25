@@ -73,6 +73,10 @@ services:
     environment:
       <<: *app-env
       STREAM_MODE: ${STREAM_MODE:-batch}
+      # uvicorn --workers (V6): idempotency claims, SSE tickets, warm-up
+      # leadership and the rate limiter are shared through Redis
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-1}
+      RATE_LIMIT_STORAGE_URI: redis://redis:6379/1
     volumes:
       - fraud-var:/app/var
     depends_on:
