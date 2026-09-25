@@ -79,7 +79,7 @@ Aşağıdaki desenler kamuya açık ürün anlatımlarından esinlenmiştir. Ani
 
 - **Gerçek banka verisi yok.** Modeller seed'li sentetik veriyle eğitildi. Doğrulama halka açık verilerle yapıldı ([`docs/VALIDATION_REPORT.md`](docs/VALIDATION_REPORT.md), [`docs/DATA.md`](docs/DATA.md)):
   - **PaySim** (sentetik, ancak gerçek mobil para kayıtlarına göre kalibre edilmiş bir simülasyon), %10 alıcı örneği, test dönemi: tek başına GBM PR-AUC **0.3732**, tam hat (`full`) PR-AUC **0.3919** [0.3463, 0.4417]. %1 alarm bütçesinde recall 0.5471 [0.5026, 0.5975], precision 0.2186. Test dönemindeki 382 fraud işleminin 280'i ALLOW aldı (eşikler PaySim'e göre ayarlanmadı).
-  - **Sentetik veri:** eski üretici etiketi cihaz kimliğine sızdırıyordu; eski 0.971 PR-AUC bu sızıntıdan geliyordu. Parmak izleri temizlendikten ve asimetrik etiket gürültüsü eklendikten sonra tek başına GBM PR-AUC **0.8423**, tam hat **0.8295**. Champion `fraud_gbm_v5`'in hibrit test PR-AUC'si 0.8355 (Brier 0.00662, ECE 0.00378). Sentetik sonuçlar üreticinin öğrenilebilirliğini gösterir, gerçek performansı değil.
+  - **Sentetik veri:** eski üretici etiketi cihaz kimliğine sızdırıyordu; eski 0.971 PR-AUC bu sızıntıdan geliyordu. Parmak izleri temizlendikten ve asimetrik etiket gürültüsü eklendikten sonra tek başına GBM PR-AUC **0.8423**, tam hat **0.8295**. Bu iki sayı doğrulama artefaktının kendi 70/15/15 bölmesinden; champion `fraud_gbm_v5`'in hibrit test PR-AUC'si 0.8355 (Brier 0.00662, ECE 0.00378) ise kayıt defterindeki eğitim bölmesinden gelir, bu yüzden doğrudan karşılaştırılamaz. Sentetik sonuçlar üreticinin öğrenilebilirliğini gösterir, gerçek performansı değil.
   - **Elliptic** (graf modülü): LightGBM `all` illicit F1 **0.7984** [0.7798, 0.817]. Yalnız yapısal graf özellikleriyle F1 **0.1177**, `all+graph` 0.7891; graf özellikleri katkı sağlamadı.
   - **ULB** kredi kartı: GBM PR-AUC 0.7335 [0.6092, 0.8451], anomali eklenen hibrit 0.7091; fark anlamlı değil.
 - **Davranışsal biyometri simüle ediliyor.** Yazma ritmi, yapıştırma, oturum süresi gibi sinyaller simülatörden gelir, gerçek bir istemci SDK'sından gelmez.
@@ -110,7 +110,7 @@ Aşağıdaki desenler kamuya açık ürün anlatımlarından esinlenmiştir. Ani
 
 ## Senaryo tetikleme (Demo modu)
 
-Konsolda **Senaryo** sekmesi (veya `POST /api/scenarios/{ad}`): `ato` → **BLOCK**, `app` → **HOLD + dinamik uyarı**, `mule_ring` → **HOLD + vaka + graf halkası**, `smurfing` → **HOLD + AML vakası + otomatik ŞİB taslağı**, `card_testing` → **STEP_UP → HOLD** (tekrarlayan mikro ödemelerde artan risk, `CARD_TESTING` vakası). Simülatör ayrıca her 3 dakikada rastgele bir saldırı enjekte eder (`SIM_SCENARIO_EVERY`).
+Konsolda **Senaryo** sekmesi (veya `POST /api/scenarios/{ad}`): `ato` → **BLOCK**, `app` → **HOLD + dinamik uyarı**, `mule_ring` → **HOLD + vaka + graf halkası**, `smurfing` → **HOLD + AML vakası + otomatik ŞİB taslağı**, `card_testing` → en az **STEP_UP** (kural tabanı; model riski eşiği geçerse HOLD, `CARD_TESTING` vakası). Simülatör ayrıca her 3 dakikada rastgele bir saldırı enjekte eder (`SIM_SCENARIO_EVERY`).
 
 ## Geliştirme
 
