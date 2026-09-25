@@ -15,6 +15,7 @@ from app.cases.service import (
     CaseService,
     MakerCheckerError,
     alert_type,
+    sib_draft_hash,
 )
 from app.db.models import Case, Decision, Label
 
@@ -283,3 +284,30 @@ class TestMakerChecker:
         assert {a["kind"] for a in case["approvals"]} == {"SIB"}
         with pytest.raises(CaseError, match="onaylanmış"):
             await service.save_sib_draft(case_id, {"x": 1}, "analist")
+
+    async def test_sib_draft_is_frozen_and_pinned_while_awaiting_approval(self, service, store):
+        """A6: the approver signs off exactly the text that is submitted."""
+        case_id = await service.on_decision(event("SIB2"))
+        await service.save_sib_draft(case_id, {"supheli": "MUSTERI_1"}, "analist")
+        await service.decide(case_id, "FRAUD", "analist")
+        req = await service.request_approval("SIB", str(case_id), {}, "analist")
+        assert req["payload"]["draft_sha256"] == sib_draft_hash({"supheli": "MUSTERI_1"})
+        with pytest.raises(CaseError, match="onay beklerken"):
+            await service.save_sib_draft(case_id, {"supheli": "BASKA"}, "analist")
+        assert (await service.get_case(case_id))["sib_draft"] == {"supheli": "MUSTERI_1"}
+        # a draft changed behind the API's back is refused and nothing is submitted
+        async with store.db.transaction() as session:
+            await session.execute(
+                update(Case).where(Case.id == case_id).values(sib_draft={"supheli": "BASKA"})
+            )
+        with pytest.raises(CaseError, match="değişti"):
+            await service.decide_approval(req["id"], approve=True, actor="kidemli")
+        case = await service.get_case(case_id)
+        assert case["sib_status"] == "SIB_ONAY_BEKLIYOR" and case["status"] != "SIB_GONDERILDI"
+        # reject → editable again → a fresh request pins the new text
+        await service.decide_approval(req["id"], approve=False, actor="kidemli")
+        await service.save_sib_draft(case_id, {"supheli": "SON"}, "analist")
+        req = await service.request_approval("SIB", str(case_id), {}, "analist")
+        done = await service.decide_approval(req["id"], approve=True, actor="kidemli")
+        assert done["result"]["masak_reference"].startswith("SIB-")
+        assert (await service.get_case(case_id))["sib_draft"]["supheli"] == "SON"

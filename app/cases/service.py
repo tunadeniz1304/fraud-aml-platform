@@ -22,6 +22,7 @@ import asyncio
 import base64
 import contextlib
 import hashlib
+import json
 import logging
 import secrets
 from collections.abc import Awaitable, Callable
@@ -48,6 +49,19 @@ from app.services.accounts import AccountNotFoundError, AccountService
 from app.services.config_sync import ConfigConflict
 
 logger = logging.getLogger("fraud.cases")
+
+
+def sib_draft_hash(draft: dict[str, Any] | None) -> str:
+    """SHA-256 of the canonical JSON of a ŞİB draft (A6).
+
+    Stored in the SIB approval payload at request time, so the approver signs
+    off exactly the text that is submitted to MASAK.
+    """
+    blob = json.dumps(
+        draft or {}, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
 
 OPEN_STATUSES = ("YENI", "INCELENIYOR", "BEKLEMEDE")
 CLOSED_STATUSES = ("KAPANDI_FRAUD", "KAPANDI_TEMIZ", "SIB_GONDERILDI")
@@ -821,6 +835,11 @@ class CaseService:
             case = await self._case(session, case_id)
             if case.sib_status in ("SIB_ONAYLANDI",):
                 raise CaseError("onaylanmış ŞİB değiştirilemez")
+            if case.sib_status == "SIB_ONAY_BEKLIYOR":
+                # A6: the approver must sign off the text that is submitted
+                raise CaseError(
+                    "ŞİB onay beklerken taslak değiştirilemez — önce onay talebi reddedilmeli"
+                )
             case.sib_draft = draft
             case.sib_status = "SIB_TASLAK"
             case.updated_at = utcnow()
@@ -870,7 +889,12 @@ class CaseService:
                 if case.decision != "FRAUD":
                     raise CaseError("ŞİB yalnızca FRAUD kararıyla kapanan vakalar için gönderilir")
                 case.sib_status = "SIB_ONAY_BEKLIYOR"
-                session.add(self._event(case.id, "SIB_APPROVAL_REQUESTED", actor))
+                # A6: pin the reviewed text; _approve_sib refuses a different draft
+                digest = sib_draft_hash(case.sib_draft)
+                payload = {**payload, "draft_sha256": digest}
+                session.add(
+                    self._event(case.id, "SIB_APPROVAL_REQUESTED", actor, draft_sha256=digest)
+                )
             approval = Approval(
                 kind=kind,
                 target_id=target_id,
@@ -1056,6 +1080,13 @@ class CaseService:
         case_id = int(approval["target_id"])
         reference = f"SIB-{utcnow():%Y%m%d}-{secrets.token_hex(3).upper()}"
         case = await self._case(tx.session, case_id)
+        expected = (approval.get("payload") or {}).get("draft_sha256")
+        if not expected or expected != sib_draft_hash(case.sib_draft):
+            # A6: the draft changed after the request (or a legacy request
+            # without a hash): reject it and request approval again
+            raise CaseError(
+                "ŞİB taslağı onay talebinden sonra değişti — talebi reddedip yeniden oluşturun"
+            )
         case.sib_status = "SIB_ONAYLANDI"
         case.status = "SIB_GONDERILDI"
         case.updated_at = utcnow()
