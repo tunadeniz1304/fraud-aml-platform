@@ -28,6 +28,8 @@ from app.idempotency import (
     IdempotencyConflict,
     IdempotencyIndex,
     IngestInProgress,
+    check_digest,
+    legacy_payload_digest,
     payload_digest,
 )
 from app.pipeline import build_pipeline
@@ -66,6 +68,21 @@ async def workers(app_env, monkeypatch):
 
 
 # --- digest -----------------------------------------------------------------
+def test_l9_digest_normalises_ts_to_utc() -> None:
+    """The same instant sent with another UTC offset is not a 409 conflict."""
+    local = {**TX, "ts": "2026-09-26T12:00:00+03:00"}
+    assert payload_digest(local) == payload_digest({**TX, "ts": "2026-09-26T09:00:00+00:00"})
+    assert payload_digest(local) == payload_digest({**TX, "ts": "2026-09-26T09:00:00Z"})
+    assert payload_digest(local) != payload_digest({**TX, "ts": "2026-09-26T12:00:00+00:00"})
+    # a naive ts keeps its old digest; a row stored before L9 still matches
+    naive = {**TX, "ts": "2026-09-26T09:00:00"}
+    assert payload_digest(naive) == legacy_payload_digest(naive)
+    old_row = {"payload_hash": legacy_payload_digest(local)}
+    check_digest("M1-1", old_row, payload_digest(local), legacy=legacy_payload_digest(local))
+    with pytest.raises(IdempotencyConflict):
+        check_digest("M1-1", old_row, payload_digest({**local, "amount": 1}))
+
+
 def test_payload_digest_ignores_sender_and_key_order() -> None:
     reordered = dict(reversed(list(TX.items())))
     assert payload_digest(TX) == payload_digest(reordered)
@@ -200,6 +217,45 @@ async def test_durable_ingress_does_not_accept_an_uncommitted_decision(workers) 
         await b.ingest(dict(TX), durable=True)
     served = await b.ingest(dict(TX))  # HTTP may answer with the decision
     assert served is not None and served["decision"] == "ALLOW"
+
+
+async def test_l1_durable_ingress_does_not_ack_a_decision_still_pending(
+    workers, monkeypatch
+) -> None:
+    """L1: the Redis ingress must not acknowledge a message whose decision did
+    not arrive within the wait; it stays pending (RetryLater) and the claim
+    is left to lapse instead of being released for an immediate re-score."""
+    from app.agents.transaction_monitor import TransactionMonitor
+
+    a, _, redis = workers
+    # the partitioned bus (decisions arrive asynchronously through a waiter)
+    monkeypatch.setattr(type(a.bus), "running", property(lambda _self: True))
+    real_publish = a.bus.publish
+
+    async def lose_created(topic, payload, *args, **kwargs):
+        if topic == TransactionMonitor.CREATED:
+            return None  # the decision never comes back in time
+        return await real_publish(topic, payload, *args, **kwargs)
+
+    monkeypatch.setattr(a.bus, "publish", lose_created)
+    real_await = a._await_decision
+
+    async def short_wait(tx_id, waiter, *, durable=False, timeout_s=30.0):
+        return await real_await(tx_id, waiter, durable=durable, timeout_s=0.05)
+
+    monkeypatch.setattr(a, "_await_decision", short_wait)
+    with pytest.raises(RetryLater):
+        await a.ingest(dict(TX), durable=True)
+    raw = await redis.get("idem:M1-1")
+    assert raw is not None and raw.startswith(PENDING)  # claim kept ...
+    assert "M1-1" not in a.idempotency._owned  # ... but no longer refreshed
+    assert "M1-1" not in a._waiters
+
+    # the HTTP path keeps its behaviour: no decision -> None, claim released
+    await redis.delete("idem:M1-1")
+    tx2 = {**TX, "transaction_id": "M1-L1-HTTP"}
+    assert await a.ingest(tx2) is None
+    assert await redis.get("idem:M1-L1-HTTP") is None
 
 
 async def test_conflict_is_detected_against_the_database_after_a_restart(

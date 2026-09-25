@@ -18,6 +18,7 @@ from app.api.deps import require_pipeline
 from app.api.downloads import content_disposition
 from app.cases.service import (
     STATUSES,
+    ApprovalUnavailableError,
     CaseError,
     CaseNotFoundError,
     CaseService,
@@ -103,6 +104,8 @@ async def _call(fn: Callable[..., Awaitable[T]], *args: Any, **kwargs: Any) -> T
         raise HTTPException(status_code=403, detail=str(exc)) from None
     except CaseError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
+    except ApprovalUnavailableError as exc:  # A5: nothing applied, retry later
+        raise HTTPException(status_code=503, detail=str(exc)) from None
 
 
 # --- cases ----------------------------------------------------------------------------

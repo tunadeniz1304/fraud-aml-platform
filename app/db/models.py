@@ -118,7 +118,8 @@ class Alert(Base):
     __tablename__ = "alerts"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    transaction_id: Mapped[str] = mapped_column(String(64), index=True)
+    # A11: one alert per transaction (outbox replay / redelivery is a no-op)
+    transaction_id: Mapped[str] = mapped_column(String(64), index=True, unique=True)
     customer_id: Mapped[str] = mapped_column(String(64), index=True)
     alert_type: Mapped[str] = mapped_column(String(32))
     severity: Mapped[str] = mapped_column(String(12), default="medium")

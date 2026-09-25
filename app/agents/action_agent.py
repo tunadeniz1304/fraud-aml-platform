@@ -136,6 +136,8 @@ class ActionAgent:
             "decision": decision,
             "decision_legacy": LEGACY[decision],
             "decision_reason": reason,
+            # A11: the case clock (MASAK deadline) starts here, also on replay
+            "decided_at": datetime.now(UTC).isoformat(),
         }
         # M13: the case-intake record commits with the decision itself
         outbox = outbox_row(event) if needs_outbox(event) else None

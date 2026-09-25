@@ -98,9 +98,9 @@ class TestStepUpChallenge:
             assert challenge
             url = "/api/transactions/TX-SU-H1-01/step-up-result"
 
-            # a replayed ingest does not mint a second challenge
+            # A3: a replayed ingest (lost response) gets the same challenge back
             again = c.post("/api/transactions", json=_step_up_tx("TX-SU-H1-01"), headers=svc)
-            assert again.json().get("step_up_challenge_id") is None
+            assert again.json().get("step_up_challenge_id") == challenge
 
             # an analyst session cannot report OTP outcomes
             jwt_try = c.post(
@@ -120,6 +120,9 @@ class TestStepUpChallenge:
 
             replay = c.post(url, json={"challenge_id": challenge, "success": True}, headers=svc)
             assert replay.status_code == 409
+            # resolved: a replayed ingest no longer yields a challenge
+            late = c.post("/api/transactions", json=_step_up_tx("TX-SU-H1-01"), headers=svc)
+            assert late.json().get("step_up_challenge_id") is None
 
     def test_h1_challenge_is_bound_to_its_transaction(self, demo_env: Path) -> None:
         svc = {"X-API-Key": SVC}
@@ -132,6 +135,13 @@ class TestStepUpChallenge:
                 headers=svc,
             )
             assert wrong.status_code == 409
+            # A3: the wrong-transaction attempt did not burn the challenge
+            ok = c.post(
+                "/api/transactions/TX-SU-H1-02/step-up-result",
+                json={"challenge_id": challenge, "success": True},
+                headers=svc,
+            )
+            assert ok.status_code == 200, ok.text
 
     async def test_h1_store_is_single_use_and_one_per_transaction(self) -> None:
         from app.security.challenges import StepUpChallengeStore
@@ -139,11 +149,100 @@ class TestStepUpChallenge:
         store = StepUpChallengeStore()
         issued = await store.issue("TX-1", "CUST-1")
         assert issued is not None
-        assert await store.issue("TX-1", "CUST-1") is None
-        got = await store.consume(issued.challenge_id)
+        # A3: idempotent per transaction
+        assert await store.issue("TX-1", "CUST-1") == issued
+        assert await store.issue("TX-1", "CUST-OTHER") is None
+        assert await store.consume(issued.challenge_id, "TX-2") is None  # wrong tx: kept
+        got = await store.consume(issued.challenge_id, "TX-1")
         assert got is not None and got.customer_id == "CUST-1"
-        assert await store.consume(issued.challenge_id) is None
-        assert await store.consume("") is None
+        assert await store.consume(issued.challenge_id, "TX-1") is None
+        assert await store.issue("TX-1", "CUST-1") is None  # being redeemed
+        await store.restore(got)  # the result could not be recorded
+        assert await store.consume(issued.challenge_id, "TX-1") == got
+        await store.mark_resolved("TX-1")
+        assert await store.issue("TX-1", "CUST-1") is None
+        assert await store.consume("", "TX-1") is None
+
+    async def test_a3_expired_challenge_is_reissued(self, monkeypatch) -> None:
+        from app.security import challenges as mod
+
+        clock = [1000.0]
+        monkeypatch.setattr(mod.time, "monotonic", lambda: clock[0])
+        store = mod.StepUpChallengeStore()
+        first = await store.issue("TX-E", "CUST-1")
+        assert first is not None
+        clock[0] += get_settings().step_up_challenge_ttl_s + 1
+        assert await store.consume(first.challenge_id, "TX-E") is None
+        second = await store.issue("TX-E", "CUST-1")  # no 24 h block
+        assert second is not None and second.challenge_id != first.challenge_id
+
+    async def test_a3_store_lru_is_bounded(self) -> None:
+        from app.security.challenges import StepUpChallengeStore
+
+        store = StepUpChallengeStore(max_entries=3)
+        for i in range(10):
+            assert await store.issue(f"TX-{i}", "C") is not None
+            await store.mark_resolved(f"TX-{i}")
+        assert len(store._by_tx) <= 3 and len(store._done) <= 3
+
+    async def test_a3_redis_store_lifecycle(self) -> None:
+        import fakeredis.aioredis
+
+        from app.security.challenges import StepUpChallengeStore
+
+        redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        store = StepUpChallengeStore(redis=redis)
+        other = StepUpChallengeStore(redis=redis)  # another worker
+        issued = await store.issue("TX-R", "CUST-1")
+        assert issued is not None
+        assert await other.issue("TX-R", "CUST-1") == issued
+        assert await other.consume(issued.challenge_id, "TX-X") is None
+        got = await other.consume(issued.challenge_id, "TX-R")
+        assert got == issued
+        assert await store.issue("TX-R", "CUST-1") is None
+        await store.restore(got)
+        assert await store.issue("TX-R", "CUST-1") == issued
+        assert await store.consume(issued.challenge_id, "TX-R") == issued
+        await store.mark_resolved("TX-R")
+        assert await other.issue("TX-R", "CUST-1") is None
+        # L2: a marker without its challenge key blocks only until it expires
+        await redis.set("stepup:tx:TX-L2", "stale", ex=5)
+        assert await store.issue("TX-L2", "C") is None
+        await redis.delete("stepup:tx:TX-L2")
+        assert await store.issue("TX-L2", "C") is not None
+        await redis.aclose()
+
+    async def test_a4_pipeline_issues_challenge_on_the_shared_path(self, demo_env: Path) -> None:
+        """A STEP_UP decided outside the HTTP route (stream / simulator) has a
+        challenge, and the egress decision event carries its id."""
+        from app.pipeline import build_pipeline
+
+        p = await build_pipeline(get_settings())
+        await p.start()
+        try:
+            decided = await p.ingest(_step_up_tx("TX-SU-A4-01"))
+            assert decided["decision"] == "STEP_UP"
+            assert "step_up_challenge_id" not in decided  # not on the shared event
+            cid = await p.issue_step_up(decided)  # already issued by the subscriber
+            assert cid is not None
+            assert await p.challenges.consume(cid, "TX-SU-A4-01") is not None
+
+            published: list[dict] = []
+
+            class _Ingress:
+                async def publish(self, _topic, payload, key=None):
+                    published.append(payload)
+
+            p.ingress = _Ingress()  # type: ignore[assignment]
+            decided2 = await p.ingest(_step_up_tx("TX-SU-A4-02"))
+            await p._to_egress(decided2)
+            assert published[-1]["decision"] == "STEP_UP"
+            egress_cid = published[-1]["step_up_challenge_id"]
+            assert egress_cid
+            assert await p.challenges.consume(egress_cid, "TX-SU-A4-02") is not None
+        finally:
+            p.ingress = None
+            await p.stop()
 
     async def test_h1_pipeline_refuses_other_customer(self, demo_env: Path) -> None:
         from app.pipeline import build_pipeline
@@ -347,7 +446,7 @@ class TestApprovals:
     async def test_m2_decision_is_claimed_once_and_reverted_on_handler_failure(
         self, service: CaseService
     ) -> None:
-        async def boom(_approval: dict[str, Any], _actor: str) -> dict[str, Any]:
+        async def boom(_approval: dict[str, Any], _actor: str, _tx: Any) -> dict[str, Any]:
             raise RuntimeError("handler failed")
 
         service.handlers["MODEL_PROMOTE"] = boom
@@ -359,7 +458,7 @@ class TestApprovals:
 
         calls: list[str] = []
 
-        async def ok(_approval: dict[str, Any], actor: str) -> dict[str, Any]:
+        async def ok(_approval: dict[str, Any], actor: str, _tx: Any) -> dict[str, Any]:
             calls.append(actor)
             return {"done": True}
 

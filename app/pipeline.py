@@ -39,7 +39,7 @@ from app.bus.redis_streams import RedisStreamsBus
 from app.bus.writebehind import WriteBehindQueue
 from app.cases.governance import DecisionLogicGovernance
 from app.cases.outbox import CaseOutboxReplayer, needs_outbox
-from app.cases.service import OPEN_STATUSES, CaseService
+from app.cases.service import OPEN_STATUSES, ApprovalTx, CaseError, CaseService
 from app.config import Settings, get_settings
 from app.copilot.agent import CopilotAgent
 from app.copilot.schemas import SibDraft
@@ -60,17 +60,19 @@ from app.idempotency import (
     IdempotencyIndex,
     IngestInProgress,
     check_digest,
+    legacy_payload_digest,
     payload_digest,
 )
 from app.llm.config import LLMSettings
 from app.llm.service import LLMService, OutputRejected
-from app.ml.registry import ModelRegistry
+from app.ml.registry import ModelRegistry, RegistryError
 from app.monitoring import metrics
 from app.scenarios import ScenarioFactory
 from app.scoring import rule_store
 from app.scoring.engine import ScoringEngine
 from app.scoring.policy import LEGACY, Thresholds
 from app.scoring.rules import load_rule_file
+from app.security.challenges import CHALLENGES, StepUpChallengeStore
 from app.services.accounts import AccountService
 from app.services.config_sync import ConfigSync
 
@@ -137,6 +139,9 @@ class Pipeline:
         self.llm = llm
         self.ingress = ingress
         self.redis = redis
+        # A4: step-up challenges are issued on the shared decision path; with
+        # Redis every worker (API, stream consumer) sees the same challenges
+        self.challenges = StepUpChallengeStore(redis=redis) if redis is not None else CHALLENGES
         self.vector = vector
         self.cases = cases or CaseService(
             db,
@@ -173,18 +178,13 @@ class Pipeline:
         self.effects = WriteBehindQueue(queue_size=settings.write_behind_queue_size)
         self._live: set[asyncio.Queue[dict[str, Any]]] = set()
         self.recent_live: deque[dict[str, Any]] = deque(maxlen=2000)
-        self.cases.handlers["MODEL_PROMOTE"] = self._approve_promotion
-        self.governance = DecisionLogicGovernance(
-            db,
-            analyst.engine,
-            writer,
-            reload_rules=self.reload_rules,
-            set_thresholds=self.set_thresholds,
-        )
-        self.cases.handlers["RULE_CHANGE"] = self.governance.apply_rule_change
-        self.cases.handlers["POLICY_THRESHOLDS"] = self.governance.apply_thresholds
         # H3: thresholds / rules / champion model are shared through the DB
         self.config = ConfigSync(db)
+        self.cases.handlers["MODEL_PROMOTE"] = self._approve_promotion
+        # A5: approval handlers publish inside the approval transaction
+        self.governance = DecisionLogicGovernance(db, analyst.engine, writer, config=self.config)
+        self.cases.handlers["RULE_CHANGE"] = self.governance.apply_rule_change
+        self.cases.handlers["POLICY_THRESHOLDS"] = self.governance.apply_thresholds
         self.config.register("thresholds", self._apply_thresholds, restore=True)
         self.config.register("rules", self._apply_rules)
         self.config.register("models", self._apply_models)
@@ -204,6 +204,9 @@ class Pipeline:
         self._drift_task: asyncio.Task[None] | None = None
         self.rings: list[dict[str, Any]] = []
         self.stream_done = asyncio.Event()
+        # A4: first, so a STEP_UP decided on any path (HTTP, stream, simulator)
+        # has its one-time challenge before anyone can observe the decision
+        bus.subscribe(ActionAgent.DECIDED, self._issue_step_up)
         bus.subscribe(ActionAgent.DECIDED, self._remember)
         # graph feedback is in-memory scoring state (like the feature-store
         # commit): it stays in decision order so the next transfer sees it
@@ -243,6 +246,23 @@ class Pipeline:
         graph.flag_customer(customer_id)
         for account in beneficiaries:
             graph.flag_account(account)
+
+    async def issue_step_up(self, event: dict[str, Any]) -> str | None:
+        """The one-time challenge id of a ``STEP_UP`` decision (idempotent: the
+        still-valid one when it was already issued). Kept out of the decision
+        event itself, which also reaches the live feed and the LLM explainer."""
+        if event.get("decision") != "STEP_UP" or not event.get("transaction_id"):
+            return None
+        challenge = await self.challenges.issue(
+            str(event["transaction_id"]), str(event.get("customer_id") or "")
+        )
+        return challenge.challenge_id if challenge is not None else None
+
+    async def _issue_step_up(self, event: dict[str, Any]) -> None:
+        try:
+            await self.issue_step_up(event)
+        except Exception:  # the channel can still get it via a replayed ingest
+            logger.exception("[StepUp] %s için doğrulama üretilemedi", event.get("transaction_id"))
 
     def _graph_feedback(self, event: dict[str, Any]) -> None:
         """A scored BLOCK marks the counterparties (payee account, device) as fraud
@@ -447,18 +467,19 @@ class Pipeline:
     async def set_thresholds(
         self, step_up: float, hold: float, block: float, *, actor: str = "system"
     ) -> Thresholds:
-        """Change the policy thresholds here and publish them to every worker."""
-        new = self.engine.policy.set_thresholds(step_up, hold, block)  # validates
+        """Publish new policy thresholds to every worker, then apply them here
+        (A5: a failed publish leaves this worker unchanged, not diverged)."""
+        new = Thresholds(step_up, hold, block)  # validates
         await self.config.publish("thresholds", new.as_dict(), actor=actor)
-        return new
+        return self.engine.policy.set_thresholds(new.step_up, new.hold, new.block)
 
     async def reload_rules(self, *, publish: bool = True, actor: str = "system") -> str:
         """Rebuild the rule set from the rule table (and tell the other workers)."""
         async with self.db.session() as session:
             ruleset = rule_store.build_ruleset(await rule_store.load_rules(session))
-        self.engine.set_ruleset(ruleset)
-        if publish:
+        if publish:  # A5: publish first, so a failure leaves no local divergence
             await self.config.publish("rules", {"version": ruleset.version}, actor=actor)
+        self.engine.set_ruleset(ruleset)
         return ruleset.version
 
     async def _apply_thresholds(self, value: dict[str, Any]) -> None:
@@ -488,12 +509,33 @@ class Pipeline:
             await self.config.publish("models", dict(loaded))
         return loaded
 
-    async def _approve_promotion(self, approval: dict[str, Any], actor: str) -> dict[str, Any]:
+    async def _approve_promotion(
+        self, approval: dict[str, Any], actor: str, tx: ApprovalTx
+    ) -> dict[str, Any]:
+        """A5: the ``models`` publish commits with the approval; the registry
+        file is switched last (restored if the transaction does not commit)
+        and the engine reloads only after the commit."""
         version = str(approval["target_id"])
-        ModelRegistry(self.settings.resolved_models_dir).promote(version)
-        loaded = await self.reload_models()
-        logger.warning("[Models] %s champion yapıldı (onaylayan %s)", version, actor)
-        return loaded
+        registry = ModelRegistry(self.settings.resolved_models_dir)
+        before = registry.read()
+        if version not in before.get("models", {}):
+            raise CaseError(f"model bulunamadı: {version}")
+        published = await self.config.publish_in(
+            tx.session, "models", {"champion": version}, actor=str(approval["requested_by"])
+        )
+        try:
+            registry.promote(version)
+        except RegistryError as exc:
+            raise CaseError(f"model terfi edilemedi: {exc}") from None
+        tx.on_rollback(lambda: registry.restore(before))
+
+        async def _reload() -> None:
+            await self.reload_models(publish=False)
+            self.config.mark_seen("models", published)
+            logger.warning("[Models] %s champion yapıldı (onaylayan %s)", version, actor)
+
+        tx.on_commit(_reload)
+        return {"champion": version, "previous_champion": before.get("champion")}
 
     # --- live dashboard feed ----------------------------------------------------------
     def subscribe_live(self) -> asyncio.Queue[dict[str, Any]]:
@@ -656,6 +698,12 @@ class Pipeline:
                 "decision_legacy",
             )
         }
+        # A4: the stream channel gets the challenge with the decision
+        try:
+            slim["step_up_challenge_id"] = await self.issue_step_up(event)
+        except Exception:  # publish the decision anyway; a replayed ingest re-issues
+            logger.exception("[StepUp] %s için doğrulama üretilemedi", event["transaction_id"])
+            slim["step_up_challenge_id"] = None
         await self.ingress.publish(ActionAgent.DECIDED, slim, key=str(event["transaction_id"]))
 
     # --- lifecycle -------------------------------------------------------------------------
@@ -934,7 +982,7 @@ class Pipeline:
         if durable or self.idempotency.maybe_persisted(tx_id):
             try:
                 stored = await self.stored_result(tx_id)
-                check_digest(tx_id, stored, digest)
+                check_digest(tx_id, stored, digest, legacy=legacy_payload_digest(tx))
             except BaseException:
                 await self.idempotency.release(tx_id)
                 raise
@@ -943,7 +991,11 @@ class Pipeline:
                 return stored
         self._inflight[tx_id] = digest
         try:
-            result = await self._decide(tx_id, tx)
+            result = await self._decide(tx_id, tx, durable=durable)
+        except IngestInProgress:
+            # L1: still being decided; keep the claim until its lease lapses
+            self.idempotency.disown(tx_id)
+            raise
         except BaseException:
             await self.idempotency.release(tx_id)
             raise
@@ -962,7 +1014,9 @@ class Pipeline:
         await self.writer.barrier()
         await self.idempotency.commit(tx_id)
 
-    async def _decide(self, tx_id: str, tx: dict[str, Any]) -> dict[str, Any] | None:
+    async def _decide(
+        self, tx_id: str, tx: dict[str, Any], *, durable: bool = False
+    ) -> dict[str, Any] | None:
         if not self.bus.running:  # direct dispatch: handlers run inline
             await self.bus.publish(TransactionMonitor.CREATED, tx, key=tx_id)
             return self.results.get(tx_id)
@@ -972,16 +1026,33 @@ class Pipeline:
             waiter = asyncio.get_running_loop().create_future()
             self._waiters[tx_id] = waiter
             await self.bus.publish(TransactionMonitor.CREATED, tx, key=tx_id)
-        return await self._await_decision(tx_id, waiter)
+        return await self._await_decision(tx_id, waiter, durable=durable)
 
     async def _await_decision(
-        self, tx_id: str, waiter: asyncio.Future[dict[str, Any]]
+        self,
+        tx_id: str,
+        waiter: asyncio.Future[dict[str, Any]],
+        *,
+        durable: bool = False,
+        timeout_s: float = 30.0,
     ) -> dict[str, Any] | None:
+        """Wait for the decision of ``tx_id``.
+
+        L1: on the durable (Redis ingress) path a decision that is still
+        pending after ``timeout_s`` raises :class:`IngestInProgress` so the
+        stream message stays pending instead of being acknowledged unscored.
+        """
         try:
-            return await asyncio.wait_for(asyncio.shield(waiter), timeout=30)
+            return await asyncio.wait_for(asyncio.shield(waiter), timeout=timeout_s)
         except TimeoutError:
             self._waiters.pop(tx_id, None)
-            return self.results.get(tx_id)
+            result = self.results.get(tx_id)
+            if result is None and durable:
+                logger.warning(
+                    "[Pipeline] %s kararı %.0fs içinde gelmedi — ack yok", tx_id, timeout_s
+                )
+                raise IngestInProgress(tx_id, self.idempotency.retry_after_s) from None
+            return result
 
 
 def build_feature_store(settings: Settings, redis: Any) -> FeatureStateStore:
@@ -1027,6 +1098,7 @@ async def build_pipeline(
         max_retries=settings.writer_max_retries,
         retry_base=settings.writer_retry_base_ms / 1000,
         retry_max=settings.writer_retry_max_ms / 1000,
+        transient_timeout=settings.writer_transient_timeout_s,
     )
     accounts = AccountService(db, writer)
     await accounts.load()

@@ -160,6 +160,12 @@ class TestNetworkApi:
             tx_id = app_run["results"][0]["transaction_id"]
             ok = client.post(f"/api/app/confirm/{tx_id}", json={"knows_payee": True}, headers=h)
             assert ok.status_code == 200 and ok.json()["knows_payee"] is True
+            # L4: recorded under the analyst who entered it, on behalf of the customer
+            case = client.get(f"/api/cases/{ok.json()['case_id']}", headers=h).json()
+            confirmation = case["events"][-1]
+            assert confirmation["event_type"] == "CUSTOMER_CONFIRMATION"
+            assert confirmation["actor"] == "kidemli_analist"
+            assert confirmation["payload"]["on_behalf_of"] == "müşteri"
             missing = client.post("/api/app/confirm/NOPE", json={"knows_payee": True}, headers=h)
             assert missing.status_code == 404
 

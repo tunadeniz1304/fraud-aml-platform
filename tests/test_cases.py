@@ -15,6 +15,7 @@ from app.cases.service import (
     CaseService,
     MakerCheckerError,
     alert_type,
+    sib_draft_hash,
 )
 from app.db.models import Case, Decision, Label
 
@@ -98,6 +99,64 @@ class TestAlertIntake:
         assert [c["id"] for c in listing] == [first, other]
         alerts = await service.list_alerts()
         assert {a["transaction_id"] for a in alerts} == {"T1", "T2", "T3"}
+
+    async def test_a11_replayed_intake_creates_one_alert(self, service, store):
+        """An outbox replay / redelivery of the same decision is a no-op."""
+        first = await service.on_decision(event("DUP-1"))
+        assert first is not None
+        assert await service.on_decision(event("DUP-1")) is None
+        other = CaseService(store.db, accounts=store.accounts, writer=store.writer)
+        assert await other.on_decision(event("DUP-1")) is None  # another worker
+        case = await service.get_case(first)
+        assert case["alert_count"] == 1 and case["total_amount_try"] == 10_000
+        assert case["priority"] == pytest.approx(0.7 * 10_000)
+        assert [a["transaction_id"] for a in await service.list_alerts()] == ["DUP-1"]
+
+    async def test_a11_concurrent_intake_is_rolled_back_by_the_unique_index(
+        self, service, store, monkeypatch
+    ):
+        """The in-transaction check can race on another worker; the unique
+        ``alerts.transaction_id`` index is the backstop and the loser is a no-op."""
+        first = await service.on_decision(event("DUP-2"))
+        other = CaseService(store.db, accounts=store.accounts, writer=store.writer)
+        real_execute = type(other)._intake
+
+        async def _skip_check(self, ev):  # the racing worker saw no alert yet
+            from sqlalchemy.ext.asyncio import AsyncSession
+
+            orig = AsyncSession.execute
+            calls = {"n": 0}
+
+            async def execute(session, stmt, *a, **kw):
+                calls["n"] += 1
+                if calls["n"] == 1:  # the duplicate probe
+                    return await orig(session, select(Case.id).where(Case.id == -1), *a, **kw)
+                return await orig(session, stmt, *a, **kw)
+
+            monkeypatch.setattr(AsyncSession, "execute", execute)
+            try:
+                return await real_execute(self, ev)
+            finally:
+                monkeypatch.setattr(AsyncSession, "execute", orig)
+
+        monkeypatch.setattr(CaseService, "_intake", _skip_check)
+        assert await other.on_decision(event("DUP-2")) is None
+        case = await service.get_case(first)
+        assert case["alert_count"] == 1
+
+    async def test_a11_case_clock_starts_at_the_decision(self, service):
+        decided = datetime.now(UTC) - timedelta(days=2)
+        case_id = await service.on_decision(event("LATE-1", decided_at=decided.isoformat()))
+        case = await service.get_case(case_id)
+        assert abs((case["suspicion_at"] - decided).total_seconds()) < 1
+        assert abs((case["masak_deadline"] - sla.masak_deadline(decided)).total_seconds()) < 1
+        assert abs((case["internal_sla_due"] - sla.internal_sla_due(decided)).total_seconds()) < 1
+        # a decided_at in the future (clock skew) never pushes the deadline out
+        future = datetime.now(UTC) + timedelta(days=30)
+        other = await service.on_decision(
+            event("LATE-2", customer="CUST-0009", decided_at=future.isoformat())
+        )
+        assert (await service.get_case(other))["suspicion_at"] <= datetime.now(UTC)
 
     async def test_ring_grouping_and_window_expiry(self, service, store):
         a = await service.on_decision(event("R1", customer="CUST-0003", ring_id="RING-7"))
@@ -229,6 +288,54 @@ class TestAnalystActions:
         assert label == 0 and status == "SERBEST"
         assert store.get_status("CUST-0002") == "AKTIF"
 
+    async def test_a7_clean_closure_needs_the_assignee_or_a_senior(self, service, store):
+        case_id = await service.on_decision(event("A7-1"))
+        await add_decision(store, "A7-1")
+        await service.assign(case_id, "analist_b", "analist_b")
+        with pytest.raises(MakerCheckerError, match="atanmış"):
+            await service.decide(case_id, "TEMIZ", "analist_a", role="analist")
+        async with store.db.session() as session:
+            status = (await session.execute(select(Decision.status))).scalar_one()
+        assert status == "BEKLEMEDE"  # nothing released
+        closed = await service.decide(case_id, "TEMIZ", "analist_b", role="analist")
+        assert closed["status"] == "KAPANDI_TEMIZ"
+
+    async def test_a7_large_clean_release_needs_a_senior(self, service, store, monkeypatch):
+        from app.config import get_settings
+
+        monkeypatch.setattr(get_settings(), "case_clean_release_senior_try", 5_000.0)
+        case_id = await service.on_decision(event("A7-2"))  # 10 000 TRY held
+        await service.assign(case_id, "analist_b", "analist_b")
+        with pytest.raises(MakerCheckerError, match="kıdemli"):
+            await service.decide(case_id, "TEMIZ", "analist_b", role="analist")
+        closed = await service.decide(case_id, "TEMIZ", "kidemli", role="kidemli_analist")
+        assert closed["status"] == "KAPANDI_TEMIZ"
+
+    async def test_a7_single_person_clean_label_is_not_profile_feedback(self, store):
+        fed: list[tuple[list[str], str]] = []
+
+        async def on_labelled(tx_ids, feedback):
+            fed.append((tx_ids, feedback))
+
+        service = CaseService(
+            store.db, accounts=store.accounts, writer=store.writer, on_labelled=on_labelled
+        )
+        solo = await service.on_decision(event("A7-3"))
+        await service.assign(solo, "analist_b", "analist_b")
+        await service.decide(solo, "TEMIZ", "analist_b", role="analist")
+        own = await service.on_decision(event("A7-4", customer="CUST-0002"))
+        await service.assign(own, "kidemli", "kidemli")
+        await service.decide(own, "TEMIZ", "kidemli", role="kidemli_analist")
+        assert fed == []  # a label is written, but the profile does not learn
+        async with store.db.session() as session:
+            labels = set((await session.execute(select(Label.transaction_id))).scalars())
+        assert labels == {"A7-3", "A7-4"}
+        # a senior closing a case another analyst investigated: two people agree
+        pair = await service.on_decision(event("A7-5", customer="CUST-0003"))
+        await service.assign(pair, "analist_b", "analist_b")
+        await service.decide(pair, "TEMIZ", "kidemli", role="kidemli_analist")
+        assert fed == [(["A7-5"], "clean")]
+
 
 class TestMakerChecker:
     async def test_unblock_requires_a_different_approver(self, service, store):
@@ -283,3 +390,30 @@ class TestMakerChecker:
         assert {a["kind"] for a in case["approvals"]} == {"SIB"}
         with pytest.raises(CaseError, match="onaylanmış"):
             await service.save_sib_draft(case_id, {"x": 1}, "analist")
+
+    async def test_sib_draft_is_frozen_and_pinned_while_awaiting_approval(self, service, store):
+        """A6: the approver signs off exactly the text that is submitted."""
+        case_id = await service.on_decision(event("SIB2"))
+        await service.save_sib_draft(case_id, {"supheli": "MUSTERI_1"}, "analist")
+        await service.decide(case_id, "FRAUD", "analist")
+        req = await service.request_approval("SIB", str(case_id), {}, "analist")
+        assert req["payload"]["draft_sha256"] == sib_draft_hash({"supheli": "MUSTERI_1"})
+        with pytest.raises(CaseError, match="onay beklerken"):
+            await service.save_sib_draft(case_id, {"supheli": "BASKA"}, "analist")
+        assert (await service.get_case(case_id))["sib_draft"] == {"supheli": "MUSTERI_1"}
+        # a draft changed behind the API's back is refused and nothing is submitted
+        async with store.db.transaction() as session:
+            await session.execute(
+                update(Case).where(Case.id == case_id).values(sib_draft={"supheli": "BASKA"})
+            )
+        with pytest.raises(CaseError, match="değişti"):
+            await service.decide_approval(req["id"], approve=True, actor="kidemli")
+        case = await service.get_case(case_id)
+        assert case["sib_status"] == "SIB_ONAY_BEKLIYOR" and case["status"] != "SIB_GONDERILDI"
+        # reject → editable again → a fresh request pins the new text
+        await service.decide_approval(req["id"], approve=False, actor="kidemli")
+        await service.save_sib_draft(case_id, {"supheli": "SON"}, "analist")
+        req = await service.request_approval("SIB", str(case_id), {}, "analist")
+        done = await service.decide_approval(req["id"], approve=True, actor="kidemli")
+        assert done["result"]["masak_reference"].startswith("SIB-")
+        assert (await service.get_case(case_id))["sib_draft"]["supheli"] == "SON"

@@ -50,6 +50,8 @@ async def ready(request: Request) -> JSONResponse:
     pipeline = state.pipeline
     if pipeline is not None:
         checks["database"] = await pipeline.db.ping()
+        # a batch stuck behind a database outage stalls acks and ingestion (A2)
+        checks["writer"] = not pipeline.writer.stuck
         if pipeline.redis is not None:
             try:
                 checks["redis"] = bool(await pipeline.redis.ping())

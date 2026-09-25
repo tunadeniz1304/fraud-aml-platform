@@ -268,6 +268,59 @@ class TestBacktest:
         # the event loop stayed free: other requests are served meanwhile
         assert client.get("/api/rules", headers=ANALYST).status_code == 200
 
+    def test_m6_db_rows_are_streamed_in_chunks(self, client, monkeypatch):
+        """The db rows arrive in small chunks (the loop is handed back between
+        them) and the replay sees the same rows as one big fetch would."""
+        from app.scoring import rule_store
+
+        body = {"source": "db", "when": "amount_try > 0"}
+        whole = client.post("/api/rules/R_EXTREME_AMOUNT/simulate", json=body, headers=ANALYST)
+        monkeypatch.setattr(rule_store, "_BACKTEST_CHUNK", 2)
+        chunked = client.post("/api/rules/R_EXTREME_AMOUNT/simulate", json=body, headers=ANALYST)
+        assert chunked.status_code == 200 and chunked.json() == whole.json()
+        assert whole.json()["evaluated"] > 2  # really spans several chunks
+
+    def test_m6_timed_out_backtest_thread_stops(self, client, monkeypatch):
+        """After the time budget the worker thread ends too (it used to keep
+        replaying every row in the background)."""
+        import threading
+        import time
+
+        from app.api.routes import rules as rules_routes
+        from app.config import get_settings
+
+        consumed = {"n": 0}
+        total = 5_000
+
+        class SlowRows:
+            def __iter__(self):
+                for _ in range(total):
+                    time.sleep(0.001)
+                    consumed["n"] += 1
+                    yield {"amount_try": 1.0}, None
+
+        async def rows(source, limit):
+            return "synthetic", SlowRows()
+
+        monkeypatch.setattr(rules_routes, "_backtest_rows", rows)
+        monkeypatch.setattr(get_settings(), "rule_backtest_timeout_s", 0.05)
+        draft = {**NEW_RULE, "when": "amount_try >= 1", "source": "synthetic"}
+        r = client.post("/api/rules/simulate", json=draft, headers=ANALYST)
+        assert r.status_code == 503
+        time.sleep(0.5)  # at most one check interval after the stop event
+        stopped_at = consumed["n"]
+        time.sleep(0.3)
+        assert consumed["n"] == stopped_at < total
+
+        # the replay itself honours the event
+        from app.scoring.rules import BacktestCancelled, RuleDef, backtest
+
+        stop = threading.Event()
+        stop.set()
+        rule = RuleDef.from_dict({**NEW_RULE, "when": "amount_try >= 1"})
+        with pytest.raises(BacktestCancelled):
+            backtest(rule, [({"amount_try": 1.0}, None)], stop=stop)
+
 
 class TestPolicyApi:
     def test_get_and_set_thresholds(self, client):

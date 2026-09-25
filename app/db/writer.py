@@ -13,8 +13,14 @@ immediately in its own transaction.
 Failure handling (H4) — a batch is **never dropped silently**:
 
 * transient errors (connection lost, ``database is locked``, deadlock /
-  serialisation failures) are retried with capped exponential backoff for as
-  long as they last; the bounded queue turns the outage into backpressure;
+  serialisation failures) are retried with capped exponential backoff. They
+  are classified by exception **type and SQLSTATE** only, never by the
+  rendered error text (which embeds user-supplied parameter values). After
+  ``transient_timeout`` seconds the database is probed: if it is down the
+  outage is waited out (the bounded queue turns it into backpressure and
+  :attr:`PersistenceWriter.stuck` flips for the readiness probe); if it
+  answers, the error is batch-specific and the batch falls through to
+  bisect / dead-letter instead of wedging the writer (A2);
 * any other error is retried ``max_retries`` times, then the batch is
   **bisected** until the poison operation(s) are isolated. Poison operations
   go to the ``dead_letters`` table, every good operation is committed;
@@ -37,7 +43,16 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import (
+    DataError,
+    DBAPIError,
+    DisconnectionError,
+    IntegrityError,
+    InterfaceError,
+    NotSupportedError,
+    OperationalError,
+    ProgrammingError,
+)
 
 from app.core.account_state import Actor
 from app.db import repository as repo
@@ -50,18 +65,18 @@ logger = logging.getLogger("fraud.db.writer")
 
 OpKind = Literal["transaction", "decision", "status", "audit", "outbox", "outbox_done"]
 
-_TRANSIENT_MARKERS = (
-    "database is locked",
-    "database table is locked",
-    "deadlock",
-    "could not serialize",
-    "serialization failure",
-    "connection",
-    "server closed",
-    "timeout",
-    "timed out",
-    "too many clients",
-)
+#: SQLSTATE classes / codes worth waiting out (PostgreSQL): connection
+#: exceptions, transaction rollback (serialisation failure, deadlock),
+#: insufficient resources, operator intervention (admin shutdown ...), and
+#: lock-not-available.
+_TRANSIENT_SQLSTATE_PREFIXES = ("08", "40", "53", "57P")
+_TRANSIENT_SQLSTATES = frozenset({"55P03", "55006"})
+#: SQLite reports contention with an OperationalError carrying no SQLSTATE; the
+#: driver message (``exc.orig``, never the rendered statement or parameters)
+#: is matched *exactly*.
+_SQLITE_TRANSIENT_MESSAGES = frozenset({"database is locked", "database table is locked"})
+#: Errors caused by the data itself: retrying can never make them succeed.
+_PERMANENT_DB_ERRORS = (IntegrityError, DataError, ProgrammingError, NotSupportedError)
 
 
 @dataclass
@@ -131,16 +146,43 @@ class _Batch:
         )
 
 
+def _sqlstate(orig: BaseException | None) -> str | None:
+    """SQLSTATE of a DB-API error (psycopg ``sqlstate``/``pgcode``, asyncpg
+    ``sqlstate`` on the error or its cause)."""
+    for candidate in (orig, getattr(orig, "__cause__", None)):
+        if candidate is None:
+            continue
+        for attr in ("sqlstate", "pgcode"):
+            code = getattr(candidate, attr, None)
+            if isinstance(code, str) and code:
+                return code
+    return None
+
+
 def is_transient(exc: BaseException) -> bool:
-    """Errors worth waiting out (the database is unavailable or contended)."""
-    if isinstance(exc, ConnectionError | TimeoutError):
+    """Errors worth waiting out (the database is unavailable or contended).
+
+    Classified by exception type and SQLSTATE only. ``str(exc)`` of a
+    SQLAlchemy error renders the statement *and its parameters*, i.e. user
+    field values such as a payment purpose, so it is never inspected (A2).
+    """
+    if isinstance(exc, _PERMANENT_DB_ERRORS):
+        return False
+    if isinstance(exc, DisconnectionError | ConnectionError | TimeoutError):
         return True
-    if isinstance(exc, DBAPIError) and exc.connection_invalidated:
-        return True
-    if isinstance(exc, DBAPIError | OSError):
-        text = str(exc).lower()
-        return any(marker in text for marker in _TRANSIENT_MARKERS)
-    return False
+    if isinstance(exc, DBAPIError):
+        if exc.connection_invalidated:
+            return True
+        code = _sqlstate(exc.orig)
+        if code is not None:
+            return code.startswith(_TRANSIENT_SQLSTATE_PREFIXES) or code in _TRANSIENT_SQLSTATES
+        if isinstance(exc.orig, ConnectionError | TimeoutError):
+            return True
+        if isinstance(exc, OperationalError | InterfaceError):
+            args = getattr(exc.orig, "args", None) or ("",)
+            return str(args[0]).strip().lower() in _SQLITE_TRANSIENT_MESSAGES
+        return False
+    return isinstance(exc, OSError)
 
 
 def _op_key(op: WriteOp) -> str:
@@ -177,6 +219,7 @@ class PersistenceWriter:
         max_retries: int = 2,
         retry_base: float = 0.05,
         retry_max: float = 2.0,
+        transient_timeout: float = 30.0,
     ) -> None:
         self.db = db
         self.chain = chain or AuditChain()
@@ -185,6 +228,11 @@ class PersistenceWriter:
         self.max_retries = max_retries
         self.retry_base = retry_base
         self.retry_max = retry_max
+        #: seconds a batch may keep failing "transiently" before the database
+        #: is probed; a database that answers means the error is batch-specific
+        self.transient_timeout = transient_timeout
+        #: True while a batch is stuck behind a database outage (readiness probe)
+        self.stuck = False
         self._queue: asyncio.Queue[WriteOp | _Barrier] = asyncio.Queue(maxsize=queue_size)
         self._task: asyncio.Task[None] | None = None
         self.batches_written = 0
@@ -292,9 +340,12 @@ class PersistenceWriter:
         budget = self.max_retries if retries is None else retries
         delay = self.retry_base
         failures = 0
+        loop = asyncio.get_running_loop()
+        transient_since: float | None = None
         while True:
             try:
                 await self._apply(_Batch.of(ops))
+                self.stuck = False
                 return
             except asyncio.CancelledError:
                 raise
@@ -302,16 +353,36 @@ class PersistenceWriter:
                 self.errors += 1
                 metrics.DB_WRITE_ERRORS.inc()
                 if is_transient(exc):
-                    self.retries += 1
+                    now = loop.time()
+                    if transient_since is None:
+                        transient_since = now
+                    expired = now - transient_since >= self.transient_timeout
+                    if not expired or not await self.db.ping():
+                        # within the window, or a genuine outage: wait it out
+                        # (the bounded queue turns it into backpressure)
+                        self.stuck = expired
+                        self.retries += 1
+                        logger.warning(
+                            "[DB] %d kayıtlık toplu yazım geçici hata (%s) — %.2fs sonra tekrar",
+                            len(ops),
+                            type(exc).__name__,
+                            delay,
+                        )
+                        await asyncio.sleep(delay)
+                        delay = min(delay * 2, self.retry_max)
+                        continue
+                    # The database answers but this batch keeps failing: the
+                    # "transient" error is batch-specific -> bisect / DLQ.
                     logger.warning(
-                        "[DB] %d kayıtlık toplu yazım geçici hata (%s) — %.2fs sonra tekrar",
+                        "[DB] %d kayıtlık toplu yazım %.0fs boyunca geçici hata verdi ama "
+                        "veritabanı yanıt veriyor — bölünüyor / DLQ",
                         len(ops),
-                        type(exc).__name__,
-                        delay,
+                        now - transient_since,
                     )
-                    await asyncio.sleep(delay)
-                    delay = min(delay * 2, self.retry_max)
-                    continue
+                    self.stuck = False
+                    failures += 1
+                    error: BaseException = exc
+                    break
                 failures += 1
                 if failures <= budget:
                     self.retries += 1
@@ -323,7 +394,9 @@ class PersistenceWriter:
         if len(ops) == 1:
             await self._dead_letter(ops[0], error, attempts=failures)
             return
-        logger.warning("[DB] %d kayıtlık toplu yazım bölünüyor (%s)", len(ops), error)
+        logger.warning(
+            "[DB] %d kayıtlık toplu yazım bölünüyor (%s)", len(ops), type(error).__name__
+        )
         middle = len(ops) // 2
         await self._commit(ops[:middle], retries=0)
         await self._commit(ops[middle:], retries=0)

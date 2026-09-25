@@ -11,6 +11,7 @@ from app.api.deps import require_pipeline
 from app.cases.service import CaseNotFoundError
 from app.db import repository as repo
 from app.scenarios import SCENARIOS, ScenarioError
+from app.security.auth import Principal
 from app.security.deps import require_role
 
 router = APIRouter(prefix="/api", tags=["network"])
@@ -79,12 +80,20 @@ async def confirmation_of_payee(
     return payees.confirm(iban, name).as_dict()
 
 
-@router.post("/app/confirm/{transaction_id}", dependencies=[analyst])
-async def app_confirmation(transaction_id: str, body: ConfirmIn) -> dict[str, Any]:
-    """Simulated customer answer to "Bu kişiyi tanıyor musunuz?" for a held payment."""
+@router.post("/app/confirm/{transaction_id}")
+async def app_confirmation(
+    transaction_id: str, body: ConfirmIn, principal: Principal = analyst
+) -> dict[str, Any]:
+    """Simulated customer answer to "Bu kişiyi tanıyor musunuz?" for a held payment.
+
+    L4: audited under the analyst who entered it, on behalf of the customer.
+    """
     try:
         return await require_pipeline().cases.customer_confirmation(
-            transaction_id, knows_payee=body.knows_payee, note=body.note
+            transaction_id,
+            knows_payee=body.knows_payee,
+            note=body.note,
+            actor=principal.username,
         )
     except CaseNotFoundError:
         raise HTTPException(status_code=404, detail="Bekletilen işlem/vaka bulunamadı") from None
