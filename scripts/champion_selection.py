@@ -4,15 +4,16 @@
     python scripts/champion_selection.py --no-promote
 
 1. Regenerates the de-fingerprinted synthetic data (seed 42) and trains two
-   candidates with the production training code: ``fraud_gbm_v3`` (seed 42,
-   300 rounds) and ``fraud_gbm_v4`` (seed 7, 500 rounds, 200 isolation trees).
-2. Compares them on (a) the synthetic time-split holdout and (b) the PaySim
-   shadow replay (test period of the cached 10 % replay; the models are
-   applied to PaySim's features without retraining — a transfer check).
-   Selection rule: lower cost at a 1 % alert budget on the synthetic holdout
-   (missed fraud amount + review cost of false alerts), PaySim cost as the
-   tie-breaker; recorded in ``artifacts/validation/champion_selection.json``.
-3. Promotes the winner through the real API: an admin requests
+   candidates with the production training code: ``fraud_gbm_v5`` (seed 42,
+   300 rounds) and ``fraud_gbm_v6`` (seed 7, 500 rounds, 200 isolation trees).
+2. Selects on the **validation period only**: the lower share of fraud amount
+   missed at a 1 % alert budget, higher validation PR-AUC as the tie-breaker.
+   The test period is never looked at for the decision.
+3. After the decision, reports each candidate once on (a) the synthetic test
+   period and (b) the PaySim shadow replay (test period of the cached 10 %
+   replay, models applied without retraining — a transfer check). Recorded
+   in ``artifacts/validation/champion_selection.json``.
+4. Promotes the winner through the real API: an admin requests
    MODEL_PROMOTE, a *different* senior analyst approves it (maker-checker);
    the loser stays as challenger (shadow scoring).
 """
@@ -42,8 +43,8 @@ from app.validation.evaluate import cost_outcome, time_split
 from app.validation.replay import ReplayResult
 
 CANDIDATES = {
-    "fraud_gbm_v3": {"seed": 42, "num_boost_round": 300, "iforest_estimators": 100},
-    "fraud_gbm_v4": {"seed": 7, "num_boost_round": 500, "iforest_estimators": 200},
+    "fraud_gbm_v5": {"seed": 42, "num_boost_round": 300, "iforest_estimators": 100},
+    "fraud_gbm_v6": {"seed": 7, "num_boost_round": 500, "iforest_estimators": 200},
 }
 PAYSIM_CACHE = ROOT / "data" / "external" / "cache" / "paysim_0.1_1_10000.npz"
 OUT = ROOT / "artifacts" / "validation" / "champion_selection.json"
@@ -70,20 +71,15 @@ def _paysim_block(registry: ModelRegistry, version: str) -> dict[str, Any] | Non
     }
 
 
-def _synthetic_block(report: Any) -> dict[str, Any]:
-    h = report.metrics["test"]["hybrid"]
+def _block(h: dict[str, Any]) -> dict[str, Any]:
     return {
         "pr_auc": h["pr_auc"],
         "roc_auc": h["roc_auc"],
         "recall_at_1pct_fpr": h["recall_at_1pct_fpr"],
         "cost_weighted_recall_1pct": h["budget_1pct"]["cost_weighted_recall"],
+        # share of fraud amount missed when the riskiest 1 % are alerted
+        "missed_amount_share_1pct": round(1.0 - h["budget_1pct"]["cost_weighted_recall"], 4),
     }
-
-
-def _synthetic_cost(registry: ModelRegistry, version: str) -> float:
-    meta = json.loads((registry.root / version / "metadata.json").read_text(encoding="utf-8"))
-    budget = meta["metrics"]["test"]["hybrid"]["budget_1pct"]
-    return float(1.0 - budget["cost_weighted_recall"])  # share of fraud amount missed
 
 
 def promote_with_four_eyes(version: str, challenger: str) -> dict[str, Any]:
@@ -142,6 +138,7 @@ def main() -> None:
     data.write(data_dir)
     manifest = data.summary()
     results: dict[str, Any] = {}
+    tests: dict[str, Any] = {}
     for version, params in CANDIDATES.items():
         cfg = TrainingConfig(
             version=version,
@@ -155,21 +152,29 @@ def main() -> None:
         print("OK", report.headline())
         results[version] = {
             "params": params,
-            "synthetic_holdout": _synthetic_block(report),
-            "synthetic_missed_amount_share_1pct": round(_synthetic_cost(registry, version), 4),
-            "paysim_replay": _paysim_block(registry, version),
+            "synthetic_validation": _block(report.metrics["valid"]["hybrid"]),
         }
+        tests[version] = report.metrics["test"]
 
     def key(v: str) -> tuple[float, float]:
-        r = results[v]
-        paysim = r["paysim_replay"]["cost_1pct"]["total_cost"] if r["paysim_replay"] else 0.0
-        return (r["synthetic_missed_amount_share_1pct"], paysim)
+        val = results[v]["synthetic_validation"]
+        return (val["missed_amount_share_1pct"], -val["pr_auc"])
 
-    winner = min(results, key=key)
+    winner = min(results, key=key)  # validation metrics only
     loser = next(v for v in results if v != winner)
+    # reported once, after the decision; never used for it
+    for version in results:
+        results[version]["reported_after_selection"] = {
+            "synthetic_test": {
+                **_block(tests[version]["hybrid"]),
+                "calibration": tests[version]["calibration"]["hybrid"],
+            },
+            "paysim_replay": _paysim_block(registry, version),
+        }
     decision: dict[str, Any] = {
-        "rule": "1 % alarm bütçesinde sentetik holdout'ta kaçan fraud tutarı payı en düşük "
-        "aday; eşitlikte PaySim replay toplam maliyeti",
+        "rule": "yalnız doğrulama dönemi: %1 alarm bütçesinde kaçan fraud tutarı payı en düşük "
+        "aday; eşitlikte doğrulama PR-AUC'si yüksek olan. Test ve PaySim sonuçları karardan "
+        "sonra bir kez raporlanır, seçimde kullanılmaz.",
         "winner": winner,
         "challenger": loser,
     }
