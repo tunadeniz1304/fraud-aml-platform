@@ -54,4 +54,18 @@ describe("RulesPage", () => {
     fireEvent.click(await screen.findByText("R_NEW_DEVICE"));
     expect(screen.queryByRole("button", { name: "Kaydet (yeni versiyon)" })).not.toBeInTheDocument();
   });
+
+  it("shows that a saved change waits for maker-checker approval", async () => {
+    login("kidemli_analist");
+    mockFetch((url, init) => {
+      if (url === "/api/rules") return { body: RULES };
+      if (url === "/api/rules/R_BIG_AMOUNT" && init?.method === "PUT")
+        return { status: 202, body: { message: "onay bekliyor", approval: { id: 7, kind: "RULE_CHANGE", target_id: "R_BIG_AMOUNT", status: "BEKLIYOR", requested_by: "kidemli_analist" } } };
+      return undefined;
+    });
+    render(<RulesPage />);
+    fireEvent.click(await screen.findByText("R_BIG_AMOUNT"));
+    fireEvent.click(screen.getByRole("button", { name: "Kaydet (yeni versiyon)" }));
+    expect(await screen.findByText(/Onay bekliyor \(#7\)/)).toBeInTheDocument();
+  });
 });

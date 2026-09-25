@@ -37,6 +37,7 @@ from app.agents.transaction_monitor import TransactionMonitor
 from app.bus.memory import InMemoryBus
 from app.bus.redis_streams import RedisStreamsBus
 from app.bus.writebehind import WriteBehindQueue
+from app.cases.governance import DecisionLogicGovernance
 from app.cases.service import OPEN_STATUSES, CaseService
 from app.config import Settings, get_settings
 from app.copilot.agent import CopilotAgent
@@ -160,6 +161,9 @@ class Pipeline:
         self._live: set[asyncio.Queue[dict[str, Any]]] = set()
         self.recent_live: deque[dict[str, Any]] = deque(maxlen=2000)
         self.cases.handlers["MODEL_PROMOTE"] = self._approve_promotion
+        self.governance = DecisionLogicGovernance(db, analyst.engine, writer)
+        self.cases.handlers["RULE_CHANGE"] = self.governance.apply_rule_change
+        self.cases.handlers["POLICY_THRESHOLDS"] = self.governance.apply_thresholds
         self.results: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._waiters: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._stream_task: asyncio.Task[None] | None = None

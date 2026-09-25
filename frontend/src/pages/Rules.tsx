@@ -6,6 +6,7 @@ type Rule = {
   id: string; name: string; when: string; score: number; description: string; reason_template: string;
   action_hint: string | null; severity: string; enabled: boolean; version: number; tags: string[];
 };
+type Approval = { id: number; kind: string; target_id: string; status: string; requested_by: string };
 type Backtest = { source: string; evaluated: number; alerts: number; alert_rate: number; precision: number | null; recall: number | null; true_positives: number };
 
 export default function RulesPage() {
@@ -15,13 +16,20 @@ export default function RulesPage() {
   const [edit, setEdit] = useState<Rule | null>(null);
   const [result, setResult] = useState<Backtest | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [pending, setPending] = useState<Approval[]>([]);
 
   const load = () =>
-    api<{ version: string; rules: Rule[]; fields: Record<string, string> }>("/api/rules").then((r) => {
-      setRules(r.rules);
-      setVersion(r.version);
-      setFields(r.fields);
-    });
+    Promise.all([
+      api<{ version: string; rules: Rule[]; fields: Record<string, string> }>("/api/rules").then((r) => {
+        setRules(r.rules);
+        setVersion(r.version);
+        setFields(r.fields);
+      }),
+      api<Approval[]>("/api/approvals?status=BEKLIYOR")
+        .then((a) => setPending((a ?? []).filter((x) => x.kind === "RULE_CHANGE")))
+        .catch(() => setPending([])),
+    ]);
   useEffect(() => {
     load().catch((e) => setError(e.message));
   }, []);
@@ -42,7 +50,19 @@ export default function RulesPage() {
     try {
       const { version: _v, ...body } = edit;
       const exists = rules.some((r) => r.id === edit.id);
-      await api(exists ? `/api/rules/${edit.id}` : "/api/rules", { method: exists ? "PUT" : "POST", json: { ...body, action_hint: body.action_hint || null } });
+      const res = await api<{ approval?: Approval }>(exists ? `/api/rules/${edit.id}` : "/api/rules", { method: exists ? "PUT" : "POST", json: { ...body, action_hint: body.action_hint || null } });
+      // maker-checker: the change is live only after a second user approves it
+      setNotice(res?.approval ? `Onay bekliyor (#${res.approval.id}) — değişiklik ikinci bir kıdemli kullanıcı onaylayınca devreye girer.` : null);
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+  const decide = async (id: number, verb: "approve" | "reject") => {
+    setError(null);
+    try {
+      await api(`/api/approvals/${id}/${verb}`, { method: "POST", json: {} });
+      setNotice(null);
       await load();
     } catch (e) {
       setError((e as Error).message);
@@ -67,6 +87,23 @@ export default function RulesPage() {
             </li>
           ))}
         </ul>
+        {pending.length > 0 && (
+          <div className="mt-3 border-t pt-2 text-sm">
+            <div className="mb-1 font-semibold">Onay bekleyen kural değişiklikleri</div>
+            {pending.map((a) => (
+              <div key={a.id} className="flex items-center gap-2">
+                <span className="font-mono">#{a.id} {a.target_id}</span>
+                <span className="text-xs text-slate-600 dark:text-slate-400">talep: {a.requested_by}</span>
+                {canSenior() && (
+                  <span className="ml-auto flex gap-1">
+                    <Button variant="ghost" onClick={() => decide(a.id, "approve")}>Onayla</Button>
+                    <Button variant="ghost" onClick={() => decide(a.id, "reject")}>Reddet</Button>
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </Card>
       <Card title="Kural düzenleyici (güvenli DSL — eval yok)">
         {!edit ? <p className="text-sm text-slate-600 dark:text-slate-400">Soldan bir kural seçin.</p> : (
@@ -84,6 +121,7 @@ export default function RulesPage() {
               <label className="flex items-center gap-1"><input type="checkbox" checked={edit.enabled} onChange={(e) => setEdit({ ...edit, enabled: e.target.checked })} /> etkin</label>
             </div>
             <ErrorNote error={error} />
+            {notice && <p className="rounded-lg bg-amber-50 p-2 text-amber-900 dark:bg-amber-900/30 dark:text-amber-100">{notice}</p>}
             <div className="flex gap-2">
               <Button variant="ghost" onClick={simulate}>Backtest</Button>
               {canSenior() && <Button onClick={save}>Kaydet (yeni versiyon)</Button>}

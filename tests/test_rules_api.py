@@ -17,6 +17,10 @@ def _headers(role: str) -> dict[str, str]:
 
 
 ANALYST, SENIOR, ADMIN = _headers("analist"), _headers("kidemli_analist"), _headers("admin")
+SENIOR2 = {
+    "Authorization": f"Bearer {issue_token(Principal('kidemli2', 'kidemli_analist', 'K2'))[0]}"
+}
+ADMIN2 = {"Authorization": f"Bearer {issue_token(Principal('admin2', 'admin', 'Y2'))[0]}"}
 
 NEW_RULE = {
     "id": "R_TEST_BIG",
@@ -32,7 +36,19 @@ NEW_RULE = {
 @pytest.fixture()
 def client(app_env):
     with TestClient(create_app()) as c:
+        c.app.state.users.add("kidemli2", "kidemli_analist", "K2", "pw-kidemli2")
+        c.app.state.users.add("admin2", "admin", "Y2", "pw-admin2")
         yield c
+
+
+def _approved(client, requested, approver=SENIOR2):
+    """Maker-checker: a change request (202) is applied by a second user."""
+    assert requested.status_code == 202, requested.text
+    approval = requested.json()["approval"]
+    assert approval["status"] == "BEKLIYOR"
+    decided = client.post(f"/api/approvals/{approval['id']}/approve", headers=approver)
+    assert decided.status_code == 200, decided.text
+    return decided.json()["result"]
 
 
 class TestRuleCrud:
@@ -61,22 +77,21 @@ class TestRuleCrud:
 
     def test_create_update_disable_with_versions_reload_and_audit(self, client):
         before = client.get("/api/policy", headers=ANALYST).json()["ruleset_version"]
-        r = client.post("/api/rules", json=NEW_RULE, headers=SENIOR)
-        assert r.status_code == 201, r.text
-        created = r.json()
+        created = _approved(client, client.post("/api/rules", json=NEW_RULE, headers=SENIOR))
         assert created["rule"]["version"] == 1 and created["ruleset_version"] != before
         assert client.post("/api/rules", json=NEW_RULE, headers=SENIOR).status_code == 409
 
-        updated = client.put(
-            "/api/rules/R_TEST_BIG", json={**NEW_RULE, "score": 0.6}, headers=SENIOR
+        updated = _approved(
+            client,
+            client.put("/api/rules/R_TEST_BIG", json={**NEW_RULE, "score": 0.6}, headers=SENIOR),
         )
-        assert updated.status_code == 200 and updated.json()["rule"]["version"] == 2
+        assert updated["rule"]["version"] == 2
         assert client.put("/api/rules/R_OTHER", json=NEW_RULE, headers=SENIOR).status_code == 422
         missing = {**NEW_RULE, "id": "R_MISSING"}
         assert client.put("/api/rules/R_MISSING", json=missing, headers=SENIOR).status_code == 404
 
-        disabled = client.delete("/api/rules/R_TEST_BIG", headers=SENIOR)
-        assert disabled.status_code == 200 and disabled.json()["rule"]["enabled"] is False
+        disabled = _approved(client, client.delete("/api/rules/R_TEST_BIG", headers=SENIOR))
+        assert disabled["rule"]["enabled"] is False
         assert client.delete("/api/rules/R_NOPE", headers=SENIOR).status_code == 404
         history = client.get("/api/rules/R_TEST_BIG", headers=ANALYST).json()["history"]
         assert [h["version"] for h in history] == [3, 2, 1]
@@ -86,9 +101,52 @@ class TestRuleCrud:
         assert {"RULE_CREATE", "RULE_UPDATE", "RULE_DISABLE"} <= events
         assert client.get("/api/audit/verify", headers=ANALYST).json()["ok"] is True
 
+    def test_m4_rule_change_is_not_live_until_a_second_user_approves(self, client):
+        before = client.get("/api/policy", headers=ANALYST).json()["ruleset_version"]
+        requested = client.post("/api/rules", json=NEW_RULE, headers=SENIOR)
+        assert requested.status_code == 202 and "onay" in requested.json()["message"]
+        approval_id = requested.json()["approval"]["id"]
+        # nothing changed yet: no rule, same live ruleset
+        assert client.get("/api/rules/R_TEST_BIG", headers=ANALYST).status_code == 404
+        assert client.get("/api/policy", headers=ANALYST).json()["ruleset_version"] == before
+        # one pending request per rule
+        again = client.put("/api/rules/R_TEST_BIG", json=NEW_RULE, headers=SENIOR2)
+        assert again.status_code == 404  # the rule does not exist yet
+        assert client.post("/api/rules", json=NEW_RULE, headers=SENIOR2).status_code == 409
+        # the maker cannot approve their own change, an analyst cannot approve at all
+        own = client.post(f"/api/approvals/{approval_id}/approve", headers=SENIOR)
+        assert own.status_code == 403
+        junior = client.post(f"/api/approvals/{approval_id}/approve", headers=ANALYST)
+        assert junior.status_code == 403
+        _approved(client, requested)
+        assert client.get("/api/rules/R_TEST_BIG", headers=ANALYST).status_code == 200
+        assert client.get("/api/policy", headers=ANALYST).json()["ruleset_version"] != before
+
+    def test_m4_stale_update_request_is_not_applied(self, client):
+        from app.api.state import state
+        from app.scoring import rule_store
+        from app.scoring.rules import RuleDef
+
+        _approved(client, client.post("/api/rules", json=NEW_RULE, headers=SENIOR))
+        stale = client.put("/api/rules/R_TEST_BIG", json={**NEW_RULE, "score": 0.9}, headers=SENIOR)
+        assert stale.status_code == 202
+
+        async def bump() -> None:  # the rule changes after the request was made
+            async with state.pipeline.db.transaction() as session:
+                rule = RuleDef.from_dict({**NEW_RULE, "score": 0.5})
+                await rule_store.save_rule(session, rule, "someone")
+
+        client.portal.call(bump)
+        approval_id = stale.json()["approval"]["id"]
+        r = client.post(f"/api/approvals/{approval_id}/approve", headers=SENIOR2)
+        assert r.status_code == 409 and "değişti" in r.json()["detail"]
+        assert client.get("/api/rules/R_TEST_BIG", headers=ANALYST).json()["rule"]["score"] == 0.5
+        pending = client.get("/api/approvals?status=BEKLIYOR", headers=ANALYST).json()
+        assert approval_id in {a["id"] for a in pending}  # reverted, not half-applied
+
     def test_new_rule_changes_live_decisions(self, client):
         rule = {**NEW_RULE, "id": "R_TEST_ALL", "when": "amount_try > 0", "action_hint": "HOLD"}
-        assert client.post("/api/rules", json=rule, headers=SENIOR).status_code == 201
+        _approved(client, client.post("/api/rules", json=rule, headers=SENIOR))
         accounts = client.get("/api/accounts", headers=ANALYST).json()
         active = next(a["customer_id"] for a in accounts if a["hesap_durumu"] == "AKTIF")
         tx = {
@@ -177,7 +235,15 @@ class TestPolicyApi:
         assert policy["model_version"] == "fraud_gbm_v3" and policy["stacker"]["coef"]
         new = {"step_up": 0.3, "hold": 0.5, "block": 0.8}
         r = client.put("/api/policy/thresholds", json=new, headers=ADMIN)
-        assert r.status_code == 200 and r.json()["thresholds"] == new
+        assert r.status_code == 202
+        live = client.get("/api/policy", headers=ANALYST).json()["thresholds"]
+        assert live == policy["thresholds"]  # not applied before the second admin approves
+        senior = client.post(
+            f"/api/approvals/{r.json()['approval']['id']}/approve", headers=SENIOR2
+        )
+        assert senior.status_code == 403  # thresholds need an admin approver
+        assert _approved(client, r, ADMIN2)["thresholds"] == new
+        assert client.get("/api/policy", headers=ANALYST).json()["thresholds"] == new
         bad = client.put(
             "/api/policy/thresholds",
             json={"step_up": 0.7, "hold": 0.5, "block": 0.8},

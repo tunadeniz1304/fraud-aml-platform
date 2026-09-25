@@ -1,8 +1,10 @@
 """Rule studio + policy API (P0.5): rule CRUD, backtest, thresholds, models.
 
 * reads — ``analist``; rule changes — ``kidemli_analist``; policy thresholds —
-  ``admin``. Every change is versioned and written to the audit chain, and the
-  live engine's ruleset is swapped atomically (hot reload, no restart).
+  ``admin``. Changes are maker-checker: the endpoint stores an approval request
+  (HTTP 202) and a second user applies it (``app.cases.governance``). Every
+  applied change is versioned and written to the audit chain, and the live
+  engine's ruleset is swapped atomically (hot reload, no restart).
 """
 
 from __future__ import annotations
@@ -11,15 +13,17 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi import status as http_status
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.deps import require_pipeline
+from app.cases.service import CaseError
 from app.config import get_settings
-from app.db.audit import AuditEntry
 from app.features.definitions import EXTERNAL_FEATURES, FEATURES
 from app.ml.registry import ModelRegistry
 from app.scoring import rule_store
-from app.scoring.policy import PolicyError
+from app.scoring.policy import PolicyError, Thresholds
 from app.scoring.rules import ACTIONS, SEVERITIES, RuleDef, RuleError, backtest, with_overrides
 from app.security.auth import Principal
 from app.security.deps import require_role
@@ -70,24 +74,20 @@ def _engine() -> Any:
     return require_pipeline().analyst.engine
 
 
-async def _reload(pipeline: Any) -> str:
-    async with pipeline.db.session() as session:
-        definitions = await rule_store.load_rules(session)
-    ruleset = rule_store.build_ruleset(definitions)
-    pipeline.analyst.engine.set_ruleset(ruleset)
-    return ruleset.version
-
-
-async def _audit(pipeline: Any, event: str, entity: str, actor: str, reason: str, **payload: Any):
-    await pipeline.writer.record_audit(
-        AuditEntry(
-            event_type=event,
-            entity_type="rule" if event.startswith("RULE") else "policy",
-            entity_id=entity,
-            actor=actor,
-            reason=reason,
-            payload=payload,
+async def _request(
+    kind: str, target: str, payload: dict[str, Any], principal: Principal, note: str, message: str
+) -> JSONResponse:
+    """Decision-logic changes are maker-checker: the request is stored and a
+    second user applies it by approving (``/api/approvals/{id}/approve``)."""
+    try:
+        approval = await require_pipeline().cases.request_approval(
+            kind, target, payload, principal.username, note
         )
+    except CaseError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    return JSONResponse(
+        status_code=http_status.HTTP_202_ACCEPTED,
+        content=jsonable_encoder({"message": message, "approval": approval}),
     )
 
 
@@ -116,72 +116,67 @@ async def get_rule(rule_id: str) -> dict[str, Any]:
     return {"rule": rule.to_dict(), "history": history}
 
 
-async def _save(body: RuleIn, principal: Principal, *, create: bool) -> dict[str, Any]:
+async def _save(body: RuleIn, principal: Principal, *, create: bool) -> JSONResponse:
     pipeline = require_pipeline()
     try:
         definition = RuleDef.from_dict(body.model_dump())
         definition.validate()
     except RuleError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
-    async with pipeline.db.transaction() as session:
-        exists = await rule_store.get_rule(session, definition.id) is not None
-        if create and exists:
-            raise HTTPException(status_code=409, detail="Bu kimlikte bir kural zaten var")
-        if not create and not exists:
-            raise HTTPException(status_code=404, detail="Kural bulunamadı")
-        stored = await rule_store.save_rule(session, definition, principal.username)
-    version = await _reload(pipeline)
-    await _audit(
-        pipeline,
-        "RULE_CREATE" if create else "RULE_UPDATE",
-        stored.id,
-        principal.username,
-        f"Kural {'oluşturuldu' if create else 'güncellendi'}: {stored.id} v{stored.version}",
-        definition=stored.to_dict(),
-        ruleset_version=version,
+    async with pipeline.db.session() as session:
+        current = await rule_store.get_rule(session, definition.id)
+    if create and current is not None:
+        raise HTTPException(status_code=409, detail="Bu kimlikte bir kural zaten var")
+    if not create and current is None:
+        raise HTTPException(status_code=404, detail="Kural bulunamadı")
+    return await _request(
+        "RULE_CHANGE",
+        definition.id,
+        {
+            "op": "create" if create else "update",
+            "definition": definition.to_dict(),
+            "base_version": current.version if current is not None else None,
+        },
+        principal,
+        f"Kural {'oluşturma' if create else 'güncelleme'} talebi: {definition.id}",
+        "Kural değişikliği maker-checker onayı bekliyor",
     )
-    return {"rule": stored.to_dict(), "ruleset_version": version}
 
 
-@router.post("/rules", status_code=http_status.HTTP_201_CREATED)
+@router.post("/rules", status_code=http_status.HTTP_202_ACCEPTED, response_model=None)
 async def create_rule(
     body: RuleIn, principal: Principal = Depends(require_role("kidemli_analist"))
-) -> dict[str, Any]:
+) -> JSONResponse:
     return await _save(body, principal, create=True)
 
 
-@router.put("/rules/{rule_id}")
+@router.put("/rules/{rule_id}", status_code=http_status.HTTP_202_ACCEPTED, response_model=None)
 async def update_rule(
     rule_id: str, body: RuleIn, principal: Principal = Depends(require_role("kidemli_analist"))
-) -> dict[str, Any]:
+) -> JSONResponse:
     if body.id != rule_id:
         raise HTTPException(status_code=422, detail="Gövdedeki kimlik yol ile uyuşmuyor")
     return await _save(body, principal, create=False)
 
 
-@router.delete("/rules/{rule_id}")
+@router.delete("/rules/{rule_id}", status_code=http_status.HTTP_202_ACCEPTED, response_model=None)
 async def disable_rule(
     rule_id: str, principal: Principal = Depends(require_role("kidemli_analist"))
-) -> dict[str, Any]:
-    """Soft delete: the rule is disabled (history is immutable)."""
+) -> JSONResponse:
+    """Soft delete: the rule is disabled (history is immutable) once approved."""
     pipeline = require_pipeline()
-    async with pipeline.db.transaction() as session:
+    async with pipeline.db.session() as session:
         rule = await rule_store.get_rule(session, rule_id)
-        if rule is None:
-            raise HTTPException(status_code=404, detail="Kural bulunamadı")
-        stored = await rule_store.save_rule(
-            session, RuleDef.from_dict({**rule.to_dict(), "enabled": False}), principal.username
-        )
-    version = await _reload(pipeline)
-    await _audit(
-        pipeline,
-        "RULE_DISABLE",
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Kural bulunamadı")
+    return await _request(
+        "RULE_CHANGE",
         rule_id,
-        principal.username,
-        f"Kural devre dışı: {rule_id}",
-        ruleset_version=version,
+        {"op": "disable", "definition": rule.to_dict(), "base_version": rule.version},
+        principal,
+        f"Kural devre dışı bırakma talebi: {rule_id}",
+        "Kural değişikliği maker-checker onayı bekliyor",
     )
-    return {"rule": stored.to_dict(), "ruleset_version": version}
 
 
 async def _backtest_rows(source: str, limit: int) -> tuple[str, list[Any]]:
@@ -242,27 +237,22 @@ async def get_policy() -> dict[str, Any]:
     }
 
 
-@router.put("/policy/thresholds")
+@router.put("/policy/thresholds", status_code=http_status.HTTP_202_ACCEPTED, response_model=None)
 async def set_thresholds(
     body: ThresholdsIn, principal: Principal = Depends(require_role("admin"))
-) -> dict[str, Any]:
-    pipeline = require_pipeline()
-    engine = pipeline.analyst.engine
-    old = engine.policy.thresholds.as_dict()
+) -> JSONResponse:
     try:
-        new = engine.policy.set_thresholds(body.step_up, body.hold, body.block)
+        Thresholds(body.step_up, body.hold, body.block)
     except PolicyError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
-    await _audit(
-        pipeline,
+    return await _request(
         "POLICY_THRESHOLDS",
         "thresholds",
-        principal.username,
-        "Politika eşikleri değiştirildi",
-        old=old,
-        new=new.as_dict(),
+        body.model_dump(),
+        principal,
+        "Politika eşiği değişikliği talebi",
+        "Eşik değişikliği maker-checker onayı bekliyor",
     )
-    return {"thresholds": new.as_dict()}
 
 
 # --- models (read-only here; champion/challenger management in F6) ------------------------

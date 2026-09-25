@@ -57,12 +57,14 @@ MANUAL_TRANSITIONS: dict[str, tuple[str, ...]] = {
     "KAPANDI_TEMIZ": ("INCELENIYOR",),
 }
 OUTCOMES = {"FRAUD": ("KAPANDI_FRAUD", 1), "TEMIZ": ("KAPANDI_TEMIZ", 0)}
-APPROVAL_KINDS = ("UNBLOCK", "SIB", "MODEL_PROMOTE")
+APPROVAL_KINDS = ("UNBLOCK", "SIB", "MODEL_PROMOTE", "RULE_CHANGE", "POLICY_THRESHOLDS")
 #: least privileged role that may decide each approval kind (unknown kinds: admin)
 APPROVAL_MIN_ROLE: dict[str, str] = {
     "UNBLOCK": "kidemli_analist",
     "SIB": "kidemli_analist",
     "MODEL_PROMOTE": "admin",
+    "RULE_CHANGE": "kidemli_analist",
+    "POLICY_THRESHOLDS": "admin",
 }
 
 #: rule tag -> alert type (the tag carried by the strongest fired rule wins;
