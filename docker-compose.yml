@@ -24,6 +24,7 @@ x-app: &app
     FRAUD_PAYEES_PATH: /app/data/demo/payees.json
     FRAUD_TRANSACTIONS_PATH: /app/data/demo/transactions.json
     BATCH_REBASE_TS: "true"
+    BUS_PARTITIONS: "8"  # müşteri bazlı sıralı, bölümler arası paralel
   restart: unless-stopped
 
 services:

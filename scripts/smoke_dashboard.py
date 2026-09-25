@@ -74,7 +74,8 @@ def main() -> None:
     if args.url:
         import httpx
 
-        with httpx.Client(base_url=args.url, timeout=30) as client:
+        # > LLM hard timeout (timeout x (retries+1) + 5 s): a slow live model must fall back first
+        with httpx.Client(base_url=args.url, timeout=90) as client:
             run(client)
         return
     tmp = Path(tempfile.mkdtemp(prefix="anil3-smoke-"))
