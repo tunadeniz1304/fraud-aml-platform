@@ -15,15 +15,23 @@ import asyncio
 import contextlib
 import logging
 import signal
+import threading
+import time
 from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
+from wsgiref.simple_server import WSGIRequestHandler, make_server
+
+from prometheus_client import make_wsgi_app
+from prometheus_client.exposition import ThreadingWSGIServer
 
 from app.config import get_settings
 from app.db.audit import verify_chain
 from app.db.database import Database
 from app.monitoring.logging import configure_logging
+from app.monitoring.metrics import AUDIT_VERIFY_LAST_OK, AUDIT_VERIFY_LAST_RUN, REGISTRY
+from app.security.auth import constant_time_equals
 from app.security.startup import enforce_startup_policy
 
 logger = logging.getLogger("fraud.worker")
@@ -61,7 +69,9 @@ def job(name: str, interval_s: float) -> Callable[[JobFn], JobFn]:
 @job("audit_verify", interval_s=600)
 async def audit_verify(ctx: WorkerContext) -> dict[str, Any]:
     async with ctx.db.session() as session:
-        result = await verify_chain(session)
+        result = await verify_chain(session)  # a failure increments the counter
+    AUDIT_VERIFY_LAST_OK.set(1 if result.ok else 0)
+    AUDIT_VERIFY_LAST_RUN.set(time.time())
     level = logging.INFO if result.ok else logging.CRITICAL
     logger.log(level, "[Worker] audit zinciri: %s (%d satır)", result.detail, result.checked)
     return result.as_dict()
@@ -178,8 +188,51 @@ async def run_worker(stop: asyncio.Event | None = None) -> WorkerContext:
     return ctx
 
 
+class _QuietHandler(WSGIRequestHandler):
+    def log_message(self, format: str, *args: Any) -> None:
+        pass
+
+
+def metrics_app(settings: Any) -> Callable[..., Any]:
+    """WSGI ``/metrics`` for the worker process with the API's access rule:
+    public only with ``METRICS_PUBLIC=true``, otherwise ``Authorization:
+    Bearer <METRICS_TOKEN>``. The worker runs the periodic audit-chain check,
+    so its counters live here, not in the API process."""
+    inner = make_wsgi_app(REGISTRY)
+    expected = settings.metrics_token.get_secret_value()
+
+    def app(environ: dict[str, Any], start_response: Callable[..., Any]) -> Any:
+        if not settings.metrics_public:
+            scheme, _, token = str(environ.get("HTTP_AUTHORIZATION", "")).partition(" ")
+            given = token.strip() if scheme.lower() == "bearer" else ""
+            if not expected or not constant_time_equals(given, expected):
+                start_response("401 Unauthorized", [("Content-Type", "text/plain")])
+                return [b"metrics token required"]
+        return inner(environ, start_response)
+
+    return app
+
+
+def serve_metrics(settings: Any, *, host: str = "0.0.0.0") -> ThreadingWSGIServer | None:  # noqa: S104
+    """Start the worker's metrics endpoint in a daemon thread (``None`` when
+    ``WORKER_METRICS_PORT=0`` or neither a token nor ``METRICS_PUBLIC`` is set)."""
+    port = int(settings.worker_metrics_port)
+    if port <= 0 or not (settings.metrics_public or settings.metrics_token.get_secret_value()):
+        logger.info("[Worker] /metrics kapalı (WORKER_METRICS_PORT=0 veya METRICS_TOKEN yok)")
+        return None
+    server = make_server(
+        host, port, metrics_app(settings), ThreadingWSGIServer, handler_class=_QuietHandler
+    )
+    threading.Thread(target=server.serve_forever, name="worker-metrics", daemon=True).start()
+    logger.info("[Worker] /metrics dinleniyor: %s:%d", host, server.server_port)
+    return server
+
+
 def main() -> None:
-    configure_logging(get_settings())
+    settings = get_settings()
+    configure_logging(settings)
+    enforce_startup_policy(settings)
+    metrics_server = serve_metrics(settings)
     stop = asyncio.Event()
 
     async def runner() -> None:
@@ -189,7 +242,11 @@ def main() -> None:
                 loop.add_signal_handler(sig, stop.set)
         await run_worker(stop)
 
-    asyncio.run(runner())
+    try:
+        asyncio.run(runner())
+    finally:
+        if metrics_server is not None:
+            metrics_server.shutdown()
 
 
 if __name__ == "__main__":

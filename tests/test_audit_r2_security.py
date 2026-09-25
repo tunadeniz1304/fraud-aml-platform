@@ -348,3 +348,95 @@ async def test_a9_worker_enforces_the_startup_policy(
     get_settings.cache_clear()
     with pytest.raises(RuntimeError, match="AUDIT_HMAC_KEY"):
         await run_worker()
+
+
+# --- A10: the audit-chain verification result is scraped and alerted on -----
+
+
+async def test_a10_worker_job_exports_the_verification_result(
+    store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.db.audit import AuditEntry
+    from app.monitoring.metrics import (
+        AUDIT_VERIFY_FAILURES,
+        AUDIT_VERIFY_LAST_OK,
+        AUDIT_VERIFY_LAST_RUN,
+    )
+    from app.worker import WorkerContext, audit_verify
+
+    await store.writer.record_audit(AuditEntry(event_type="test", reason="a10"))
+    await store.writer.flush()
+    ctx = WorkerContext(db=store.db, redis=None)
+    assert (await audit_verify(ctx))["ok"] is True
+    assert AUDIT_VERIFY_LAST_OK._value.get() == 1
+    first_run = AUDIT_VERIFY_LAST_RUN._value.get()
+    assert first_run > 0
+
+    # the row was written unkeyed: once a key is configured the chain breaks
+    monkeypatch.setenv("AUDIT_HMAC_KEY", "a10-audit-chain-" + "k" * 24)
+    get_settings.cache_clear()
+    before = AUDIT_VERIFY_FAILURES._value.get()
+    assert (await audit_verify(ctx))["ok"] is False
+    assert AUDIT_VERIFY_FAILURES._value.get() == before + 1
+    assert AUDIT_VERIFY_LAST_OK._value.get() == 0
+    assert AUDIT_VERIFY_LAST_RUN._value.get() >= first_run
+
+
+def _free_port() -> int:
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def test_a10_worker_serves_its_metrics_behind_the_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    import urllib.error
+    import urllib.request
+
+    from app.worker import serve_metrics
+
+    scrape_value = "worker-scrape-" + "m" * 20
+    monkeypatch.setenv("METRICS_TOKEN", scrape_value)
+    monkeypatch.setenv("WORKER_METRICS_PORT", str(_free_port()))
+    get_settings.cache_clear()
+    server = serve_metrics(get_settings(), host="127.0.0.1")
+    assert server is not None
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/metrics"
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(url, timeout=5)
+        assert exc.value.code == 401
+        scrape = urllib.request.Request(url, headers={"Authorization": f"Bearer {scrape_value}"})
+        with urllib.request.urlopen(scrape, timeout=5) as response:
+            body = response.read().decode()
+        assert "fraud_audit_chain_verify_failures_total" in body
+        assert "fraud_audit_chain_last_verify_ok" in body
+        assert "fraud_audit_chain_last_verify_timestamp_seconds" in body
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_a10_worker_metrics_stay_closed_without_a_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.worker import serve_metrics
+
+    monkeypatch.delenv("METRICS_TOKEN", raising=False)
+    monkeypatch.setenv("METRICS_PUBLIC", "false")
+    get_settings.cache_clear()
+    assert serve_metrics(get_settings()) is None
+
+
+def test_a10_prometheus_scrapes_the_worker_and_alerts_on_failures() -> None:
+    import yaml
+
+    prom = yaml.safe_load((BASE_DIR / "ops/prometheus/prometheus.yml").read_text(encoding="utf-8"))
+    jobs = {job["job_name"]: job for job in prom["scrape_configs"]}
+    assert jobs["anil3-worker"]["static_configs"][0]["targets"] == ["worker:9102"]
+    assert "authorization" in jobs["anil3-worker"]
+    alerts = yaml.safe_load((BASE_DIR / "ops/prometheus/alerts.yml").read_text(encoding="utf-8"))
+    rules = {rule["alert"]: rule for group in alerts["groups"] for rule in group["rules"]}
+    broken = rules["AuditZinciriBozuk"]
+    assert "increase(fraud_audit_chain_verify_failures_total[15m])) > 0" in broken["expr"]
+    assert broken["labels"]["severity"] == "critical"
+    assert 'up{job="anil3-worker"} == 0' in rules["AuditDogrulamasiCalismiyor"]["expr"]
