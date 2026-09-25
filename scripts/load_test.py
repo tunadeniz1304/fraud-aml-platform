@@ -266,6 +266,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--note", default="", help="rapor başlığına eklenecek ortam notu")
     parser.add_argument("--json", type=Path, default=None, help="ham sonuçları JSON'a yaz")
     parser.add_argument("--report", type=Path, default=None, help="Markdown raporuna ekle")
+    parser.add_argument(
+        "--p99-budget-ms",
+        type=float,
+        default=50.0,
+        help="engine p99 bu değeri aşarsa çıkış kodu 1",
+    )
     args = parser.parse_args(argv)
     count = int(args.tps * args.seconds) if args.tps and args.seconds else args.count
 
@@ -309,7 +315,7 @@ def main(argv: list[str] | None = None) -> int:
         with args.report.open("a", encoding="utf-8") as fh:
             fh.write("\n" + table)
     engine = next((r for r in results if r["mode"] == "engine"), None)
-    return 0 if engine is None or engine["latency_ms"]["p99"] < 50 else 1
+    return 0 if engine is None or engine["latency_ms"]["p99"] < args.p99_budget_ms else 1
 
 
 if __name__ == "__main__":

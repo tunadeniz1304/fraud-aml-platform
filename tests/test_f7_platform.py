@@ -122,6 +122,15 @@ def test_load_test_engine_mode_reports_p99(tmp_path):
     import scripts.load_test as lt
 
     report = tmp_path / "PERF.md"
-    assert lt.main(["--mode", "engine", "--count", "400", "--report", str(report)]) == 0
+    # The 50 ms SLO gate depends on host load; this test covers report generation.
+    argv = ["--mode", "engine", "--count", "400", "--report", str(report)]
+    assert lt.main([*argv, "--p99-budget-ms", "10000"]) == 0
     text = report.read_text(encoding="utf-8")
     assert "| engine | 400 |" in text and "p99" in text
+
+
+def test_load_test_engine_mode_fails_over_p99_budget():
+    import scripts.load_test as lt
+
+    argv = ["--mode", "engine", "--count", "50", "--p99-budget-ms", "0"]
+    assert lt.main(argv) == 1
