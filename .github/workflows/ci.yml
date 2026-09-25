@@ -20,7 +20,7 @@ jobs:
         run: ruff check . && ruff format --check .
       - name: Mypy
         run: mypy app
-      - name: Tests + coverage (>= 80%)
+      - name: Tests (random order) + coverage (>= 90%)
         run: python -m pytest -q -p randomly --timeout 900 --cov=app --cov-fail-under=90
 
   frontend:
