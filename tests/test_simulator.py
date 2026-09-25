@@ -26,6 +26,11 @@ def test_generator_produces_valid_payloads():
 
 
 async def test_run_publishes_traffic_and_scenarios(monkeypatch):
+    """Deterministic: seeded generator/scenarios and an injected clock.
+
+    The old assertion (``sent > 20``) was flaky: the scenario was picked at
+    random and one of 18 transactions made ``sent`` exactly 20.
+    """
     fake = fakeredis.aioredis.FakeRedis(decode_responses=True)
     monkeypatch.setenv("REDIS_URL", "redis://fake:6379/0")
     get_settings.cache_clear()
@@ -36,11 +41,21 @@ async def test_run_publishes_traffic_and_scenarios(monkeypatch):
     monkeypatch.setattr(simulator, "monotonic", lambda: next(clock))
     try:
         sent = await simulator.run(
-            rate=0, count=20, anomaly_rate=0.2, customers_path=DEMO_CUSTOMERS, scenario_every=15
+            rate=0,
+            count=20,
+            anomaly_rate=0.2,
+            customers_path=DEMO_CUSTOMERS,
+            scenario_every=15,
+            seed=3,
         )
+        stream = f"{get_settings().redis_stream_prefix}:transaction.created"
+        entries = await fake.xrange(stream)
     finally:
         get_settings.cache_clear()
-    assert sent > 20  # normal traffic + at least one injected scenario
+    keys = [fields.get("key", "") for _, fields in entries]
+    assert len(keys) == sent >= 20
+    assert any(k.startswith("SIM-") for k in keys)
+    assert any(k.startswith("SCN-") for k in keys)  # a scenario was injected
 
 
 async def test_run_requires_redis(monkeypatch):

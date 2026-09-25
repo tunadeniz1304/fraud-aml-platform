@@ -99,6 +99,8 @@ async def run(
     anomaly_rate: float,
     customers_path: Path,
     scenario_every: float = 0.0,
+    *,
+    seed: int | None = None,
 ) -> int:
     import redis.asyncio as aioredis
 
@@ -111,7 +113,7 @@ async def run(
         customers = json.load(fh)
     redis = aioredis.from_url(settings.redis_url, decode_responses=True)
     bus = RedisStreamsBus(redis, prefix=settings.redis_stream_prefix)
-    generator = TrafficGenerator(customers)
+    generator = TrafficGenerator(customers, seed=seed)
     directory = CustomerDirectory(customers)
     delay = 1.0 / rate if rate > 0 else 0.0
     sent = 0
@@ -125,7 +127,7 @@ async def run(
             if next_scenario is not None and monotonic() >= next_scenario:
                 name = generator.rng.choice(list(SCENARIOS))
                 try:
-                    scenario = ScenarioFactory(directory).build(name)
+                    scenario = ScenarioFactory(directory, seed=seed).build(name)
                 except ScenarioError as exc:
                     logger.warning("Senaryo atlandı (%s): %s", name, exc)
                 else:
