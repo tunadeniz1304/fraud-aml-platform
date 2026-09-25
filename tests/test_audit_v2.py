@@ -433,20 +433,20 @@ def test_b13_arife_half_day_policy_is_configurable(monkeypatch) -> None:
 
 
 # --- B14: FATF-sourced high-risk list ---------------------------------------------------------
-@open_finding("B14")
 def test_b14_high_risk_countries_come_from_versioned_fatf_list() -> None:
     from app.core.jurisdictions import load_jurisdictions
 
     data = load_jurisdictions()
     assert data["source"].startswith("https://www.fatf-gafi.org/")
-    assert data["as_of"]
+    assert data["as_of"] and data["version"]
+    for listing in data["lists"].values():
+        assert listing["verification"]  # verified or explicitly marked as not verified
     codes = get_settings().high_risk_country_set
     assert {"KP", "IR"} <= codes
     assert not {"UA", "AE"} & codes
 
 
 # --- B15: sanctions blocking index + secondary keys -------------------------------------------
-@open_finding("B15")
 def test_b15_single_token_alias_and_secondary_keys(tmp_path: Path) -> None:
     from app.core.sanctions import SanctionScreener
 
@@ -473,6 +473,12 @@ def test_b15_single_token_alias_and_secondary_keys(tmp_path: Path) -> None:
     same = screener.screen("Abdulrahman Haqqani", birth_date="1970-01-01", nationality="AF")
     other = screener.screen("Abdulrahman Haqqani", birth_date="1991-06-12", nationality="TR")
     assert same[0]["confidence"] > other[0]["confidence"]
+    # controlled single-token fuzzy: a typo matches only with a confirming secondary key
+    assert screener.screen("Haqani") == []
+    [typo] = screener.screen("Haqqanii", birth_date="1970")
+    assert typo["match_type"] == "fuzzy" and typo["secondary"]["birth_date"] is True
+    # blocking: an unrelated name never reaches the fuzzy comparison
+    assert screener.candidates("Mehmet Kaya") == set()
 
 
 # --- C16: demo users only in dev --------------------------------------------------------------

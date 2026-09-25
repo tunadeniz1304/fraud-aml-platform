@@ -178,7 +178,7 @@ async def test_new_device_becomes_known_after_trusted_use():
 
 
 async def test_location_and_ip_features():
-    f = await run([], tx(9, location="Lagos", country="NG", ip_address="88.241.1.1"))
+    f = await run([], tx(9, location="Nairobi", country="KE", ip_address="88.241.1.1"))
     assert f["is_new_location"] == 1.0 and f["is_foreign"] == 1.0
     assert f["is_high_risk_country"] == 1.0 and f["ip_country_mismatch"] == 1.0
     vpn = await run([], tx(9, ip_address="45.84.10.10"))

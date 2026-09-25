@@ -5,14 +5,24 @@
 işlemlerindeki ``name`` alanları bu liste ile karşılaştırılarak yaptırımlı bir
 kişi/kurumla olası bir isim çakışması varsa aday kayıt(lar) döndürülür.
 
-İki aşamalı, deterministik eşleştirme:
+Deterministik, indeksli eşleştirme (v2):
 
+0. **Ön indeks (blocking)** — her ad/takma ad kelimesi üç anahtarla
+   indekslenir: kelimenin kendisi, fonetik anahtarı (Türkçe'ye uyarlanmış
+   soundex) ve karakter 3-gramları. Bulanık karşılaştırma yalnızca en az bir
+   fonetik anahtarı ya da ``sanctions_min_shared_ngrams`` 3-gramı paylaşan
+   adaylarla yapılır; lineer tarama yoktur.
 1. **Tam kelime** — sorgunun tüm kelimeleri ad/takma adın kelime kümesinde
    (kısmi isim "Melnikov" yakalanır, "Kara" -> "Karadeniz" yakalanmaz);
-2. **Bulanık** (P0.5, ``rapidfuzz``) — en az iki kelimelik sorgularda
-   Jaro-Winkler ve sıralı-token benzerliğinin büyüğü eşiği
-   (``SANCTIONS_FUZZY_THRESHOLD``, varsayılan 0.93) aşarsa: yazım hatası ve
-   transliterasyon varyantları ("Viktor Melnikof", "Hasan Al Abadi").
+2. **Bulanık** (``rapidfuzz``) — en az iki kelimelik sorgularda Jaro-Winkler
+   ve sıralı-token benzerliğinin büyüğü ``sanctions_fuzzy_threshold``'u
+   aşarsa ("Viktor Melnikof", "Hasan Al Abadi"). Tek kelimelik sorgular için
+   **kontrollü** bulanık eşleşme: daha yüksek eşik
+   (``sanctions_single_token_threshold``) **ve** eşleşen bir ikincil anahtar
+   (doğum yılı ya da uyruk) şarttır.
+3. **Güven** — ``confidence`` eşleşme skorundan başlar; ikincil anahtarlar
+   eşleşirse artar, çelişirse düşer (``sanctions_*`` ayarları). Farklı doğum
+   tarihli bir adaş aynı isimle eşleşir ama düşük güvenle raporlanır.
 
 Türkçe karakterler aksansız biçime indirgenir. Modül import-safe'dir; dosya
 yalnızca ``load()`` çağrıldığında okunur.
@@ -60,84 +70,114 @@ def _tokens(text: str) -> set[str]:
     return set(_normalise(text).split())
 
 
+_SOUNDEX = {
+    **dict.fromkeys("bfpv", "1"),
+    **dict.fromkeys("cgjkqsxz", "2"),
+    **dict.fromkeys("dt", "3"),
+    "l": "4",
+    **dict.fromkeys("mn", "5"),
+    "r": "6",
+}
+
+
+def phonetic(token: str) -> str:
+    """Soundex-style key (first letter + consonant classes), Turkish-folded."""
+    word = _fuzzy_form(token).replace(" ", "")
+    if not word:
+        return ""
+    out, last = [word[0]], _SOUNDEX.get(word[0], "")
+    for ch in word[1:]:
+        code = _SOUNDEX.get(ch, "")
+        if code and code != last:
+            out.append(code)
+        last = code
+    return "".join(out)[:4].ljust(4, "0")
+
+
+def ngrams(token: str, n: int = 3) -> set[str]:
+    word = f"_{_fuzzy_form(token).replace(' ', '')}_"
+    return {word[i : i + n] for i in range(max(1, len(word) - n + 1))}
+
+
+def _year(value: object) -> int | None:
+    text = str(value or "")[:4]
+    return int(text) if text.isdigit() else None
+
+
 class SanctionScreener:
     """Yaptırım listesine karşı isim taraması yapan sınıf.
 
     Bir kayıt, sorgu (``name``) aşağıdaki durumlarda onunla eşleşir:
 
-    - sorgu, adın ya da bir takma adın tam bir kelimesiyse (kelime-sınırı
-      alt dize eşleşmesi) — "Melnikov" -> "Viktor Melnikov", VEYA
     - sorgunun tüm kelimeleri, adın ya da bir takma adın kelime kümesinde
-      birebir (tam kelime) bulunursa.
-
-    Kelime-sınırı eşleşmesi kısmi isimleri ("Melnikov") yakalarken, bir
-    kelimenin ortasına karşılık gelen kısmî alt dizeyi ("Kara" in
-    "Karadeniz") yanlış-pozitif olarak kabul etmez.
+      birebir (tam kelime) bulunursa — "Melnikov" -> "Viktor Melnikov",
+      ama "Kara" -> "Karadeniz" değil;
+    - bulanık benzerlik eşiği aşılırsa (modül belgesindeki kurallarla).
     """
 
     def __init__(self, path: str | Path | None = None, *, fuzzy_threshold: float | None = None):
         """``path`` verilmemişse varsayılan ``data/sanctions.json`` kullanılır."""
+        settings = config.get_settings()
         self.path: Path = Path(path) if path else DEFAULT_SANCTIONS_PATH
         self.fuzzy_threshold = (
-            fuzzy_threshold
-            if fuzzy_threshold is not None
-            else config.get_settings().sanctions_fuzzy_threshold
+            fuzzy_threshold if fuzzy_threshold is not None else settings.sanctions_fuzzy_threshold
         )
+        self.single_token_threshold = settings.sanctions_single_token_threshold
+        self.min_shared_ngrams = settings.sanctions_min_shared_ngrams
         self._records: list[dict] = []
-        self._index: list[tuple[dict, list[frozenset[str]]]] = []
-        self._fuzzy: list[tuple[dict, list[str]]] = []
+        self._forms: list[list[str]] = []  # record index -> fuzzy forms of name + aliases
+        self._token_sets: list[list[frozenset[str]]] = []
+        self._by_token: dict[str, set[int]] = {}
+        self._by_phonetic: dict[str, set[int]] = {}
+        self._by_ngram: dict[str, set[int]] = {}
 
     def load(self) -> SanctionScreener:
-        """JSON dosyasını okuyup kayıtları yükler; kendisini döndürür.
-
-        Dosya yoksa ``FileNotFoundError`` doğal olarak fırlar. Zincirleme
-        çağrı için akıcı (fluent) kullanım sunar: ``screener.load().find(...)``.
-        """
+        """JSON dosyasını okuyup kayıtları ve blocking indeksini yükler."""
         with self.path.open("r", encoding="utf-8") as fh:
             self._records = json.load(fh)
-        # Normalise every name/alias once (screening runs on the hot path).
-        self._index = [
-            (
-                record,
-                [
-                    frozenset(_normalise(n).split())
-                    for n in [record["name"], *record.get("aliases", [])]
-                ],
-            )
-            for record in self._records
-        ]
-        self._fuzzy = [
-            (record, [_fuzzy_form(n) for n in [record["name"], *record.get("aliases", [])]])
-            for record in self._records
-        ]
+        self._forms, self._token_sets = [], []
+        self._by_token, self._by_phonetic, self._by_ngram = {}, {}, {}
+        for i, record in enumerate(self._records):
+            names = [record["name"], *record.get("aliases", [])]
+            self._forms.append([_fuzzy_form(n) for n in names])
+            self._token_sets.append([frozenset(_normalise(n).split()) for n in names])
+            for name in names:
+                for token in _normalise(name).split():
+                    self._by_token.setdefault(token, set()).add(i)
+                for token in _fuzzy_form(name).split():
+                    self._by_phonetic.setdefault(phonetic(token), set()).add(i)
+                    for gram in ngrams(token):
+                        self._by_ngram.setdefault(gram, set()).add(i)
         return self
 
-    def _matches(self, query: str, target: str) -> bool:
-        """Tek bir hedef ad/takma ad için eşleşme kontrolü."""
-        q = _normalise(query)
-        t = _normalise(target)
-        if not q or not t:
-            return False
-        # Tam-kelime (full-word) eşleşmesi: sorgunun tüm kelimeleri hedefin
-        # kelime kümesinde birebir bulunmalı. "Melnikov" -> "Viktor Melnikov",
-        # ama "Kara" -> "Karadeniz" YANLIŞ POZİTİF üretmez. Regex \b kullanmak
-        # Türkçe "İ" gibi casefold sonrası birleşik aksan karakterleriyle bozulur,
-        # bu yüzden kelime-kümesi karşılaştırması kullanılır.
-        query_tokens = _tokens(query)
-        return bool(query_tokens) and query_tokens.issubset(t.split())
-
-    def find_candidates(self, name: str | None) -> list[dict]:
-        """``name`` ile eşleşen kayıtların listesini dosya sırasıyla döndürür."""
-        if not name:
-            return []
+    # --- blocking --------------------------------------------------------------------
+    def _exact_ids(self, name: str) -> list[int]:
         query = _tokens(name)
         if not query:
             return []
-        return [
-            record
-            for record, token_sets in self._index
-            if any(query.issubset(tokens) for tokens in token_sets)
-        ]
+        ids = set.intersection(*(self._by_token.get(t, set()) for t in query))
+        return sorted(
+            i for i in ids if any(query.issubset(tokens) for tokens in self._token_sets[i])
+        )
+
+    def candidates(self, name: str) -> set[int]:
+        """Records sharing a phonetic key or enough 3-grams with any query token."""
+        out: set[int] = set()
+        for token in _fuzzy_form(name).split():
+            out |= self._by_phonetic.get(phonetic(token), set())
+            counts: dict[int, int] = {}
+            for gram in ngrams(token):
+                for i in self._by_ngram.get(gram, ()):
+                    counts[i] = counts.get(i, 0) + 1
+            out |= {i for i, c in counts.items() if c >= self.min_shared_ngrams}
+        return out
+
+    # --- API -----------------------------------------------------------------------------
+    def find_candidates(self, name: str | None) -> list[dict]:
+        """``name`` ile tam-kelime eşleşen kayıtlar (dosya sırasıyla)."""
+        if not name:
+            return []
+        return [self._records[i] for i in self._exact_ids(name)]
 
     def fuzzy_score(self, query: str, target: str) -> float:
         """0..1 similarity (max of Jaro-Winkler and token-sort ratio)."""
@@ -146,29 +186,74 @@ class SanctionScreener:
             return 0.0
         return max(JaroWinkler.normalized_similarity(q, t), fuzz.token_sort_ratio(q, t) / 100)
 
-    def screen(self, name: str | None) -> list[dict]:
-        """Exact-token + fuzzy matches with ``match_type`` and ``match_score``."""
+    @staticmethod
+    def _secondary(
+        record: dict, birth_date: str | None, nationality: str | None
+    ) -> dict[str, bool | None]:
+        """True = matches, False = contradicts, None = unknown on either side."""
+        listed_year = _year(record.get("birth_date") or record.get("birth_year"))
+        query_year = _year(birth_date)
+        dob = None if listed_year is None or query_year is None else listed_year == query_year
+        listed_country = str(record.get("nationality") or record.get("country") or "").upper()
+        nat = None
+        if listed_country and nationality:
+            nat = listed_country == nationality.upper()
+        return {"birth_date": dob, "nationality": nat}
+
+    @staticmethod
+    def _confidence(score: float, secondary: dict[str, bool | None]) -> float:
+        s = config.get_settings()
+        conf = score
+        for key, bonus, factor in (
+            ("birth_date", s.sanctions_dob_match_bonus, s.sanctions_dob_mismatch_factor),
+            ("nationality", s.sanctions_nat_match_bonus, s.sanctions_nat_mismatch_factor),
+        ):
+            if secondary[key] is True:
+                conf = min(1.0, conf + bonus)
+            elif secondary[key] is False:
+                conf *= factor
+        return round(conf, 4)
+
+    def screen(
+        self,
+        name: str | None,
+        *,
+        birth_date: str | None = None,
+        nationality: str | None = None,
+    ) -> list[dict]:
+        """Exact-token + fuzzy matches with ``match_type``, ``match_score`` and
+        ``confidence`` (adjusted by the secondary keys)."""
         if not name:
             return []
-        exact_ids = {id(r) for r in self.find_candidates(name)}
-        out: list[dict] = []
         query = _fuzzy_form(name)
-        multi_token = len(query.split()) >= 2
-        for record, forms in self._fuzzy:
-            if id(record) in exact_ids:
-                out.append({**record, "match_type": "exact", "match_score": 1.0})
-                continue
-            if not multi_token:
-                continue
-            score = max(
-                max(
-                    JaroWinkler.normalized_similarity(query, f),
-                    fuzz.token_sort_ratio(query, f) / 100,
-                )
-                for f in forms
+        if not query:
+            return []
+        exact = set(self._exact_ids(name))
+        single = len(query.split()) < 2
+        out: list[dict] = []
+        for i in sorted(exact | self.candidates(name)):
+            record = self._records[i]
+            secondary = self._secondary(record, birth_date, nationality)
+            if i in exact:
+                match_type, score = "exact", 1.0
+            else:
+                score = max(self.fuzzy_score(query, f) for f in self._forms[i])
+                if single:
+                    # controlled single-token fuzzy: high bar + a confirming secondary key
+                    if score < self.single_token_threshold or True not in secondary.values():
+                        continue
+                elif score < self.fuzzy_threshold:
+                    continue
+                match_type = "fuzzy"
+            out.append(
+                {
+                    **record,
+                    "match_type": match_type,
+                    "match_score": round(score, 4),
+                    "confidence": self._confidence(score, secondary),
+                    "secondary": secondary,
+                }
             )
-            if score >= self.fuzzy_threshold:
-                out.append({**record, "match_type": "fuzzy", "match_score": round(score, 4)})
         return out
 
     def name_matches(self, name: str | None) -> bool:

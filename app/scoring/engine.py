@@ -268,17 +268,29 @@ class ScoringEngine:
         return self.extractor.customers
 
     # --- screening ------------------------------------------------------------------
-    def screen(self, customer_name: str, tx: dict[str, Any]) -> list[dict[str, Any]]:
-        """Screen the customer and the beneficiary names (ids are screened only
-        when they look like a name, e.g. legacy feeds that put the name there)."""
-        names = [customer_name, str(tx.get("beneficiary_name") or "")]
+    def screen(
+        self, customer_name: str, tx: dict[str, Any], customer: Any = None
+    ) -> list[dict[str, Any]]:
+        """Screen the customer (KYC birth year / home country as secondary keys)
+        and the beneficiary names (ids only when they look like a name)."""
+        birth = str(customer.birth_year) if customer is not None and customer.birth_year else None
+        country = customer.home_country if customer is not None else None
+        queries: list[tuple[str, str | None, str | None]] = [
+            (customer_name, birth, country),
+            (str(tx.get("beneficiary_name") or ""), None, None),
+        ]
         beneficiary_id = str(tx.get("beneficiary_id") or "")
         if " " in beneficiary_id.strip():
-            names.append(beneficiary_id)
+            queries.append((beneficiary_id, None, None))
+        min_conf = get_settings().sanctions_min_confidence
         hits: list[dict[str, Any]] = []
         seen: set[str] = set()
-        for name in filter(None, names):
-            for hit in self.sanctions.screen(name):
+        for name, dob, nat in queries:
+            if not name:
+                continue
+            for hit in self.sanctions.screen(name, birth_date=dob, nationality=nat):
+                if float(hit.get("confidence", 1.0)) < min_conf:
+                    continue
                 key = f"{hit.get('id')}|{name}"
                 if key not in seen:
                     seen.add(key)
@@ -329,7 +341,7 @@ class ScoringEngine:
         rules = self.ruleset.evaluate(features)
         model_score = self.model.score(features, explain=False) if self.model else None
         customer = self.extractor.customers.get(customer_id)
-        sanctions = self.screen(customer.name if customer else "", tx)
+        sanctions = self.screen(customer.name if customer else "", tx, customer)
         decision = self.policy.decide(
             PolicyInput(
                 rule_score=rules.score,

@@ -1,0 +1,21 @@
+{
+  "version": "fatf-2026-06",
+  "as_of": "2026-06-19",
+  "plenary": "FATF Plenary, 17-19 June 2026",
+  "source": "https://www.fatf-gafi.org/en/countries/black-and-grey-lists.html",
+  "retrieved": "2026-09-25",
+  "lists": {
+    "call_for_action": {
+      "title": "High-Risk Jurisdictions subject to a Call for Action",
+      "source": "https://www.fatf-gafi.org/en/publications/Fatfgeneral/outcomes-fatf-plenary-june-2026.html",
+      "verification": "doğrulandı (ikincil resmî kaynak): fatf-gafi.org 2026-09-25'te 403 döndü; liste, FATF bildirisini yeniden yayımlayan Singapur Para Otoritesi sayfasıyla doğrulandı — https://www.mas.gov.sg/publications/fatf-statement/2026/june-2026",
+      "countries": ["IR", "KP", "MM"]
+    },
+    "increased_monitoring": {
+      "title": "Jurisdictions under Increased Monitoring",
+      "source": "https://www.fatf-gafi.org/en/countries/black-and-grey-lists.html (Jurisdictions under Increased Monitoring - 19 June 2026)",
+      "verification": "örnek, doğrulanmadı: FATF sayfası okunamadı (403); liste yalnızca birbiriyle tutarlı iki ikincil kaynaktan derlendi (checklynx.com, zigram.tech). Üretimde FATF sayfasından güncellenmeli.",
+      "countries": ["AO", "BA", "BG", "BO", "CD", "CI", "CM", "HT", "IQ", "KE", "KW", "LA", "LB", "MC", "NP", "PG", "SS", "SY", "VE", "VG", "VN", "YE"]
+    }
+  }
+}

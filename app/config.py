@@ -172,6 +172,16 @@ class Settings(BaseSettings):
     # TreeSHAP (~2 ms) runs for non-ALLOW decisions and for risk >= this value.
     explain_min_risk: float = 0.2
     sanctions_fuzzy_threshold: float = 0.93
+    # single-token names: fuzzy only above this and with a matching DOB/nationality
+    sanctions_single_token_threshold: float = 0.96
+    sanctions_min_shared_ngrams: int = 2
+    # confidence adjustment by secondary keys (match: +bonus, mismatch: x factor)
+    sanctions_dob_match_bonus: float = 0.10
+    sanctions_dob_mismatch_factor: float = 0.5
+    sanctions_nat_match_bonus: float = 0.05
+    sanctions_nat_mismatch_factor: float = 0.8
+    #: hits below this confidence are not raised by the scoring engine
+    sanctions_min_confidence: float = 0.45
 
     # --- Entity graph / APP scam / online profile (P1.1–P1.3) ---------------
     payees_path: Path | None = Field(default=None, validation_alias="FRAUD_PAYEES_PATH")
@@ -232,7 +242,13 @@ class Settings(BaseSettings):
     tr_half_day_policy: Literal["business_day", "holiday"] = "business_day"
     tr_holidays: list[str] = Field(default_factory=list)
 
-    high_risk_countries: str = "NG,AE,RU,UA,KP,IR,SY,CU"
+    # Yüksek riskli ülkeler: sürümlü FATF listesinden (data/jurisdictions/).
+    jurisdictions_path: Path | None = None
+    high_risk_lists: list[str] = Field(
+        default_factory=lambda: ["call_for_action", "increased_monitoring"]
+    )
+    #: bankaya özgü ek yargı bölgeleri (ISO 3166-1 alpha-2, virgülle)
+    high_risk_countries_extra: str = ""
     fx_rates_try: dict[str, float] = Field(default_factory=_default_fx)
 
     # --- Memory bounds (bug #11) --------------------------------------------
@@ -309,9 +325,13 @@ class Settings(BaseSettings):
 
     @property
     def high_risk_country_set(self) -> frozenset[str]:
-        return frozenset(
-            c.strip().upper() for c in self.high_risk_countries.split(",") if c.strip()
-        )
+        from app.core.jurisdictions import high_risk_codes
+
+        return high_risk_codes()
+
+    @property
+    def resolved_jurisdictions_path(self) -> Path:
+        return self.jurisdictions_path or BASE_DIR / "data" / "jurisdictions" / "fatf_2026-06.json"
 
 
 @lru_cache(maxsize=1)

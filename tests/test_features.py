@@ -225,7 +225,8 @@ class TestRiskExplain:
     def test_country_score(self):
         from app.core.risk_engine import _country_score
 
-        assert _country_score("NG") == 1.0
+        assert _country_score("IR") == 1.0  # FATF call for action (data/jurisdictions)
+        assert _country_score("UA") == 0.0  # not on the FATF lists
         assert _country_score("TR") == 0.0
 
     def test_peer_group_baseline(self):
