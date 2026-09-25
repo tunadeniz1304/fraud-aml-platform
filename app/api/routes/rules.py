@@ -71,11 +71,8 @@ def _engine() -> Any:
 
 
 async def _reload(pipeline: Any) -> str:
-    async with pipeline.db.session() as session:
-        definitions = await rule_store.load_rules(session)
-    ruleset = rule_store.build_ruleset(definitions)
-    pipeline.analyst.engine.set_ruleset(ruleset)
-    return ruleset.version
+    # H3: rebuilds the rule set and bumps the shared generation for other workers
+    return str(await pipeline.reload_rules())
 
 
 async def _audit(pipeline: Any, event: str, entity: str, actor: str, reason: str, **payload: Any):
@@ -250,7 +247,10 @@ async def set_thresholds(
     engine = pipeline.analyst.engine
     old = engine.policy.thresholds.as_dict()
     try:
-        new = engine.policy.set_thresholds(body.step_up, body.hold, body.block)
+        # H3: persisted with a version and picked up by every worker
+        new = await pipeline.set_thresholds(
+            body.step_up, body.hold, body.block, actor=principal.username
+        )
     except PolicyError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     await _audit(

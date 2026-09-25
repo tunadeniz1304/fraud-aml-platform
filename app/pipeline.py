@@ -67,9 +67,10 @@ from app.monitoring import metrics
 from app.scenarios import ScenarioFactory
 from app.scoring import rule_store
 from app.scoring.engine import ScoringEngine
-from app.scoring.policy import LEGACY
+from app.scoring.policy import LEGACY, Thresholds
 from app.scoring.rules import load_rule_file
 from app.services.accounts import AccountService
+from app.services.config_sync import ConfigSync
 
 logger = logging.getLogger("fraud.pipeline")
 
@@ -171,6 +172,11 @@ class Pipeline:
         self._live: set[asyncio.Queue[dict[str, Any]]] = set()
         self.recent_live: deque[dict[str, Any]] = deque(maxlen=2000)
         self.cases.handlers["MODEL_PROMOTE"] = self._approve_promotion
+        # H3: thresholds / rules / champion model are shared through the DB
+        self.config = ConfigSync(db)
+        self.config.register("thresholds", self._apply_thresholds, restore=True)
+        self.config.register("rules", self._apply_rules)
+        self.config.register("models", self._apply_models)
         self.results: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._waiters: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._inflight: dict[str, str] = {}  # tx_id -> payload digest (M1)
@@ -407,7 +413,36 @@ class Pipeline:
         if case_id is not None:
             self._spawn(self._enrich_case(case_id, event))
 
-    async def reload_models(self) -> dict[str, str | None]:
+    # --- shared runtime config (H3) -----------------------------------------------------
+    async def set_thresholds(
+        self, step_up: float, hold: float, block: float, *, actor: str = "system"
+    ) -> Thresholds:
+        """Change the policy thresholds here and publish them to every worker."""
+        new = self.engine.policy.set_thresholds(step_up, hold, block)  # validates
+        await self.config.publish("thresholds", new.as_dict(), actor=actor)
+        return new
+
+    async def reload_rules(self, *, publish: bool = True, actor: str = "system") -> str:
+        """Rebuild the rule set from the rule table (and tell the other workers)."""
+        async with self.db.session() as session:
+            ruleset = rule_store.build_ruleset(await rule_store.load_rules(session))
+        self.engine.set_ruleset(ruleset)
+        if publish:
+            await self.config.publish("rules", {"version": ruleset.version}, actor=actor)
+        return ruleset.version
+
+    async def _apply_thresholds(self, value: dict[str, Any]) -> None:
+        self.engine.policy.set_thresholds(
+            float(value["step_up"]), float(value["hold"]), float(value["block"])
+        )
+
+    async def _apply_rules(self, value: dict[str, Any]) -> None:
+        await self.reload_rules(publish=False)
+
+    async def _apply_models(self, value: dict[str, Any]) -> None:
+        await self.reload_models(publish=False)
+
+    async def reload_models(self, *, publish: bool = True) -> dict[str, str | None]:
         """Reload champion/challenger from the registry into the live engine."""
         registry = ModelRegistry(self.settings.resolved_models_dir)
         champion = registry.load_role("champion")
@@ -415,10 +450,13 @@ class Pipeline:
         self.engine.set_models(champion, challenger)
         async with self.db.transaction() as session:
             await repo.upsert_models(session, registry.models())
-        return {
+        loaded = {
             "champion": champion.version if champion else None,
             "challenger": challenger.version if challenger else None,
         }
+        if publish:
+            await self.config.publish("models", dict(loaded))
+        return loaded
 
     async def _approve_promotion(self, approval: dict[str, Any], actor: str) -> dict[str, Any]:
         version = str(approval["target_id"])
@@ -676,6 +714,9 @@ class Pipeline:
         await self.writer.start()
         await self.effects.start()
         await self.idempotency.load(self.db)
+        await self.config.load()  # H3: persisted thresholds survive a restart
+        self.config.start(self.settings.config_poll_ms / 1000)
+        self.accounts.start_sync(self.settings.account_status_poll_ms / 1000)
         await self.bus.start()
         if self.ingress is not None:
             await self.ingress.start()
@@ -739,6 +780,8 @@ class Pipeline:
 
     async def stop(self) -> None:
         await self.wait_background()
+        await self.config.stop()
+        await self.accounts.stop_sync()
         for task in (self._stream_task, self._vector_task, self._ring_task, self._drift_task):
             if task is not None and not task.done():
                 task.cancel()

@@ -123,6 +123,8 @@ async def _crash(p: Pipeline) -> None:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
     p.writer._task = None
+    await p.config.stop()
+    await p.accounts.stop_sync()
     await p.bus.stop()
     await p.effects.stop()
 
