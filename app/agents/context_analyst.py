@@ -26,6 +26,7 @@ from app.config import get_settings
 from app.core.aggregates import OnlineStats
 from app.core.event_bus import EventBus
 from app.features.extractor import CustomerDirectory, FeatureExtractor
+from app.features.store import FeatureLockTimeout
 from app.monitoring import metrics, tracing
 from app.scoring.engine import ScoringEngine
 
@@ -107,15 +108,25 @@ class ContextAnalyst:
         customer_id = str(tx["customer_id"])
         status = self.account_status(customer_id) if self.account_status else None
         # snapshot → score → commit of one customer is serialised (no lost velocity)
-        async with self.extractor.store.customer_lock(customer_id):
-            with tracing.span("scoring.score", transaction_id=tx.get("transaction_id")):
-                result = await self.engine.score(tx, account_status=status)
-            if result.scored:
-                await self.engine.commit(result)
+        try:
+            async with self.extractor.store.customer_lock(customer_id):
+                with tracing.span("scoring.score", transaction_id=tx.get("transaction_id")):
+                    result = await self.engine.score(tx, account_status=status)
+                if result.scored:
+                    await self.engine.commit(result)
+        except FeatureLockTimeout:
+            # fail closed (M12): never score on a window another worker is writing
+            result = await self.engine.score(tx, account_status=status, lock_timeout=True)
         analyzed = {**tx, **result.event_fields()}
         if result.flags.get("account_blocked"):
             logger.warning(
                 "[Analyst] %s: hesap %s zaten BLOKE — işlem skorlanmadan durduruldu",
+                tx["transaction_id"],
+                customer_id,
+            )
+        elif result.flags.get("lock_timeout"):
+            logger.warning(
+                "[Analyst] %s: %s özellik kilidi alınamadı — HOLD (FEATURE_LOCK_TIMEOUT)",
                 tx["transaction_id"],
                 customer_id,
             )

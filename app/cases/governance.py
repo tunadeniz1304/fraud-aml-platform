@@ -8,6 +8,7 @@ database and the live engine and write it to the audit chain.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from app.cases.service import CaseError
@@ -20,12 +21,25 @@ RULE_OPS = ("create", "update", "disable")
 
 
 class DecisionLogicGovernance:
-    def __init__(self, db: Any, engine: Any, writer: Any) -> None:
+    def __init__(
+        self,
+        db: Any,
+        engine: Any,
+        writer: Any,
+        *,
+        reload_rules: Callable[[], Awaitable[str]] | None = None,
+        set_thresholds: Callable[..., Awaitable[Any]] | None = None,
+    ) -> None:
         self.db = db
         self.engine = engine
         self.writer = writer
+        # H3: the pipeline passes hooks that also publish the change to other workers
+        self._reload_rules = reload_rules
+        self._set_thresholds = set_thresholds
 
     async def reload_rules(self) -> str:
+        if self._reload_rules is not None:
+            return str(await self._reload_rules())
         async with self.db.session() as session:
             definitions = await rule_store.load_rules(session)
         ruleset = rule_store.build_ruleset(definitions)
@@ -92,9 +106,11 @@ class DecisionLogicGovernance:
         payload = approval["payload"]
         old = self.engine.policy.thresholds.as_dict()
         try:
-            new = self.engine.policy.set_thresholds(
-                float(payload["step_up"]), float(payload["hold"]), float(payload["block"])
-            )
+            values = (float(payload["step_up"]), float(payload["hold"]), float(payload["block"]))
+            if self._set_thresholds is not None:
+                new = await self._set_thresholds(*values, actor=str(approval["requested_by"]))
+            else:
+                new = self.engine.policy.set_thresholds(*values)
         except (PolicyError, KeyError, TypeError, ValueError) as exc:
             raise CaseError(f"eşikler geçersiz: {exc}") from None
         await self._audit(

@@ -190,12 +190,13 @@ async def test_writer_survives_a_failing_batch(store):
         await original(batch)
 
     writer._apply = flaky  # type: ignore[method-assign]
-    await writer.record_audit(AuditEntry(event_type="DECISION", entity_id="lost"))
+    await writer.record_audit(AuditEntry(event_type="DECISION", entity_id="retried"))
     await writer.flush()
     await writer.record_audit(AuditEntry(event_type="DECISION", entity_id="kept"))
     await writer.flush()
-    assert writer.errors == 1
-    assert [r["transaction_id"] for r in await store.audit()] == ["kept"]
+    assert writer.errors == 1 and writer.retries == 1
+    # H4: the failed batch is retried, not dropped
+    assert sorted(r["transaction_id"] for r in await store.audit()) == ["kept", "retried"]
 
 
 # --- account service ------------------------------------------------------------------------------

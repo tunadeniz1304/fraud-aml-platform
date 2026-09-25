@@ -78,6 +78,8 @@ class PolicyInput:
     sanctions_hit: bool = False
     account_blocked: bool = False
     unknown_customer: bool = False
+    #: the feature-state lock could not be obtained: fail closed (M12)
+    lock_timeout: bool = False
     #: typology cap (e.g. APP / mule → at most HOLD: hold and warn, don't block)
     cap: str | None = None
     #: transaction amount (TRY) — a low-risk, low-amount HOLD floor is softened
@@ -155,6 +157,17 @@ class PolicyEngine:
                 risk,
                 self.thresholds.action(risk),
                 ("UNKNOWN_CUSTOMER",),
+                case_required=True,
+                hold_minutes=settings.hold_cooling_off_minutes,
+            )
+        if inp.lock_timeout:
+            risk = self.thresholds.hold
+            return PolicyDecision(
+                "HOLD",
+                risk,
+                risk,
+                "HOLD",
+                ("FEATURE_LOCK_TIMEOUT",),
                 case_required=True,
                 hold_minutes=settings.hold_cooling_off_minutes,
             )

@@ -14,8 +14,8 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api import admin
@@ -37,6 +37,7 @@ from app.api.routes import (
 from app.api.security import install as install_security
 from app.api.state import state
 from app.config import get_settings
+from app.idempotency import IdempotencyConflict, IngestInProgress
 from app.monitoring.logging import configure_logging
 from app.monitoring.tracing import setup_tracing
 from app.security.auth import UserDirectory
@@ -45,6 +46,35 @@ from app.security.startup import enforce_startup_policy
 logger = logging.getLogger("fraud.dashboard")
 
 PipelineFactory = Callable[[], Awaitable[Any]]
+
+
+def install_idempotency_errors(app: FastAPI) -> None:
+    """M1: idempotency outcomes of ``POST /api/transactions`` as HTTP 409."""
+
+    @app.exception_handler(IdempotencyConflict)
+    async def _conflict(request: Request, exc: IdempotencyConflict) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": str(exc),
+                "code": "IDEMPOTENCY_CONFLICT",
+                "transaction_id": exc.tx_id,
+            },
+        )
+
+    @app.exception_handler(IngestInProgress)
+    async def _processing(request: Request, exc: IngestInProgress) -> JSONResponse:
+        retry_after = max(1, round(exc.retry_after_s))
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": str(exc),
+                "code": "PROCESSING",
+                "transaction_id": exc.tx_id,
+                "retry_after_s": retry_after,
+            },
+            headers={"Retry-After": str(retry_after)},
+        )
 
 
 def create_app(pipeline_factory: PipelineFactory | None = None) -> FastAPI:
@@ -82,6 +112,7 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> FastAPI:
     app.state.pipeline_factory = pipeline_factory
     app.state.users = UserDirectory.from_settings(settings)
     install_security(app)
+    install_idempotency_errors(app)
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(auth.stream_router)

@@ -115,7 +115,10 @@ class ScoreResult:
             "risk_explanation": [r.text for r in self.reasons],
             "sanctions": self.sanctions,
             "sanctions_hit": bool(self.sanctions),
-            "force_review": bool(self.sanctions) or self.flags.get("unknown_customer", False),
+            "force_review": bool(self.sanctions)
+            or self.flags.get("unknown_customer", False)
+            or self.flags.get("lock_timeout", False),
+            "lock_timeout": self.flags.get("lock_timeout", False),
             "case_required": self.policy.case_required,
             "hold_minutes": self.policy.hold_minutes,
             "features": self.features,
@@ -298,7 +301,11 @@ class ScoringEngine:
         return hits
 
     # --- hot path -------------------------------------------------------------------
-    async def score(self, tx: dict[str, Any], *, account_status: str | None = None) -> ScoreResult:
+    async def score(
+        self, tx: dict[str, Any], *, account_status: str | None = None, lock_timeout: bool = False
+    ) -> ScoreResult:
+        """``lock_timeout``: the customer's feature lock could not be obtained;
+        the event is held (fail closed, M12) and not committed to the windows."""
         started = time.perf_counter()
         settings = get_settings()
         extraction = await self.extractor.extract(tx)
@@ -329,6 +336,16 @@ class ScoringEngine:
                 scored=False,
                 reasons=[policy_reason("UNKNOWN_CUSTOMER")],
                 flags={"unknown_customer": True},
+                latency_ms=(time.perf_counter() - started) * 1000,
+            )
+        if lock_timeout:
+            decision = self.policy.decide(PolicyInput(lock_timeout=True))
+            return ScoreResult(
+                **base,
+                policy=decision,
+                scored=False,
+                reasons=[policy_reason("FEATURE_LOCK_TIMEOUT")],
+                flags={"lock_timeout": True},
                 latency_ms=(time.perf_counter() - started) * 1000,
             )
 

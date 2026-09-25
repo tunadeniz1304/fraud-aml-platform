@@ -89,6 +89,10 @@ POLICY_CODES: dict[str, str] = {
     "SANCTIONS_HIT": "Yaptırım/PEP listesi eşleşmesi — zorunlu bekletme ve vaka",
     "ACCOUNT_BLOCKED": "Hesap zaten BLOKE — işlem skorlanmadan reddedildi",
     "UNKNOWN_CUSTOMER": "Bilinmeyen müşteri — insan incelemesine yönlendirildi",
+    "FEATURE_LOCK_TIMEOUT": (
+        "Müşteri özellik penceresi kilidi alınamadı — güncel olmayan pencereyle "
+        "skorlamak yerine bekletildi"
+    ),
     "RULE_FLOOR": "Kural aksiyon tabanı uygulandı",
     "RULE_FLOOR_SOFTENED": "Düşük risk ve tutar: kuralın bekletme tabanı ek doğrulamaya indirildi",
     "ANOMALY_HIGH": "Davranış anomali skoru çok yüksek (IsolationForest/ECOD)",

@@ -158,8 +158,13 @@ async def test_idempotency_claim_waits_for_pending_owner() -> None:
     await asyncio.sleep(0.01)
     await owner.record("X-1", {"transaction_id": "X-1", "decision": "ALLOW"})
     assert (await waiter) == {"transaction_id": "X-1", "decision": "ALLOW"}
-    await owner.release("X-1")
-    assert await other.claim("X-1") is True
+    assert await other.claim("X-1") is False  # the recorded decision is kept
+    # a claim that produced no decision is released for a retry
+    assert await owner.claim("X-2") is True
+    await owner.release("X-2")
+    assert await other.claim("X-2") is True
+    await owner.close()
+    await other.close()
 
 
 async def test_sse_ticket_is_shared_across_workers_and_single_use() -> None:

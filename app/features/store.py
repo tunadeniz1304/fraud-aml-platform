@@ -11,6 +11,11 @@ Both backends expose the same calls:
 * ``customer_lock(customer_id)`` — serialises snapshot → score → commit of the
   same customer (asyncio lock in memory, ``SET NX PX`` lock in Redis), so
   concurrent transactions of one customer cannot read the same stale window.
+  It **fails closed** (M12): if the Redis lease cannot be obtained within
+  ``feature_lock_wait_ms`` (retried every few ms), :class:`FeatureLockTimeout`
+  is raised instead of scoring on a possibly stale window; the analyst turns it
+  into a ``HOLD`` with reason ``FEATURE_LOCK_TIMEOUT``. The per-process lock
+  table is size-capped but never evicts a lock that is held or awaited.
 
 Memory is bounded: windows are trimmed by event time and entity maps are LRU
 capped (in-memory) or every key carries a TTL (Redis, ``feature_entity_ttl_days``).
@@ -75,6 +80,61 @@ class _LRU(OrderedDict[Any, Any]):
             self.popitem(last=False)
 
 
+class FeatureLockTimeout(RuntimeError):
+    """The cross-process customer lease could not be obtained in time (M12)."""
+
+    def __init__(self, customer_id: str) -> None:
+        super().__init__(f"feature lock timeout for {customer_id}")
+        self.customer_id = customer_id
+
+
+class _LockTable:
+    """Per-key asyncio locks, capped like an LRU but never evicting a lock that
+    is held or awaited (evicting it would let a second coroutine create a fresh
+    lock for the same customer and run concurrently with the holder).
+
+    When every entry is in use the table grows past ``cap`` temporarily and
+    shrinks back as locks are released."""
+
+    def __init__(self, cap: int) -> None:
+        self.cap = max(1, cap)
+        self._entries: OrderedDict[Any, list[Any]] = OrderedDict()  # key -> [lock, users]
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._entries
+
+    def in_use(self, key: Any) -> int:
+        entry = self._entries.get(key)
+        return int(entry[1]) if entry is not None else 0
+
+    @contextlib.asynccontextmanager
+    async def hold(self, key: Any) -> AsyncIterator[None]:
+        entry = self._entries.get(key)
+        if entry is None:
+            entry = self._entries[key] = [asyncio.Lock(), 0]
+        self._entries.move_to_end(key)
+        entry[1] += 1  # counted from the wait on: a waiter pins the lock too
+        try:
+            self._evict()
+            async with entry[0]:
+                yield
+        finally:
+            entry[1] -= 1
+            self._evict()
+
+    def _evict(self) -> None:
+        if len(self._entries) <= self.cap:
+            return
+        for key in list(self._entries):
+            if len(self._entries) <= self.cap:
+                break
+            if self._entries[key][1] == 0:  # oldest idle locks first
+                del self._entries[key]
+
+
 class MemoryFeatureStore:
     """Process-local store (tests, training backfill, single-node runs)."""
 
@@ -88,7 +148,7 @@ class MemoryFeatureStore:
         self.device_customers: _LRU = _LRU(max_entities)  # device -> {cid: last ts}
         self.profiles: _LRU = _LRU(max_entities)  # cid -> ProfileState
         self.committed: _LRU = _LRU(max_entities * 4)  # tx id -> True (idempotency)
-        self._locks: _LRU = _LRU(max_entities)  # cid -> asyncio.Lock
+        self._locks = _LockTable(max_entities)  # cid -> asyncio.Lock (held ones pinned)
 
     async def snapshot(self, tx: TxView) -> StateSnapshot:
         now = tx.epoch
@@ -114,11 +174,7 @@ class MemoryFeatureStore:
 
     @contextlib.asynccontextmanager
     async def customer_lock(self, customer_id: str) -> AsyncIterator[None]:
-        lock = self._locks.get(customer_id)
-        if lock is None:
-            lock = asyncio.Lock()
-        self._locks.touch(customer_id, lock)
-        async with lock:
+        async with self._locks.hold(customer_id):
             yield
 
     async def commit(self, tx: TxView, profile: ProfileState) -> None:
@@ -214,7 +270,8 @@ class RedisFeatureStore:
         self.entity_ttl_s = int(settings.feature_entity_ttl_days * DAY)
         self.lock_ttl_ms = settings.feature_lock_ttl_ms
         self.lock_wait_s = settings.feature_lock_wait_ms / 1000
-        self._local: _LRU = _LRU(settings.feature_max_entities)
+        self.lock_timeouts = 0
+        self._local = _LockTable(settings.feature_max_entities)
 
     def _k(self, *parts: str) -> str:
         return ":".join((self.prefix, *parts))
@@ -224,13 +281,10 @@ class RedisFeatureStore:
         """Per-customer lock: an in-process asyncio lock (exact within a worker,
         no polling) plus a cross-process ``SET NX PX`` lease with owner-checked
         release. The lease wait is bounded: after ``feature_lock_wait_ms`` the
-        event is scored without the cross-process lease and it is logged.
+        lock fails closed with :class:`FeatureLockTimeout` (M12) — the event is
+        never scored against a window another worker may be writing.
         """
-        local = self._local.get(customer_id)
-        if local is None:
-            local = asyncio.Lock()
-        self._local.touch(customer_id, local)
-        async with local, self._lease(customer_id):
+        async with self._local.hold(customer_id), self._lease(customer_id):
             yield
 
     @contextlib.asynccontextmanager
@@ -244,12 +298,17 @@ class RedisFeatureStore:
                 break
             await asyncio.sleep(0.002)
         if not acquired:
-            logger.warning("[Features] %s için kilit alınamadı — kilitsiz devam", customer_id)
+            self.lock_timeouts += 1
+            logger.warning(
+                "[Features] %s için kilit %d ms içinde alınamadı — güvenli tarafta HOLD",
+                customer_id,
+                int(self.lock_wait_s * 1000),
+            )
+            raise FeatureLockTimeout(customer_id)
         try:
             yield
         finally:
-            if acquired:
-                await self.redis.eval(_UNLOCK_LUA, 1, key, token)
+            await self.redis.eval(_UNLOCK_LUA, 1, key, token)
 
     async def snapshot(self, tx: TxView) -> StateSnapshot:
         now = tx.epoch

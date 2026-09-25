@@ -1,9 +1,10 @@
 """Hash-chained, tamper-evident audit log.
 
 Each row stores ``prev_hash`` and ``hash = SHA-256(prev_hash || canonical(row))``
-(HMAC-SHA256 keyed with ``AUDIT_HMAC_KEY`` when that is set) where ``canonical`` is a sorted, compact JSON rendering of every business
-field. Changing, deleting or reordering any historical row breaks the chain
-from that point on, which :func:`verify_chain` reports.
+(HMAC-SHA256 keyed with ``AUDIT_HMAC_KEY`` when that is set) where
+``canonical`` is a sorted, compact JSON rendering of every business field.
+Changing, deleting or reordering any historical row breaks the chain from
+that point on, which :func:`verify_chain` reports.
 
 Appends are serialised: an ``asyncio.Lock`` inside the process and, on
 PostgreSQL, a transaction-scoped advisory lock across processes (API + worker).

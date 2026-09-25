@@ -51,7 +51,7 @@ class Account(Base):
         String(64), ForeignKey("customers.id", ondelete="CASCADE"), primary_key=True
     )
     status: Mapped[str] = mapped_column(String(16), default="AKTIF")
-    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, index=True)
     version: Mapped[int] = mapped_column(Integer, default=1)
 
 
@@ -87,6 +87,8 @@ class Transaction(Base):
     beneficiary_name: Mapped[str] = mapped_column(String(160), default="")
     purpose: Mapped[str] = mapped_column(String(160), default="")
     session: Mapped[dict[str, Any] | None] = mapped_column(JSONDoc, nullable=True)
+    #: SHA-256 of the canonical request payload (same id + other payload -> 409)
+    payload_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     received_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
@@ -277,3 +279,44 @@ class AuditLog(Base):
     payload: Mapped[dict[str, Any]] = mapped_column(JSONDoc, default=dict)
     prev_hash: Mapped[str] = mapped_column(String(64))
     hash: Mapped[str] = mapped_column(String(64), unique=True)
+
+
+class DeadLetterRecord(Base):
+    """Write that could not be persisted after retries and bisection (H4)."""
+
+    __tablename__ = "dead_letters"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, index=True)
+    source: Mapped[str] = mapped_column(String(32), default="writer")
+    kind: Mapped[str] = mapped_column(String(32))
+    key: Mapped[str] = mapped_column(String(128), default="")
+    error: Mapped[str] = mapped_column(Text, default="")
+    attempts: Mapped[int] = mapped_column(Integer, default=1)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONDoc, default=dict)
+    resolved_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+
+
+class RuntimeConfig(Base):
+    """Versioned runtime configuration shared by every worker (H3):
+    policy thresholds and the rule / champion-model generation counters."""
+
+    __tablename__ = "runtime_config"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[dict[str, Any]] = mapped_column(JSONDoc, default=dict)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    updated_by: Mapped[str] = mapped_column(String(64), default="system")
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class CaseOutbox(Base):
+    """Durable case-intake outbox (M13): written in the decision's own batch,
+    deleted once the alert/case exists; stale rows are replayed."""
+
+    __tablename__ = "case_outbox"
+
+    transaction_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONDoc, default=dict)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, index=True)

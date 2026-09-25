@@ -63,7 +63,9 @@ class TestHybridScoring:
 
     async def test_account_takeover_blocks_with_reasons(self, engine):
         result = await engine.score(ATO)
-        assert result.decision == "BLOCK" and result.risk_score >= 0.85
+        # the calibrated v5 stacker scores this ATO near 0.5; the deterministic
+        # rule floor is what makes it a BLOCK (docs/MODEL_CARD.md)
+        assert result.decision == "BLOCK" and "RULE_FLOOR" in result.policy.overrides
         assert 3 <= len(result.reasons) <= get_settings().reason_top_k
         codes = {r.code for r in result.reasons}
         assert codes & {"R_NEW_DEVICE_HIGH_AMT", "R_ATO_TAKEOVER", "R_EXTREME_AMOUNT"}

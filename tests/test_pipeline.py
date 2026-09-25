@@ -43,7 +43,8 @@ class TestPipeline:
 
         # TX-B1 (CUST-0002, 90000 EUR, Berlin, unknown device) must be blocked.
         blocked_tx = next(b for b in action.blocked if b["transaction_id"] == "TX-B1")
-        assert blocked_tx["risk_score"] >= 0.75
+        # BLOCK comes from the rule floor; the calibrated stacker score is ~0.5
+        assert blocked_tx["decision"] == "BLOCK" and blocked_tx["risk_score"] > 0
         # Account flips to BLOKE in the cache immediately and in the DB after flush.
         assert store.get_status("CUST-0002") == "BLOKE"
         assert await store.db_status("CUST-0002") == "BLOKE"

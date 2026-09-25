@@ -38,6 +38,7 @@ from app.bus.memory import InMemoryBus
 from app.bus.redis_streams import RedisStreamsBus
 from app.bus.writebehind import WriteBehindQueue
 from app.cases.governance import DecisionLogicGovernance
+from app.cases.outbox import CaseOutboxReplayer, needs_outbox
 from app.cases.service import OPEN_STATUSES, CaseService
 from app.config import Settings, get_settings
 from app.copilot.agent import CopilotAgent
@@ -50,11 +51,17 @@ from app.db import repository as repo
 from app.db.audit import AuditEntry
 from app.db.database import Database
 from app.db.models import Case, Decision, Label, Transaction
-from app.db.writer import PersistenceWriter
+from app.db.writer import PersistenceWriter, WriteOp
 from app.features.extractor import CustomerDirectory, FeatureExtractor
 from app.features.store import FeatureStateStore, MemoryFeatureStore, RedisFeatureStore
 from app.graph.entity_graph import EntityGraph
-from app.idempotency import IdempotencyIndex
+from app.idempotency import (
+    IdempotencyConflict,
+    IdempotencyIndex,
+    IngestInProgress,
+    check_digest,
+    payload_digest,
+)
 from app.llm.config import LLMSettings
 from app.llm.service import LLMService, OutputRejected
 from app.ml.registry import ModelRegistry
@@ -62,9 +69,10 @@ from app.monitoring import metrics
 from app.scenarios import ScenarioFactory
 from app.scoring import rule_store
 from app.scoring.engine import ScoringEngine
-from app.scoring.policy import LEGACY
+from app.scoring.policy import LEGACY, Thresholds
 from app.scoring.rules import load_rule_file
 from app.services.accounts import AccountService
+from app.services.config_sync import ConfigSync
 
 logger = logging.getLogger("fraud.pipeline")
 
@@ -154,18 +162,42 @@ class Pipeline:
         )
         self._background: set[asyncio.Task[Any]] = set()
         self._enrich_slots = asyncio.Semaphore(max(1, settings.enrich_concurrency))
-        self.idempotency = IdempotencyIndex(redis, ttl_s=settings.idempotency_ttl_s)
+        self.idempotency = IdempotencyIndex(
+            redis,
+            ttl_s=settings.idempotency_ttl_s,
+            pending_ttl_s=settings.idempotency_pending_ttl_s,
+            pending_wait_s=settings.idempotency_pending_wait_ms / 1000,
+        )
         # V6: only score + decision + idempotency record stay on the request
         # path; case intake, live fan-out and egress run write-behind.
         self.effects = WriteBehindQueue(queue_size=settings.write_behind_queue_size)
         self._live: set[asyncio.Queue[dict[str, Any]]] = set()
         self.recent_live: deque[dict[str, Any]] = deque(maxlen=2000)
         self.cases.handlers["MODEL_PROMOTE"] = self._approve_promotion
-        self.governance = DecisionLogicGovernance(db, analyst.engine, writer)
+        self.governance = DecisionLogicGovernance(
+            db,
+            analyst.engine,
+            writer,
+            reload_rules=self.reload_rules,
+            set_thresholds=self.set_thresholds,
+        )
         self.cases.handlers["RULE_CHANGE"] = self.governance.apply_rule_change
         self.cases.handlers["POLICY_THRESHOLDS"] = self.governance.apply_thresholds
+        # H3: thresholds / rules / champion model are shared through the DB
+        self.config = ConfigSync(db)
+        self.config.register("thresholds", self._apply_thresholds, restore=True)
+        self.config.register("rules", self._apply_rules)
+        self.config.register("models", self._apply_models)
+        # M13: stale case-intake records are replayed from the DB outbox
+        self.outbox = CaseOutboxReplayer(
+            db,
+            self.cases.on_decision,
+            replay_s=settings.case_outbox_replay_s,
+            on_case=lambda case_id, event: self._spawn(self._enrich_case(case_id, event)),
+        )
         self.results: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._waiters: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._inflight: dict[str, str] = {}  # tx_id -> payload digest (M1)
         self._stream_task: asyncio.Task[None] | None = None
         self._vector_task: asyncio.Task[None] | None = None
         self._ring_task: asyncio.Task[None] | None = None
@@ -405,11 +437,42 @@ class Pipeline:
             case_id = await self.cases.on_decision(event)
         except Exception:  # case intake must never break the decision flow
             logger.exception("[Cases] alert/vaka oluşturulamadı (%s)", event.get("transaction_id"))
-            return
+            return  # M13: the outbox row stays and is replayed later
+        if needs_outbox(event):
+            await self.writer.submit(WriteOp("outbox_done", str(event["transaction_id"])))
         if case_id is not None:
             self._spawn(self._enrich_case(case_id, event))
 
-    async def reload_models(self) -> dict[str, str | None]:
+    # --- shared runtime config (H3) -----------------------------------------------------
+    async def set_thresholds(
+        self, step_up: float, hold: float, block: float, *, actor: str = "system"
+    ) -> Thresholds:
+        """Change the policy thresholds here and publish them to every worker."""
+        new = self.engine.policy.set_thresholds(step_up, hold, block)  # validates
+        await self.config.publish("thresholds", new.as_dict(), actor=actor)
+        return new
+
+    async def reload_rules(self, *, publish: bool = True, actor: str = "system") -> str:
+        """Rebuild the rule set from the rule table (and tell the other workers)."""
+        async with self.db.session() as session:
+            ruleset = rule_store.build_ruleset(await rule_store.load_rules(session))
+        self.engine.set_ruleset(ruleset)
+        if publish:
+            await self.config.publish("rules", {"version": ruleset.version}, actor=actor)
+        return ruleset.version
+
+    async def _apply_thresholds(self, value: dict[str, Any]) -> None:
+        self.engine.policy.set_thresholds(
+            float(value["step_up"]), float(value["hold"]), float(value["block"])
+        )
+
+    async def _apply_rules(self, value: dict[str, Any]) -> None:
+        await self.reload_rules(publish=False)
+
+    async def _apply_models(self, value: dict[str, Any]) -> None:
+        await self.reload_models(publish=False)
+
+    async def reload_models(self, *, publish: bool = True) -> dict[str, str | None]:
         """Reload champion/challenger from the registry into the live engine."""
         registry = ModelRegistry(self.settings.resolved_models_dir)
         champion = registry.load_role("champion")
@@ -417,10 +480,13 @@ class Pipeline:
         self.engine.set_models(champion, challenger)
         async with self.db.transaction() as session:
             await repo.upsert_models(session, registry.models())
-        return {
+        loaded = {
             "champion": champion.version if champion else None,
             "challenger": challenger.version if challenger else None,
         }
+        if publish:
+            await self.config.publish("models", dict(loaded))
+        return loaded
 
     async def _approve_promotion(self, approval: dict[str, Any], actor: str) -> dict[str, Any]:
         version = str(approval["target_id"])
@@ -570,7 +636,9 @@ class Pipeline:
         model = TransactionIn.model_validate(payload)
         tx = model.model_dump(mode="json", exclude_none=True)
         tx["ts"] = model.ts.isoformat()
-        await self.ingest(tx)
+        # durable: another worker's decision counts only once it is committed;
+        # IngestInProgress (RetryLater) leaves the message pending for later
+        await self.ingest(tx, durable=True)
 
     async def _to_egress(self, event: dict[str, Any]) -> None:
         assert self.ingress is not None
@@ -676,6 +744,10 @@ class Pipeline:
         await self.writer.start()
         await self.effects.start()
         await self.idempotency.load(self.db)
+        await self.config.load()  # H3: persisted thresholds survive a restart
+        self.config.start(self.settings.config_poll_ms / 1000)
+        self.accounts.start_sync(self.settings.account_status_poll_ms / 1000)
+        self.outbox.start()
         await self.bus.start()
         if self.ingress is not None:
             await self.ingress.start()
@@ -739,6 +811,9 @@ class Pipeline:
 
     async def stop(self) -> None:
         await self.wait_background()
+        await self.config.stop()
+        await self.accounts.stop_sync()
+        await self.outbox.stop()
         for task in (self._stream_task, self._vector_task, self._ring_task, self._drift_task):
             if task is not None and not task.done():
                 task.cancel()
@@ -750,6 +825,7 @@ class Pipeline:
         await self.effects.stop()
         await self.wait_background()
         await self.writer.stop()
+        await self.idempotency.close()
         await self.extractor.store.close()
         await self.db.dispose()
         if self.redis is not None:
@@ -795,6 +871,7 @@ class Pipeline:
             "latency_ms": decision.latency_ms,
             "duplicate": True,
             "persisted_only": True,
+            "payload_hash": tx.payload_hash,
         }
 
     @staticmethod
@@ -805,48 +882,85 @@ class Pipeline:
         fields = AnalyzedTransactionOut.model_fields
         return {k: v for k, v in result.items() if k in fields or k in ("well_formed", "issues")}
 
-    async def ingest(self, tx: dict[str, Any]) -> dict[str, Any] | None:
+    async def ingest(self, tx: dict[str, Any], *, durable: bool = False) -> dict[str, Any] | None:
         """Score one transaction and return its decision (idempotent per id).
 
         Request path (V6): in-memory result -> in-flight waiter -> idempotency
         claim (Redis, multi-worker) -> stored decision only when the Bloom
         index says the id may be persisted -> score + decide. Case intake,
         audit, live feed and egress follow write-behind.
+
+        M1: the same id with a different payload raises
+        :class:`IdempotencyConflict`; a replay while the id is still being
+        scored elsewhere raises :class:`IngestInProgress` after
+        ``idempotency_pending_wait_ms`` (both HTTP 409). ``durable=True`` (the
+        Redis ingress, which acknowledges only after the DB commit) accepts
+        another worker's decision only once it is committed, and always
+        checks the database before scoring a redelivered id again.
         """
         tx_id = str(tx.get("transaction_id") or "")
-        if tx_id and tx_id in self.results:
-            return {**self.results[tx_id], "duplicate": True}
         if not tx_id:
             await self.bus.publish(TransactionMonitor.CREATED, tx)
             if self.bus.running:
                 await self.bus.drain()
             return None
+        digest = payload_digest(tx)
+        tx = {**tx, "payload_hash": digest}
+        if tx_id in self.results:
+            known = self.results[tx_id]
+            check_digest(tx_id, known, digest)
+            return {**known, "duplicate": True}
         waiter = self._waiters.get(tx_id)
         if waiter is not None:  # same id already in flight in this process
-            return await self._await_decision(tx_id, waiter)
-        claimed = await self.idempotency.claim(tx_id)
+            if self._inflight.get(tx_id, digest) != digest:
+                raise IdempotencyConflict(tx_id)
+            try:
+                done = await asyncio.wait_for(
+                    asyncio.shield(waiter), timeout=self.idempotency.pending_wait_s
+                )
+            except TimeoutError:
+                raise IngestInProgress(tx_id, self.idempotency.retry_after_s) from None
+            return {**done, "duplicate": True}
+        claimed = await self.idempotency.claim(tx_id, digest)
         if not claimed:  # another worker (or an earlier request) owns this id
-            other = await self.idempotency.claimed_result(tx_id)
+            other = await self.idempotency.claimed_result(tx_id, digest, require_committed=durable)
             if other is not None:
                 return {**other, "duplicate": True}
-        if not claimed or self.idempotency.maybe_persisted(tx_id):
-            stored = await self.stored_result(tx_id)
+            # the owner gave up (released / lease expired): try to take over
+            claimed = await self.idempotency.claim(tx_id, digest)
+            if not claimed:
+                raise IngestInProgress(tx_id, self.idempotency.retry_after_s)
+            durable = True  # a lapsed claim may hide a committed decision
+        if durable or self.idempotency.maybe_persisted(tx_id):
+            try:
+                stored = await self.stored_result(tx_id)
+                check_digest(tx_id, stored, digest)
+            except BaseException:
+                await self.idempotency.release(tx_id)
+                raise
             if stored is not None:
-                if claimed:
-                    await self.idempotency.record(tx_id, self._summary(stored))
+                await self.idempotency.record(tx_id, self._summary(stored), digest)
                 return stored
+        self._inflight[tx_id] = digest
         try:
             result = await self._decide(tx_id, tx)
         except BaseException:
-            if claimed:
-                await self.idempotency.release(tx_id)
+            await self.idempotency.release(tx_id)
             raise
-        if claimed:
-            if result is None:
-                await self.idempotency.release(tx_id)
-            else:
-                await self.idempotency.record(tx_id, self._summary(result))
+        finally:
+            self._inflight.pop(tx_id, None)
+        if result is None:
+            await self.idempotency.release(tx_id)
+        elif self.idempotency.redis is not None:
+            # provisional until the writer committed the decision (see _finalize)
+            await self.idempotency.record(tx_id, self._summary(result), digest, committed=False)
+            self._spawn(self._finalize(tx_id))
         return result
+
+    async def _finalize(self, tx_id: str) -> None:
+        """Mark the idempotency record committed once the decision is in the DB."""
+        await self.writer.barrier()
+        await self.idempotency.commit(tx_id)
 
     async def _decide(self, tx_id: str, tx: dict[str, Any]) -> dict[str, Any] | None:
         if not self.bus.running:  # direct dispatch: handlers run inline
@@ -910,6 +1024,9 @@ async def build_pipeline(
         batch_size=settings.writer_batch_size,
         flush_interval=settings.writer_flush_ms / 1000,
         queue_size=settings.writer_queue_size,
+        max_retries=settings.writer_max_retries,
+        retry_base=settings.writer_retry_base_ms / 1000,
+        retry_max=settings.writer_retry_max_ms / 1000,
     )
     accounts = AccountService(db, writer)
     await accounts.load()
@@ -935,6 +1052,7 @@ async def build_pipeline(
             max_retries=settings.bus_max_retries,
             claim_idle_ms=settings.bus_claim_idle_ms,
             processing_lease_ms=settings.bus_processing_lease_ms,
+            commit_barrier=writer.barrier,  # H4: XACK only after the DB commit
         )
     engine = ScoringEngine.from_settings(extractor, ruleset=ruleset, registry=registry)
     logger.info(
