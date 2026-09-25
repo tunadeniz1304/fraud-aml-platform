@@ -32,7 +32,7 @@ import numpy as np
 from app.datasets import paysim_adapter as ps
 from app.scoring.rules import load_ruleset
 from app.validation import elliptic, ulb
-from app.validation.evaluate import evaluate_replay, layer_scores, time_split
+from app.validation.evaluate import HOUR_FEATURES, Evaluation, evaluate_replay, split_bounds
 from app.validation.replay import ReplayResult, build_replay_engine, replay
 
 ARTIFACTS = ROOT / "artifacts" / "validation"
@@ -81,7 +81,9 @@ async def _replay_block(
     *,
     paysim: bool,
     cache: Path | None = None,
-) -> tuple[dict[str, Any], Any]:
+    seed: int = 42,
+    feature_ablations: dict[str, tuple[str, ...]] | None = None,
+) -> Evaluation:
     if cache is not None and cache.exists():  # noqa: ASYNC240 - one-off CLI check
         print(f"Önbellekteki replay kullanılıyor: {cache.name}")
         res = ReplayResult.load(cache)
@@ -93,7 +95,7 @@ async def _replay_block(
         )
         if cache is not None:
             res.save(cache)
-    return evaluate_replay(res), res
+    return evaluate_replay(res, seed=seed, feature_ablations=feature_ablations)
 
 
 def run_paysim(args: argparse.Namespace) -> None:
@@ -108,7 +110,8 @@ def run_paysim(args: argparse.Namespace) -> None:
     started = time.perf_counter()
     txs = ps.load_transactions(path, flt)
     steps = [t["step"] for t in txs]
-    cut = min(steps) + 0.70 * (max(steps) - min(steps))
+    # amount prior from the training period only (first 70 % of rows in time order)
+    cut, _ = split_bounds(np.asarray(steps, dtype=float))
     prior = statistics.median(t["amount_try"] for t in txs if t["step"] <= cut)
     customers = ps.customer_records(txs, prior_amount_try=round(prior, 2))
     elapsed = time.perf_counter() - started
@@ -116,10 +119,17 @@ def run_paysim(args: argparse.Namespace) -> None:
     cache = None
     if args.reuse_replay:
         cache = CACHE / f"{name}_{args.sample_frac:g}_{args.step_min}_{args.step_max}.npz"
-    block, res = asyncio.run(_replay_block(txs, customers, paysim=True, cache=cache))
-    split = time_split(res)
-    scores, _ = layer_scores(split, seed=args.seed)
-    _pr_plot(name, split.test.label, scores, f"PaySim ({args.source}) — test dönemi PR eğrileri")
+    ev = asyncio.run(
+        _replay_block(
+            txs,
+            customers,
+            paysim=True,
+            cache=cache,
+            seed=args.seed,
+            feature_ablations={"hour": HOUR_FEATURES},
+        )
+    )
+    _pr_plot(name, ev.split.test.label, ev.scores, f"PaySim ({args.source}) — test dönemi PR")
     _write(
         name,
         {
@@ -128,6 +138,7 @@ def run_paysim(args: argparse.Namespace) -> None:
             "subset": {
                 "sample_frac": args.sample_frac,
                 "sampling": "alıcı (nameDest) bazlı hash örneklemesi",
+                "role": "duman testi (fixture)" if args.source == "fixture" else "tam veri",
                 "steps": [min(steps), max(steps)],
                 "train_until_step": round(cut, 1),
             },
@@ -136,7 +147,7 @@ def run_paysim(args: argparse.Namespace) -> None:
                 "excluded_columns": list(ps.EXCLUDED_COLUMNS),
                 "amount_prior_try": round(prior, 2),
             },
-            **block,
+            **ev.report,
         },
     )
 
@@ -146,13 +157,20 @@ def run_synthetic(args: argparse.Namespace) -> None:
 
     data = generate(SyntheticConfig(seed=args.seed))
     cache = CACHE / f"synthetic_{args.seed}.npz" if args.reuse_replay else None
-    block, res = asyncio.run(
-        _replay_block(data.transactions, data.customers, paysim=False, cache=cache)
+    ev = asyncio.run(
+        _replay_block(
+            data.transactions,
+            data.customers,
+            paysim=False,
+            cache=cache,
+            seed=args.seed,
+            feature_ablations={"hour": HOUR_FEATURES},
+        )
     )
-    split = time_split(res)
-    scores, _ = layer_scores(split, seed=args.seed)
-    _pr_plot("synthetic", split.test.label, scores, "Sentetik (seed 42) — test dönemi PR eğrileri")
-    _write("synthetic", {"dataset": "Sentetik (arındırılmış üretici)", **data.summary(), **block})
+    _pr_plot("synthetic", ev.split.test.label, ev.scores, "Sentetik — test dönemi PR eğrileri")
+    _write(
+        "synthetic", {"dataset": "Sentetik (arındırılmış üretici)", **data.summary(), **ev.report}
+    )
 
 
 def run_elliptic(args: argparse.Namespace) -> None:

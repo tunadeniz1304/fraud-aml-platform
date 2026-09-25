@@ -1,13 +1,16 @@
-"""ML-path sanity check on the ULB credit-card data set (OpenML 1597).
+"""ML-stack-only check on the ULB credit-card data set (OpenML 1597).
 
-The 28 features are anonymised PCA components (plus ``Amount``; the
-original ``Time`` is absent here), so none of the platform's behavioural features, rules or graph
-signals can be computed. This check therefore exercises only the model
-machinery — LightGBM, IsolationForest + ECOD with quantile calibration and
-the logistic stacker (``rule`` input fixed to 0) — on real card data, with a
-time split (first 70 % of the period trains, its last 15 % validates). The
-OpenML copy has no ``Time`` column but keeps the source's chronological row
-order, so the row index serves as time.
+The 28 features are anonymised PCA components (plus ``Amount``; the original
+``Time`` is absent here). None of the platform's behavioural features, rules,
+graph signals or policy can be computed. This check therefore tests **only the
+ML stack**: LightGBM, IsolationForest + ECOD with quantile calibration and the
+non-negative logistic stacker (``rule`` input fixed to 0). It says nothing
+about the rest of the platform.
+
+Split: time-ordered rows 70/15/15, the same protocol as
+``app.validation.evaluate``. The OpenML copy has no ``Time`` column but keeps
+the source's chronological row order, so the row index serves as time.
+Confidence intervals come from the shared stratified bootstrap.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ from app.ml import metrics as M
 from app.ml.anomaly import ECODScorer, FastIsolationForest, QuantileCalibrator
 from app.ml.gbm import GBMModel
 from app.ml.stacker import Stacker
+from app.validation.evaluate import BOOTSTRAP_ROUNDS, BUDGETS, bootstrap, layer_metrics
 
 
 def load(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, list[str]]:
@@ -36,14 +40,17 @@ def load(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, li
     return df[names].to_numpy(dtype=float), y, order, df["Amount"].to_numpy(), names
 
 
-def evaluate(path: Path, *, seed: int = 42) -> dict[str, Any]:
+def evaluate(path: Path, *, seed: int = 42, rounds: int = BOOTSTRAP_ROUNDS) -> dict[str, Any]:
     from sklearn.ensemble import IsolationForest
 
     x, y, t, amount, names = load(path)
-    cutoff = t.min() + 0.70 * (t.max() - t.min())
-    before, after = np.flatnonzero(t <= cutoff), np.flatnonzero(t > cutoff)
-    n_valid = int(len(before) * 0.15)
-    tr, va, te = before[:-n_valid], before[-n_valid:], after
+    order = np.argsort(t, kind="stable")
+    n = len(order)
+    tr, va, te = (
+        order[: int(n * 0.70)],
+        order[int(n * 0.70) : int(n * 0.85)],
+        order[int(n * 0.85) :],
+    )
     gbm = GBMModel.train(x[tr], y[tr], x[va], y[va], names, seed=seed, num_boost_round=300)
     clean = x[tr][y[tr] == 0]
     rng = np.random.default_rng(seed)
@@ -63,27 +70,33 @@ def evaluate(path: Path, *, seed: int = 42) -> dict[str, Any]:
     stacker = Stacker.fit(
         [(0.0, m, a) for m, a in zip(ml_va, an_va, strict=True)],
         y[va].tolist(),
-        min_rule_coef=0.0,
         seed=seed,
     )
     ml_te, an_te = gbm.predict(x[te]), anomaly(x[te])
     hybrid = np.asarray([stacker.predict(0.0, m, a) for m, a in zip(ml_te, an_te, strict=True)])
     y_te, a_te = y[te], amount[te]
-    out = {
-        name: M.evaluate(y_te.tolist(), s.tolist(), a_te.tolist())
-        for name, s in (("gbm", ml_te), ("anomaly", an_te), ("hybrid", hybrid))
-    }
-    # calibration: Brier score + mean predicted vs observed fraud rate
-    for name, s in (("gbm", ml_te), ("hybrid", hybrid)):
-        out[name]["brier"] = round(float(np.mean((s - y_te) ** 2)), 6)
-        out[name]["mean_score"] = round(float(np.mean(s)), 6)
+    scores = {"gbm": ml_te, "anomaly": an_te, "hybrid": hybrid}
+    ci = bootstrap(y_te, scores, rounds=rounds, chain=(), baseline="gbm", versus=("hybrid",))
+    out: dict[str, Any] = {}
+    for name, s in scores.items():
+        m = layer_metrics(y_te, s, a_te)
+        m["pr_auc_ci95"] = ci[name]["pr_auc"]
+        m["roc_auc_ci95"] = ci[name]["roc_auc"]
+        for b in BUDGETS:
+            m[f"budget_{b:g}"]["recall_ci95"] = ci[name][f"recall_{b:g}"]
+        out[name] = m
+    for name in ("gbm", "hybrid"):
+        out[name]["calibration"] = M.calibration(y_te, scores[name])
     return {
         "rows": {"train": len(tr), "valid": len(va), "test": len(te)},
         "test_fraud": int(y_te.sum()),
         "test_fraud_rate": round(float(y_te.mean()), 5),
         "results": out,
+        "hybrid_minus_gbm_pr_auc_ci95": ci["vs_baseline_pr_auc"]["hybrid"],
+        "stacker": stacker.to_dict(),
+        "bootstrap": {"rounds": rounds, "method": "stratified percentile (pos/neg ayrı)"},
         "limitation": (
-            "Özellikler PCA bileşenleri: kural motoru, feature store ve graf katmanı "
-            "uygulanamaz; yalnızca GBM + anomali + kalibrasyon hattı test edilir."
+            "Yalnızca ML yığını test edilir: özellikler PCA bileşenleri olduğu için kural "
+            "motoru, feature store, graf katmanı ve politika uygulanamaz."
         ),
     }
