@@ -37,6 +37,7 @@ from app.agents.transaction_monitor import TransactionMonitor
 from app.bus.memory import InMemoryBus
 from app.bus.redis_streams import RedisStreamsBus
 from app.bus.writebehind import WriteBehindQueue
+from app.cases.governance import DecisionLogicGovernance
 from app.cases.service import OPEN_STATUSES, CaseService
 from app.config import Settings, get_settings
 from app.copilot.agent import CopilotAgent
@@ -160,6 +161,9 @@ class Pipeline:
         self._live: set[asyncio.Queue[dict[str, Any]]] = set()
         self.recent_live: deque[dict[str, Any]] = deque(maxlen=2000)
         self.cases.handlers["MODEL_PROMOTE"] = self._approve_promotion
+        self.governance = DecisionLogicGovernance(db, analyst.engine, writer)
+        self.cases.handlers["RULE_CHANGE"] = self.governance.apply_rule_change
+        self.cases.handlers["POLICY_THRESHOLDS"] = self.governance.apply_thresholds
         self.results: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._waiters: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._stream_task: asyncio.Task[None] | None = None
@@ -226,12 +230,20 @@ class Pipeline:
         for tx_id in tx_ids:
             await self.engine.apply_feedback(tx_id, "clean" if feedback == "clean" else "fraud")
 
-    async def step_up_result(self, tx_id: str, *, success: bool, actor: str) -> dict[str, Any]:
+    async def step_up_result(
+        self,
+        tx_id: str,
+        *,
+        success: bool,
+        actor: str,
+        expected_customer: str | None = None,
+    ) -> dict[str, Any]:
         """Outcome of the step-up challenge (OTP) of a STEP_UP decision.
 
         A passed challenge proves the customer made the payment, so the new
         device and payee are learned as verified; a failed one teaches nothing
-        and is audited.
+        and is audited. ``expected_customer`` is the customer the one-time
+        challenge was issued for (HTTP path); a mismatch is refused.
         """
         event = self.results.get(tx_id)
         if event is None:
@@ -241,6 +253,8 @@ class Pipeline:
             event = stored
         if event.get("decision") != "STEP_UP":
             raise ValueError(f"{tx_id} için step-up istenmedi (karar {event.get('decision')})")
+        if expected_customer is not None and str(event.get("customer_id")) != expected_customer:
+            raise ValueError(f"{tx_id} için step-up doğrulaması başka bir müşteriye ait")
         learned = await self.engine.apply_feedback(
             tx_id, "step_up_passed" if success else "step_up_failed"
         )

@@ -118,6 +118,8 @@ class AnalyzedTransactionOut(BaseModel):
     force_review: bool = False
     unknown_customer: bool = False
     account_blocked: bool = False
+    #: one-time id for ``POST /api/transactions/{id}/step-up-result`` (STEP_UP only)
+    step_up_challenge_id: str | None = None
     duplicate: bool = False
 
 

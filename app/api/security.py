@@ -27,7 +27,12 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.config import get_settings
 from app.monitoring import metrics, tracing
-from app.security.ratelimit import limiter, rate_limit_handler
+from app.security.ratelimit import (
+    auth_failures_exceeded,
+    limiter,
+    rate_limit_handler,
+    record_auth_failure,
+)
 
 logger = logging.getLogger("fraud.http")
 
@@ -49,6 +54,9 @@ _SECURITY_HEADERS = {
     b"permissions-policy": b"camera=(), microphone=(), geolocation=()",
     b"cross-origin-opener-policy": b"same-origin",
 }
+# HTTPS only (prod sits behind TLS); never sent outside prod so a plain-HTTP
+# dev server is not pinned in the browser.
+_HSTS = b"max-age=31536000; includeSubDomains"
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 
@@ -70,16 +78,24 @@ class RequestContextMiddleware:
         csp = DOCS_CSP if path.startswith(("/docs", "/redoc")) else STRICT_CSP
         started = time.perf_counter()
         status_holder: dict[str, Any] = {"status": 500}
+        client = scope.get("client")
+        client_ip = client[0] if client else "127.0.0.1"
+        hsts = get_settings().environment == "prod"
 
         async def send_wrapper(message: Message) -> None:
             if message["type"] == "http.response.start":
                 status_holder["status"] = message["status"]
+                if message["status"] == 401:
+                    # credential guessing: every 401 counts against the client IP
+                    record_auth_failure(client_ip)
                 raw = list(message.get("headers", []))
                 present = {k.lower() for k, _ in raw}
                 for key, value in _SECURITY_HEADERS.items():
                     if key not in present:
                         raw.append((key, value))
                 raw.append((b"content-security-policy", csp.encode()))
+                if hsts and b"strict-transport-security" not in present:
+                    raw.append((b"strict-transport-security", _HSTS))
                 raw.append((b"x-request-id", request_id.encode()))
                 message["headers"] = raw
             await send(message)
@@ -87,6 +103,14 @@ class RequestContextMiddleware:
         structlog.contextvars.bind_contextvars(request_id=request_id)
         method = str(scope.get("method", ""))
         try:
+            if auth_failures_exceeded(client_ip):
+                blocked = JSONResponse(
+                    status_code=429,
+                    content={"detail": "Çok fazla başarısız kimlik doğrulama — hız sınırı aşıldı"},
+                    headers={"Retry-After": "60"},
+                )
+                await blocked(scope, receive, send_wrapper)
+                return
             with tracing.span(f"HTTP {method}", **{"http.target": path, "request_id": request_id}):
                 await self.app(scope, receive, send_wrapper)
         finally:

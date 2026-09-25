@@ -44,3 +44,4 @@ data/external/
 
 # Prometheus scrape token (same value as METRICS_TOKEN)
 ops/prometheus/metrics_token
+ops/grafana/admin_password

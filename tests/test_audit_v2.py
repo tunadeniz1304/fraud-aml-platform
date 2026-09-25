@@ -148,7 +148,7 @@ async def test_a1_rejected_copilot_output_is_recorded_not_silent(pipeline: Any) 
 # --- A2: STEP_UP false-positive loop ----------------------------------------------------------
 async def test_a2_passed_step_up_teaches_the_new_device(pipeline: Any) -> None:
     c = _customers()[5]
-    now = datetime.now()
+    now = datetime.now().replace(hour=11, minute=0)  # daytime: hour rules stay quiet
     kw = {"device_id": "DEV-NEWPHONE-01", "beneficiary_id": "TR330006100519786457841326"}
     avg = float(c.get("avg_amount") or 1000)
     first = await pipeline.ingest(_transfer(c, "TX-SU-0001", now, avg * 6, **kw))
@@ -601,9 +601,14 @@ def test_c19_rate_limit_bucket_is_per_client() -> None:
         raw = [(k.lower().encode(), v.encode()) for k, v in headers.items()]
         return Request({"type": "http", "headers": raw, "client": ("10.0.0.1", 1)})
 
+    from app.security.auth import Principal
+
+    # one bucket per authenticated principal; the credential never becomes a key
     a, b = req({"X-API-Key": "key-a"}), req({"X-API-Key": "key-b"})
+    a.state.principal = Principal("svc-a", "service", via="api_key")
+    b.state.principal = Principal("svc-b", "service", via="api_key")
     assert ingest_rate_key(a) != ingest_rate_key(b)
-    assert "key-a" not in ingest_rate_key(a)  # only a hash prefix
+    assert "key-a" not in ingest_rate_key(a)
     assert ingest_rate_key(req({})) == "ip:10.0.0.1"
 
 

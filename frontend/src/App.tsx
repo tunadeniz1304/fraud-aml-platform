@@ -15,7 +15,7 @@ const NAV: { hash: string; label: string; senior?: boolean }[] = [
   { hash: "#/rules", label: "Kural stüdyosu" },
   { hash: "#/models", label: "Model izleme" },
   { hash: "#/validation", label: "Doğrulama", senior: true },
-  { hash: "#/scenarios", label: "Senaryo (demo)" },
+  { hash: "#/scenarios", label: "Senaryo (demo)", senior: true },
 ];
 
 const FOCUS = "focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-950";
@@ -127,7 +127,7 @@ export default function App() {
             {llm && <span title="LLM modu">LLM: {llm}</span>}
             <span aria-label="Rol">{auth.role()}</span>
             <Button variant="ghost" onClick={() => setDark(!dark)} aria-label={dark ? "Açık temaya geç" : "Koyu temaya geç"}><span aria-hidden="true">{dark ? "☀︎" : "☾"}</span></Button>
-            <Button variant="ghost" onClick={() => { auth.clear(); window.location.hash = "#/login"; }}>Çıkış</Button>
+            <Button variant="ghost" onClick={() => { api("/api/auth/logout", { method: "POST" }).catch(() => undefined).finally(() => { auth.clear(); window.location.hash = "#/login"; }); }}>Çıkış</Button>
           </div>
         </div>
       </header>

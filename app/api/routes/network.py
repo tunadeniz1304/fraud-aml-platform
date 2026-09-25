@@ -14,7 +14,10 @@ from app.scenarios import SCENARIOS, ScenarioError
 from app.security.deps import require_role
 
 router = APIRouter(prefix="/api", tags=["network"])
+#: demo scenario injector — mounted only outside prod (see create_app)
+scenario_router = APIRouter(prefix="/api", tags=["scenarios"])
 analyst = Depends(require_role("analist"))
+senior = Depends(require_role("kidemli_analist"))
 
 
 class ConfirmIn(BaseModel):
@@ -88,12 +91,14 @@ async def app_confirmation(transaction_id: str, body: ConfirmIn) -> dict[str, An
 
 
 # --- scenario injector ("Demo modu") -----------------------------------------------------
-@router.get("/scenarios", dependencies=[analyst])
+# Injects synthetic fraud into the live pipeline (cases, blocks, profile
+# feedback): senior-only, and not mounted at all when ENVIRONMENT=prod.
+@scenario_router.get("/scenarios", dependencies=[senior])
 async def list_scenarios() -> list[dict[str, str]]:
     return [{"name": name, **meta} for name, meta in SCENARIOS.items()]
 
 
-@router.post("/scenarios/{name}", dependencies=[analyst])
+@scenario_router.post("/scenarios/{name}", dependencies=[senior])
 async def run_scenario(name: str, customer_id: str | None = None) -> dict[str, Any]:
     if name not in SCENARIOS:
         raise HTTPException(status_code=404, detail="Bilinmeyen senaryo")

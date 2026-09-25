@@ -40,6 +40,7 @@ from app.config import get_settings
 from app.monitoring.logging import configure_logging
 from app.monitoring.tracing import setup_tracing
 from app.security.auth import UserDirectory
+from app.security.startup import enforce_startup_policy
 
 logger = logging.getLogger("fraud.dashboard")
 
@@ -49,6 +50,7 @@ PipelineFactory = Callable[[], Awaitable[Any]]
 def create_app(pipeline_factory: PipelineFactory | None = None) -> FastAPI:
     """Build the FastAPI app. ``pipeline_factory`` lets tests inject a pipeline."""
     settings = get_settings()
+    enforce_startup_policy(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -88,6 +90,8 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> FastAPI:
     app.include_router(rules.router)
     app.include_router(cases.router)
     app.include_router(network.router)
+    if settings.environment != "prod":
+        app.include_router(network.scenario_router)
     app.include_router(copilot.router)
     app.include_router(models.router)
     app.include_router(live.router)

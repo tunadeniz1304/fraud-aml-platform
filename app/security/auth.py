@@ -37,6 +37,9 @@ ROLE_LABELS = {
     "admin": "Yönetici",
     "service": "Servis",
 }
+#: audit identity of the static ADMIN_TOKEN — the ``:`` keeps it out of the
+#: user namespace, so it can never equal (or impersonate) a directory user
+BREAK_GLASS_USERNAME = "break-glass:admin-token"
 _PBKDF2_ROUNDS = 120_000
 _ALGORITHM = "HS256"
 
@@ -55,6 +58,9 @@ class Principal:
     role: Role
     display_name: str = ""
     via: str = "jwt"
+    # JWT id and expiry (unix s) — used by logout/revocation; not part of identity
+    token_id: str = field(default="", compare=False)
+    expires_at: int = field(default=0, compare=False)
 
     def has_role(self, minimum: Role) -> bool:
         return ROLE_RANK.get(self.role, -1) >= ROLE_RANK[minimum]
@@ -121,6 +127,8 @@ class UserDirectory:
         return cls.with_demo_users()
 
     def add(self, username: str, role: Role, display_name: str, password: str) -> None:
+        if not username or ":" in username:
+            raise ValueError("Kullanıcı adı boş olamaz ve ':' içeremez")
         self.users[username] = UserRecord(username, role, display_name, hash_password(password))
 
     def authenticate(self, username: str, password: str) -> Principal:
@@ -161,6 +169,7 @@ def issue_token(principal: Principal, *, ttl_minutes: int | None = None) -> tupl
         "iat": now,
         "exp": now + ttl,
         "iss": "anil3-fraud",
+        "jti": secrets.token_urlsafe(16),
     }
     return jwt.encode(payload, _jwt_secret(), algorithm=_ALGORITHM), ttl
 
@@ -175,7 +184,15 @@ def decode_token(token: str) -> Principal:
     role = data.get("role")
     if role not in ROLE_RANK:
         raise AuthError("Geçersiz rol")
-    return Principal(str(data["sub"]), role, str(data.get("name", "")))
+    if not data.get("jti"):
+        raise AuthError("Geçersiz token")
+    return Principal(
+        str(data["sub"]),
+        role,
+        str(data.get("name", "")),
+        token_id=str(data["jti"]),
+        expires_at=int(data.get("exp", 0)),
+    )
 
 
 # --- static credentials ----------------------------------------------------------

@@ -78,8 +78,13 @@ class TestLifecycle:
         bad = client.post(f"/api/cases/{cid}/status", json={"status": "YENI"}, headers=ANALYST)
         assert bad.status_code == 409
 
-        decided = client.post(
+        # M5: a FRAUD closure needs a senior analyst
+        junior = client.post(
             f"/api/cases/{cid}/decision", json={"outcome": "FRAUD"}, headers=ANALYST
+        )
+        assert junior.status_code == 403 and "kıdemli" in junior.json()["detail"]
+        decided = client.post(
+            f"/api/cases/{cid}/decision", json={"outcome": "FRAUD"}, headers=SENIOR
         ).json()
         assert decided["status"] == "KAPANDI_FRAUD"
 
@@ -102,7 +107,7 @@ class TestLifecycle:
         assert final["status"] == "SIB_GONDERILDI" and final["sib_draft"]["masak_reference"]
 
         audit = {
-            row["event_type"] for row in client.get("/api/audit?limit=200", headers=ANALYST).json()
+            row["event_type"] for row in client.get("/api/audit?limit=200", headers=SENIOR).json()
         }
         assert {"CASE_OPENED", "CASE_ASSIGNED", "CASE_DECISION", "APPROVAL_DECIDED"} <= audit
         assert client.get("/api/audit/verify", headers=ANALYST).json()["ok"] is True

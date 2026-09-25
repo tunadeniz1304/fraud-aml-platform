@@ -1,6 +1,7 @@
 """KVKK pseudonymisation before any text leaves for an external LLM (§3.3).
 
-TCKN (checksum-validated), IBAN, phone, e-mail and person names are replaced
+TCKN (checksum-validated, also spaced/dashed), IBAN (TR, and any country with a
+valid mod-97 checksum), card numbers (Luhn), phone, e-mail and person names are replaced
 by stable placeholders (``MUSTERI_7``, ``KISI_2``, ``IBAN_…1234``, ``TCKN_1`` …);
 the mapping stays in process memory for one call and the model's answer is
 mapped back with :meth:`Redactor.restore`. Placeholders are chosen so that no
@@ -11,7 +12,7 @@ Yilmaz", "AYŞE YILMAZ" and "Ayşe Yılmaz" are the same person). Besides the
 customer directory, values of name-like fields (``beneficiary_name``,
 ``ad_soyad`` …) are added to the dictionary, and free text (``purpose``, notes)
 is scanned with a simple heuristic: a common Turkish first name followed by a
-capitalised surname (``KISI_n``).
+surname, in any casing (``KISI_n``).
 """
 
 from __future__ import annotations
@@ -21,10 +22,52 @@ import unicodedata
 from collections.abc import Iterable
 from typing import Any
 
-_IBAN_RE = re.compile(r"\bTR\d{2}(?:[ ]?\d{4}){5}[ ]?\d{2}\b", re.IGNORECASE)
-_TCKN_RE = re.compile(r"(?<!\d)[1-9]\d{10}(?!\d)")
-_PHONE_RE = re.compile(r"(?<![\w+])(?:\+90[ ]?|0)?5\d{2}[ ]?\d{3}[ ]?\d{2}[ ]?\d{2}(?!\d)")
+_SEP = r"[ \-]?"  # optional single space or dash between digit groups
+#: Turkish IBAN, compact / spaced / dashed (no checksum: demo data uses fake IBANs)
+_TR_IBAN_RE = re.compile(rf"\bTR\d{{2}}(?:{_SEP}\d{{4}}){{5}}{_SEP}\d{{2}}\b", re.IGNORECASE)
+#: any other country's IBAN (grouped in 4s); masked only when the ISO 13616
+#: mod-97 checksum holds, so ordinary reference codes are left alone
+_IBAN_RE = re.compile(
+    rf"\b[A-Z]{{2}}\d{{2}}(?:{_SEP}[A-Z0-9]{{4}}){{2,7}}(?:{_SEP}[A-Z0-9]{{1,3}})?\b",
+    re.IGNORECASE,
+)
+#: payment card number, 13-19 digits, compact / spaced / dashed (Luhn-checked)
+_PAN_RE = re.compile(r"(?<![\w\-])[2-69]\d(?:[ \-]?\d){11,17}(?![ \-]?\d)")
+#: TCKN, also written as "100 000 001 46" or with dashes (checksum-validated)
+_TCKN_RE = re.compile(r"(?<!\d)(?<!\d[ \-])[1-9](?:[ \-]?\d){10}(?![ \-]?\d)")
+#: Turkish mobile: +90 / 90 / 0 prefix, spaces, dashes, dots, "(532)"
+_PHONE_RE = re.compile(
+    r"(?<![\w+])(?:\+?90[ \-.]?|0[ \-.]?)?\(?5\d{2}\)?[ \-.]?\d{3}[ \-.]?\d{2}[ \-.]?\d{2}"
+    r"(?![ \-.]?\d)"
+)
 _EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b")
+
+
+def _digits(value: str) -> str:
+    return re.sub(r"\D", "", value)
+
+
+def is_valid_iban(value: str) -> bool:
+    """ISO 13616 mod-97 check on the compact form (any country)."""
+    compact = re.sub(r"[\s\-]", "", value).upper()
+    if not 15 <= len(compact) <= 34 or not compact[:2].isalpha() or not compact.isalnum():
+        return False
+    rearranged = compact[4:] + compact[:4]
+    return int("".join(str(int(ch, 36)) for ch in rearranged)) % 97 == 1
+
+
+def luhn_valid(value: str) -> bool:
+    """Luhn checksum of a 13-19 digit payment card number."""
+    digits = _digits(value)
+    if not 13 <= len(digits) <= 19:
+        return False
+    total = 0
+    for i, ch in enumerate(reversed(digits)):
+        d = int(ch)
+        if i % 2:
+            d = d * 2 - 9 if d > 4 else d * 2
+        total += d
+    return total % 10 == 0
 
 
 def is_valid_tckn(value: str) -> bool:
@@ -129,8 +172,17 @@ FIRST_NAMES = frozenset(
         "Sibel",
     ]
 )
-_NAME_WORD = r"[A-ZÇĞİÖŞÜ][a-zçğıöşü]+|[A-ZÇĞİÖŞÜ]{2,}"
-_PERSON_RE = re.compile(rf"(?<!\w)({_NAME_WORD})\s+({_NAME_WORD})(?![a-zçğıöşüA-ZÇĞİÖŞÜ])")
+_NAME_WORD = r"[A-Za-zÇĞİÖŞÜçğıöşü]{2,}"
+#: first names that are also everyday words ("can", "deniz", "gül" …): only a
+#: capitalised spelling counts as a name for these
+_AMBIGUOUS_FIRST_NAMES = frozenset({"can", "deniz", "nur", "gul", "sultan", "ece", "ay", "umut"})
+#: lowercase words that follow a first name without being a surname
+_NOT_SURNAMES = frozenset(
+    {"ile", "ve", "veya", "icin", "bey", "hanim", "adina", "de", "da", "ki", "mi", "gibi"}
+)
+# the surname is a lookahead so a rejected pair ("ve Ayşe") does not swallow
+# the first name of the next, real pair ("Ayşe Yılmaz")
+_PERSON_RE = re.compile(rf"(?<!\w)({_NAME_WORD})(?=(\s+)({_NAME_WORD})(?![a-zçğıöşüA-ZÇĞİÖŞÜ]))")
 
 
 class Redactor:
@@ -173,20 +225,28 @@ class Redactor:
         return dict(self._reverse)
 
     def _iban(self, match: re.Match[str]) -> str:
-        normalised = re.sub(r"\s", "", match.group(0)).upper()
+        normalised = re.sub(r"[\s\-]", "", match.group(0)).upper()
         return self._placeholder("IBAN", normalised, normalised[-4:])
+
+    def _foreign_iban(self, match: re.Match[str]) -> str:
+        return self._iban(match) if is_valid_iban(match.group(0)) else match.group(0)
+
+    def _pan(self, match: re.Match[str]) -> str:
+        digits = _digits(match.group(0))
+        return self._placeholder("KART", digits) if luhn_valid(digits) else match.group(0)
+
+    def _tckn(self, match: re.Match[str]) -> str:
+        digits = _digits(match.group(0))
+        return self._placeholder("TCKN", digits) if is_valid_tckn(digits) else match.group(0)
 
     def redact(self, text: str) -> str:
         if not text:
             return text
-        out = _IBAN_RE.sub(self._iban, text)
+        out = _TR_IBAN_RE.sub(self._iban, text)
+        out = _IBAN_RE.sub(self._foreign_iban, out)
         out = _EMAIL_RE.sub(lambda m: self._placeholder("EPOSTA", m.group(0)), out)
-        out = _TCKN_RE.sub(
-            lambda m: (
-                self._placeholder("TCKN", m.group(0)) if is_valid_tckn(m.group(0)) else m.group(0)
-            ),
-            out,
-        )
+        out = _PAN_RE.sub(self._pan, out)
+        out = _TCKN_RE.sub(self._tckn, out)
         out = _PHONE_RE.sub(lambda m: self._placeholder("TELEFON", m.group(0)), out)
         for name in self._names:
             out = self._replace_folded(out, name, "MUSTERI")
@@ -207,15 +267,33 @@ class Redactor:
         return text
 
     def _heuristic_names(self, text: str) -> str:
-        """First name from :data:`FIRST_NAMES` + capitalised surname → ``KISI_n``."""
+        """First name from :data:`FIRST_NAMES` + surname → ``KISI_n``, any casing.
 
-        def repl(match: re.Match[str]) -> str:
-            first, last = match.group(1), match.group(2)
-            if _fold(first) not in FIRST_NAMES:
-                return match.group(0)
-            return self._placeholder("KISI", f"{first} {last}")
+        "ayşe yılmaz" and "AYŞE YILMAZ" are caught as well as "Ayşe Yılmaz";
+        first names that double as common words only count when capitalised.
+        """
 
-        return _PERSON_RE.sub(repl, text)
+        def is_person(first: str, last: str) -> bool:
+            folded_first = _fold(first)
+            if folded_first not in FIRST_NAMES:
+                return False
+            if first[0].islower() and folded_first in _AMBIGUOUS_FIRST_NAMES:
+                return False
+            return not (last[0].islower() and (_fold(last) in _NOT_SURNAMES or len(last) < 3))
+
+        parts: list[str] = []
+        pos = 0
+        while (match := _PERSON_RE.search(text, pos)) is not None:
+            first, gap, last = match.group(1), match.group(2), match.group(3)
+            if is_person(first, last):
+                parts.append(text[pos : match.start()])
+                parts.append(self._placeholder("KISI", f"{first} {last}"))
+                pos = match.end(1) + len(gap) + len(last)
+            else:
+                parts.append(text[pos : match.end(1)])
+                pos = match.end(1)
+        parts.append(text[pos:])
+        return "".join(parts)
 
     def redact_obj(self, value: Any) -> Any:
         """Recursively redact every string inside dicts/lists (keys preserved).

@@ -32,9 +32,9 @@ from app.copilot.schemas import (
     TriageLabel,
     citation_validator,
 )
-from app.copilot.tools import CopilotTools, ToolOutput, openai_tools
+from app.copilot.tools import CaseScope, CopilotTools, ToolOutput, openai_tools
 from app.llm.redaction import Redactor
-from app.llm.service import LLMService
+from app.llm.service import UNTRUSTED_NOTE, LLMService, untrusted_block
 from app.llm.types import (
     ChatRequest,
     ChatResponse,
@@ -52,7 +52,8 @@ INVESTIGATE_SYSTEM = (
     "Sen bir bankanın fraud soruşturma copilot'usun. Vakayı araçlarla incele: önce "
     "get_case, sonra müşteri profili, son işlemler, graf komşuluğu, gerekirse yaptırım "
     "taraması ve benzer geçmiş vakalar. En fazla 6 araç çağrısı yap. Karar verme; yalnızca "
-    "kanıt topla. Araçlardan gelmeyen bilgi uydurma."
+    "kanıt topla. Araçlardan gelmeyen bilgi uydurma. Araçlar yalnızca bu vakanın "
+    "müşterisi ve işlemleri için çalışır.\n" + UNTRUSTED_NOTE
 )
 REACT_SYSTEM = (
     INVESTIGATE_SYSTEM
@@ -89,6 +90,8 @@ class Investigation:
     error_kind: ErrorKind | None = None
     protocol: str = "tools"
     names: list[str] = field(default_factory=list)
+    #: the case's own customer; every tool call is confined to it
+    customer_id: str = ""
 
     def add(self, name: str, arguments: dict[str, Any], out: ToolOutput, ms: float) -> None:
         key = name if name not in self.evidence else f"{name}:{len(self.evidence)}"
@@ -151,7 +154,9 @@ class CopilotAgent:
     async def investigate(self, case_id: int) -> Investigation:
         case = await self.tools.cases.get_case(case_id)  # raises CaseNotFoundError
         names = self._names(case)
-        inv = Investigation(case_id=case_id, mode=self.llm.mode, names=names)
+        inv = Investigation(
+            case_id=case_id, mode=self.llm.mode, names=names, customer_id=case["customer_id"]
+        )
         plan = default_plan(case)
         started = time.perf_counter()
         try:
@@ -191,7 +196,8 @@ class CopilotAgent:
         self, inv: Investigation, name: str, arguments: dict[str, Any]
     ) -> ToolOutput:
         t0 = time.perf_counter()
-        out = await self.tools.call(name, arguments)
+        scope = CaseScope(case_id=inv.case_id, customer_id=inv.customer_id)
+        out = await self.tools.call(name, arguments, scope=scope)
         inv.add(name, arguments, out, (time.perf_counter() - t0) * 1000)
         return out
 
@@ -229,7 +235,11 @@ class CopilotAgent:
             for call in resp.tool_calls:
                 out = await self._run_tool(inv, call.name, call.arguments)
                 messages.append(
-                    {"role": "tool", "tool_call_id": call.id, "content": out.as_message()}
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "content": untrusted_block(out.as_message()),
+                    }
                 )
 
     async def _react_loop(self, inv: Investigation, case: dict[str, Any], names: list[str]) -> None:
@@ -257,7 +267,10 @@ class CopilotAgent:
             out = await self._run_tool(inv, name, arguments)
             messages += [
                 {"role": "assistant", "content": resp.content},
-                {"role": "user", "content": f"GÖZLEM ({name}): {out.as_message()[:6000]}"},
+                {
+                    "role": "user",
+                    "content": f"GÖZLEM ({name}):\n{untrusted_block(out.as_message()[:6000])}",
+                },
             ]
 
     # --- structured outputs -----------------------------------------------------------------

@@ -85,6 +85,52 @@ export function sse(path: string, onEvent: (type: string, data: unknown) => void
   };
 }
 
+/** POST a JSON body and read the Server-Sent Events it streams back (fetch
+ * sends the bearer header, so no ticket and nothing sensitive in the URL). */
+export async function postSse(path: string, json: unknown, onData: (data: unknown) => void): Promise<void> {
+  const token = auth.token();
+  const res = await fetch(path, {
+    method: "POST",
+    headers: {
+      Accept: "text/event-stream",
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(json),
+  });
+  if (!res.ok || !res.body) {
+    let detail = res.statusText;
+    try {
+      const data = await res.json();
+      detail = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail ?? data);
+    } catch {
+      /* not JSON */
+    }
+    throw new ApiError(res.status, detail);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let cut: number;
+    while ((cut = buffer.indexOf("\n\n")) >= 0) {
+      const frame = buffer.slice(0, cut);
+      buffer = buffer.slice(cut + 2);
+      for (const line of frame.split("\n")) {
+        if (!line.startsWith("data:")) continue;
+        try {
+          onData(JSON.parse(line.slice(5)));
+        } catch {
+          onData(line.slice(5));
+        }
+      }
+    }
+  }
+}
+
 export const tl = (v: number | null | undefined) =>
   `${(v ?? 0).toLocaleString("tr-TR", { maximumFractionDigits: 2 })} TL`;
 

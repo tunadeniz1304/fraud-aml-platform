@@ -12,6 +12,7 @@ from app.api.state import state
 from app.config import get_settings
 from app.monitoring.metrics import REGISTRY
 from app.security.auth import constant_time_equals
+from app.security.deps import principal_from_token
 
 router = APIRouter(tags=["system"])
 
@@ -27,8 +28,24 @@ async def live() -> dict[str, str]:
     return {"status": "live"}
 
 
+def _bearer_token(request: Request) -> str:
+    scheme, _, token = request.headers.get("authorization", "").partition(" ")
+    return token.strip() if scheme.lower() == "bearer" else ""
+
+
+def _authenticated(request: Request) -> bool:
+    token = _bearer_token(request)
+    if not token:
+        return False
+    try:
+        principal_from_token(token)
+    except HTTPException:
+        return False
+    return True
+
+
 @router.get("/api/health/ready")
-async def ready() -> JSONResponse:
+async def ready(request: Request) -> JSONResponse:
     checks: dict[str, bool] = {"pipeline": state.wired}
     pipeline = state.pipeline
     if pipeline is not None:
@@ -41,7 +58,9 @@ async def ready() -> JSONResponse:
     ok = all(checks.values())
     info: dict[str, Any] = {}
     engine = getattr(getattr(pipeline, "analyst", None), "engine", None)
-    if engine is not None:
+    # Model/ruleset versions help an attacker fingerprint the deployment: only
+    # an authenticated caller sees them; probes get the checks alone.
+    if engine is not None and _authenticated(request):
         # A missing model degrades to rules-only scoring; it is reported, not fatal.
         info["model"] = engine.model.version if engine.model else "yalnız-kurallar"
         info["challenger"] = engine.challenger.version if engine.challenger else None
@@ -63,7 +82,7 @@ async def metrics(request: Request) -> Response:
         expected = settings.metrics_token.get_secret_value()
         if not expected:
             raise HTTPException(status_code=404)
-        given = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+        given = _bearer_token(request)
         if not constant_time_equals(given, expected):
             raise HTTPException(status_code=401, detail="Metrik token'ı gerekli")
     return Response(generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)

@@ -126,7 +126,7 @@ class TestScenarioFactory:
 
 class TestNetworkApi:
     def test_endpoints(self, demo_env):
-        token, _ = issue_token(Principal("analist", "analist", "analist"))
+        token, _ = issue_token(Principal("kidemli_analist", "kidemli_analist", "kidemli"))
         h = {"Authorization": f"Bearer {token}"}
         with TestClient(create_app()) as client:
             listed = client.get("/api/scenarios", headers=h).json()
@@ -167,7 +167,7 @@ class TestNetworkApi:
         monkeypatch.setenv("STREAM_MODE", "off")
         monkeypatch.setenv("FRAUD_CUSTOMERS_PATH", str(LEGACY_CUSTOMERS))
         get_settings.cache_clear()
-        token, _ = issue_token(Principal("analist", "analist", "analist"))
+        token, _ = issue_token(Principal("kidemli_analist", "kidemli_analist", "kidemli"))
         with TestClient(create_app()) as client:
             r = client.post(
                 "/api/scenarios/mule_ring", headers={"Authorization": f"Bearer {token}"}

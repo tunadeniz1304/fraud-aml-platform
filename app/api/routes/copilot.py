@@ -10,15 +10,18 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
 from app.api.deps import require_pipeline
+from app.api.downloads import content_disposition
 from app.cases.service import CaseError, CaseNotFoundError
 from app.copilot.agent import CopilotAgent
 from app.copilot.sib_export import render_sib_pdf
 from app.security.auth import Principal
-from app.security.deps import require_role, stream_principal
+from app.security.deps import require_role
+from app.security.ratelimit import copilot_limit, limiter, principal_rate_key
 
 router = APIRouter(prefix="/api/cases", tags=["copilot"])
 analyst = require_role("analist")
@@ -42,7 +45,10 @@ def _response(result: Any, inv: Any, key: str) -> dict[str, Any]:
 
 
 @router.post("/{case_id}/copilot/summary")
-async def summary(case_id: int, principal: Principal = Depends(analyst)) -> dict[str, Any]:
+@limiter.limit(copilot_limit, key_func=principal_rate_key)
+async def summary(
+    request: Request, case_id: int, principal: Principal = Depends(analyst)
+) -> dict[str, Any]:
     try:
         result, inv = await _agent().summarize(case_id)
     except CaseNotFoundError:
@@ -54,7 +60,8 @@ async def summary(case_id: int, principal: Principal = Depends(analyst)) -> dict
 
 
 @router.post("/{case_id}/copilot/recommendation", dependencies=[Depends(analyst)])
-async def recommendation(case_id: int) -> dict[str, Any]:
+@limiter.limit(copilot_limit, key_func=principal_rate_key)
+async def recommendation(request: Request, case_id: int) -> dict[str, Any]:
     try:
         result, inv = await _agent().recommend(case_id)
     except CaseNotFoundError:
@@ -65,7 +72,10 @@ async def recommendation(case_id: int) -> dict[str, Any]:
 
 
 @router.post("/{case_id}/copilot/sib")
-async def sib(case_id: int, principal: Principal = Depends(analyst)) -> dict[str, Any]:
+@limiter.limit(copilot_limit, key_func=principal_rate_key)
+async def sib(
+    request: Request, case_id: int, principal: Principal = Depends(analyst)
+) -> dict[str, Any]:
     try:
         result, inv = await _agent().sib_draft(case_id)
         await require_pipeline().cases.save_sib_draft(
@@ -94,7 +104,7 @@ async def sib_json(case_id: int) -> Response:
     return Response(
         json.dumps(draft, ensure_ascii=False, indent=2, default=str),
         media_type="application/json",
-        headers={"Content-Disposition": f'attachment; filename="SIB-vaka-{case_id}.json"'},
+        headers={"Content-Disposition": content_disposition(f"SIB-vaka-{case_id}.json")},
     )
 
 
@@ -104,19 +114,22 @@ async def sib_pdf(case_id: int) -> Response:
     return Response(
         render_sib_pdf(draft),
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="SIB-vaka-{case_id}.pdf"'},
+        headers={"Content-Disposition": content_disposition(f"SIB-vaka-{case_id}.pdf")},
     )
 
 
-@router.get("/{case_id}/chat")
-async def chat(
-    case_id: int,
-    q: str = Query(..., min_length=2, max_length=500),
-    principal: Principal = Depends(stream_principal),
-) -> StreamingResponse:
-    """Analyst chat about a case, streamed as Server-Sent Events."""
-    if not principal.has_role("analist"):
-        raise HTTPException(status_code=403, detail="En az 'analist' rolü gerekli")
+class ChatIn(BaseModel):
+    question: str = Field(min_length=2, max_length=500)
+
+
+@router.post("/{case_id}/chat", dependencies=[Depends(analyst)])
+@limiter.limit(copilot_limit, key_func=principal_rate_key)
+async def chat(request: Request, case_id: int, body: ChatIn) -> StreamingResponse:
+    """Analyst chat about a case, streamed as Server-Sent Events.
+
+    POST with the question in the JSON body (it may contain customer details;
+    a query string would end up in access logs and browser history)."""
+    q = body.question
     agent = _agent()
     try:
         await require_pipeline().cases.get_case(case_id)

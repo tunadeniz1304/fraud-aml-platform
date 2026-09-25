@@ -3,8 +3,9 @@
 A rule's ``when`` clause (e.g. ``is_new_payee and amount_ratio >= 5``) is
 parsed with :mod:`ast`, checked against a strict node whitelist and compiled
 into a tree of Python closures. Only feature names, numeric/string/bool
-literals, arithmetic, comparisons, boolean logic, literal tuples/lists (for
-``in``) and a few whitelisted functions are allowed — no attribute access, no
+literals (length and magnitude capped), numeric-only arithmetic (no ``**``),
+comparisons, boolean logic, literal tuples/lists (for ``in``) and a few
+whitelisted functions are allowed — no attribute access, no
 subscripts, no comprehensions, no lambdas, no arbitrary calls. Unknown names
 are rejected at compile time, so a typo in a rule fails on load, not in prod.
 """
@@ -21,13 +22,27 @@ from typing import Any
 Env = Mapping[str, Any]
 Node = Callable[[Env], Any]
 
+
+def _numeric(fn: Callable[[Any, Any], Any]) -> Callable[[Any, Any], Any]:
+    """Arithmetic on numbers only: ``"x" * 10**9`` or list repetition would let a
+    rule author allocate unbounded memory on the scoring path."""
+
+    def apply(a: Any, b: Any) -> Any:
+        if not isinstance(a, int | float) or not isinstance(b, int | float):
+            raise TypeError("aritmetik yalnızca sayısal değerlerle yapılır")
+        return fn(a, b)
+
+    return apply
+
+
+# no ast.Pow: 10 ** 10 ** 10 is a CPU/memory bomb
 _BINOPS: dict[type[ast.operator], Callable[[Any, Any], Any]] = {
-    ast.Add: operator.add,
-    ast.Sub: operator.sub,
-    ast.Mult: operator.mul,
-    ast.Div: lambda a, b: a / b if b else 0.0,  # division by zero -> 0, never raise
-    ast.FloorDiv: lambda a, b: a // b if b else 0.0,
-    ast.Mod: lambda a, b: a % b if b else 0.0,
+    ast.Add: _numeric(operator.add),
+    ast.Sub: _numeric(operator.sub),
+    ast.Mult: _numeric(operator.mul),
+    ast.Div: _numeric(lambda a, b: a / b if b else 0.0),  # division by zero -> 0, never raise
+    ast.FloorDiv: _numeric(lambda a, b: a // b if b else 0.0),
+    ast.Mod: _numeric(lambda a, b: a % b if b else 0.0),
 }
 _CMPOPS: dict[type[ast.cmpop], Callable[[Any, Any], bool]] = {
     ast.Lt: operator.lt,
@@ -48,6 +63,9 @@ FUNCTIONS: dict[str, Callable[..., Any]] = {
 }
 _MAX_LENGTH = 500
 _MAX_NODES = 200
+#: literal caps: a rule compares features against thresholds and short codes
+_MAX_NUMBER = 1e15
+_MAX_STRING = 100
 
 
 class ExpressionError(ValueError):
@@ -93,6 +111,16 @@ def _compile(node: ast.AST, allowed: frozenset[str], names: set[str]) -> Node:
         if not isinstance(node.value, int | float | str | bool | type(None)):
             raise ExpressionError(f"izin verilmeyen sabit: {node.value!r}")
         value = node.value
+        if isinstance(value, str) and len(value) > _MAX_STRING:
+            raise ExpressionError(f"metin sabiti çok uzun (> {_MAX_STRING} karakter)")
+        if (
+            isinstance(value, int | float)
+            and not isinstance(value, bool)
+            and not abs(value) <= _MAX_NUMBER
+        ):
+            raise ExpressionError(
+                f"sayı sabiti izin verilen aralığın dışında (|x| > {_MAX_NUMBER:g})"
+            )
         return lambda env: value
     if isinstance(node, ast.Name):
         if node.id in ("True", "False", "None"):  # pragma: no cover - py<3.8 style

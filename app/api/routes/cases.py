@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.deps import require_pipeline
+from app.api.downloads import content_disposition
 from app.cases.service import (
     STATUSES,
     CaseError,
@@ -181,7 +182,12 @@ async def set_status(
     case_id: int, body: StatusIn, principal: Principal = Depends(analyst)
 ) -> dict[str, Any]:
     return await _call(
-        cases_service().set_status, case_id, body.status, principal.username, body.note
+        cases_service().set_status,
+        case_id,
+        body.status,
+        principal.username,
+        body.note,
+        role=principal.role,
     )
 
 
@@ -214,7 +220,9 @@ async def download_evidence(case_id: int, evidence_id: int) -> Response:
         content=base64.b64decode(payload.get("content_b64") or ""),
         media_type="application/octet-stream",
         headers={
-            "Content-Disposition": f'attachment; filename="{payload.get("filename", "kanit")}"',
+            "Content-Disposition": content_disposition(
+                str(payload.get("filename") or ""), fallback="kanit"
+            ),
             "X-Content-SHA256": str(payload.get("sha256", "")),
         },
     )
@@ -224,7 +232,14 @@ async def download_evidence(case_id: int, evidence_id: int) -> Response:
 async def decide(
     case_id: int, body: DecisionIn, principal: Principal = Depends(analyst)
 ) -> dict[str, Any]:
-    return await _call(cases_service().decide, case_id, body.outcome, principal.username, body.note)
+    return await _call(
+        cases_service().decide,
+        case_id,
+        body.outcome,
+        principal.username,
+        body.note,
+        role=principal.role,
+    )
 
 
 @router.put("/cases/{case_id}/sib")
@@ -288,6 +303,8 @@ async def approve(
         approve=True,
         actor=principal.username,
         note=body.note if body else "",
+        role=principal.role,
+        via=principal.via,
     )
 
 
@@ -301,4 +318,6 @@ async def reject(
         approve=False,
         actor=principal.username,
         note=body.note if body else "",
+        role=principal.role,
+        via=principal.via,
     )

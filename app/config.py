@@ -65,6 +65,8 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_json: bool = False
     api_docs: bool = Field(default=False, description="Swagger UI (/docs) açık mı")
+    #: uvicorn worker count (same env var uvicorn reads); >1 needs a JWT_SECRET
+    web_concurrency: int = 1
 
     # --- Storage -----------------------------------------------------------
     data_dir: Path = BASE_DIR / "data"
@@ -165,6 +167,9 @@ class Settings(BaseSettings):
     # A rule's HOLD floor below this risk *and* amount becomes STEP_UP (audit A4).
     rule_floor_hold_min_risk: float = 0.45
     rule_floor_hold_min_amount_try: float = 25_000.0
+    #: rule-studio backtest: rows replayed at most, and wall-clock budget (s)
+    rule_backtest_max_rows: int = 50_000
+    rule_backtest_timeout_s: float = 15.0
     # Weights of external signals in risk = 1-(1-stack)·Π(1-w·s).
     policy_signal_weights: dict[str, float] = Field(
         default_factory=lambda: {
@@ -218,7 +223,8 @@ class Settings(BaseSettings):
     )
     online_anomaly_enabled: bool = True
     consortium_enabled: bool = True
-    # Konsorsiyum tuzu (üyeler arası paylaşılan gizli değer; demo varsayılanı).
+    # Konsorsiyum tuzu (üyeler arası paylaşılan gizli değer; demo varsayılanı,
+    # prod'da reddedilir — app/security/startup.py).
     consortium_salt: str = "anil3-consortium-demo"
     frontend_dist: Path | None = Field(default=None, validation_alias="FRONTEND_DIST")
     fp_cost_try: float = 50.0  # operasyonel maliyet: bir yanlış alarmın inceleme maliyeti
@@ -277,7 +283,8 @@ class Settings(BaseSettings):
     # (METRICS_TOKEN) is required, or the endpoint answers 404 when none is set
     metrics_public: bool = False
     metrics_token: SecretStr = SecretStr("")
-    jwt_ttl_minutes: int = 480
+    # short-lived access tokens; logout revokes them earlier (jti denylist)
+    jwt_ttl_minutes: int = 60
     admin_token: SecretStr = SecretStr("")
     service_api_key: SecretStr = SecretStr("")
     service_hmac_secret: SecretStr = SecretStr("")
@@ -292,8 +299,15 @@ class Settings(BaseSettings):
     cors_origins: list[str] = Field(default_factory=list)
     rate_limit_default: str = "1200/minute"
     rate_limit_login: str = "10/minute"
-    # per client (API key / token / IP — see ingest_rate_key), not global
+    # per authenticated principal (IP until authentication succeeds — see
+    # principal_rate_key), not global
     rate_limit_ingest: str = "6000/minute"
+    rate_limit_step_up: str = "120/minute"
+    rate_limit_copilot: str = "30/minute"
+    # 401 answers per client IP; beyond this every request from it gets 429
+    rate_limit_auth_failures: str = "30/minute"
+    # Step-up (OTP) challenge: one-time id bound to transaction + customer
+    step_up_challenge_ttl_s: int = 600
 
     # --- Convenience -------------------------------------------------------
     @property
