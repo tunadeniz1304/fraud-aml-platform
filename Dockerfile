@@ -41,7 +41,9 @@ USER fraud
 RUN python -c "from chromadb.utils.embedding_functions import DefaultEmbeddingFunction as E; E()(['ısınma'])" \
     || echo "ONNX modeli indirilemedi - hash gomme kullanilacak"
 
-ENV FRAUD_DB_PATH=/app/var/fraud_platform.db \
+# İmaj varsayılan olarak prod modunda çalışır: başlangıç politikası demo
+# sırlarını reddeder. Yerel demo için ENVIRONMENT=dev açıkça verilmelidir.
+ENV ENVIRONMENT=prod     FRAUD_DB_PATH=/app/var/fraud_platform.db \
     VECTOR_DIR=/app/var/chromadb \
     HOST=0.0.0.0 \
     PORT=8000

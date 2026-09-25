@@ -440,3 +440,86 @@ def test_a10_prometheus_scrapes_the_worker_and_alerts_on_failures() -> None:
     assert "increase(fraud_audit_chain_verify_failures_total[15m])) > 0" in broken["expr"]
     assert broken["labels"]["severity"] == "critical"
     assert 'up{job="anil3-worker"} == 0' in rules["AuditDogrulamasiCalismiyor"]["expr"]
+
+
+# --- A1: compose and the image run in prod mode by default ------------------
+
+_A1_REQUIRED = ("JWT_SECRET", "AUDIT_HMAC_KEY", "CONSORTIUM_SALT")
+_A1_APP_SERVICES = ("migrate", "api", "worker", "simulator")
+
+
+def _compose() -> dict:
+    import yaml
+
+    return yaml.safe_load((BASE_DIR / "docker-compose.yml").read_text(encoding="utf-8"))
+
+
+def _interpolate(value: str, provided: dict[str, str]) -> str:
+    """Minimal ``${VAR}``, ``${VAR:-default}`` and ``${VAR:?message}`` resolution."""
+    import re
+
+    def repl(match: re.Match[str]) -> str:
+        name, op, arg = match.group(1), match.group(2), match.group(3) or ""
+        current = provided.get(name, "")
+        if op == ":?" and not current:
+            raise LookupError(name)
+        if op == ":-" and not current:
+            return arg
+        return current
+
+    return re.sub(r"\$\{([A-Z_][A-Z0-9_]*)(?:(:[-?])([^}]*))?\}", repl, str(value))
+
+
+def test_a1_compose_defaults_to_prod_and_requires_the_prod_secrets() -> None:
+    services = _compose()["services"]
+    for name in _A1_APP_SERVICES:
+        env = services[name]["environment"]
+        assert env["ENVIRONMENT"] == "${ENVIRONMENT:-prod}", name
+        for secret in _A1_REQUIRED:
+            assert str(env[secret]).startswith("${" + secret + ":?"), (name, secret)
+        assert str(env["RATE_LIMIT_STORAGE_URI"]).startswith("redis://"), name
+        assert env["SEED_DEMO_USERS"] == "${SEED_DEMO_USERS:-false}", name
+    assert "9102" in [str(port) for port in services["worker"].get("expose", [])]
+
+
+def test_a1_compose_refuses_to_load_without_the_prod_secrets() -> None:
+    env = _compose()["services"]["api"]["environment"]
+    for missing in _A1_REQUIRED:
+        provided = {name: "z" * 48 for name in _A1_REQUIRED if name != missing}
+        with pytest.raises(LookupError, match=missing):
+            for value in env.values():
+                _interpolate(value, provided)
+
+
+def test_a1_compose_environment_passes_the_prod_startup_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.security.startup import startup_problems
+
+    provided = {name: f"{name.lower()}-" + "r" * 40 for name in _A1_REQUIRED}
+    for service in ("api", "worker"):
+        env = _compose()["services"][service]["environment"]
+        resolved = {key: _interpolate(value, provided) for key, value in env.items()}
+        assert resolved["ENVIRONMENT"] == "prod"
+        for key, value in resolved.items():
+            monkeypatch.setenv(key, value)
+        get_settings.cache_clear()
+        assert get_settings().environment == "prod"
+        assert startup_problems(get_settings()) == [], service
+    get_settings.cache_clear()
+
+
+def test_a1_image_defaults_to_prod() -> None:
+    dockerfile = (BASE_DIR / "Dockerfile").read_text(encoding="utf-8")
+    assert "ENV ENVIRONMENT=prod" in dockerfile
+
+
+def test_a1_env_example_holds_placeholders_only() -> None:
+    lines = (BASE_DIR / ".env.example").read_text(encoding="utf-8").splitlines()
+    assignments = [line for line in lines if line and not line.startswith("#")]
+    assert assignments, "no variables documented"
+    assert all(line.endswith("=") for line in assignments), [
+        line for line in assignments if not line.endswith("=")
+    ]
+    for name in (*_A1_REQUIRED, "ENVIRONMENT"):
+        assert f"{name}=" in assignments

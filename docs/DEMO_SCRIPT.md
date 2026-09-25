@@ -1,6 +1,6 @@
 # 3 dakikalık demo akışı
 
-1. **(0:00) Başlat** — `docker compose up --build`; logda `LLM: CANLI (...)` veya `LLM: DEMO modu`. `http://localhost:8000` → `analist / analist123`.
+1. **(0:00) Başlat** — `.env` içinde `JWT_SECRET`, `AUDIT_HMAC_KEY`, `CONSORTIUM_SALT` dolu iken `ENVIRONMENT=dev SEED_DEMO_USERS=true docker compose up --build` (compose varsayılanı prod'dur, demo kullanıcıları orada açılmaz); logda `LLM: CANLI (...)` veya `LLM: DEMO modu`. `http://localhost:8000` → `analist / analist123`.
 2. **(0:20) Canlı akış** — simülatör trafiği SSE ile akıyor; TPS ve **p99 skor gecikmesi** (hedef < 50 ms) sayaçları, renkli karar rozetleri.
 3. **(0:45) Senaryo: ATO** — Senaryo sekmesi → "Hesap ele geçirme" → **BLOCK**; nedenler: yeni cihaz + VPN + ortalamanın ~10 katı + model sinyalleri.
 4. **(1:05) Senaryo: APP** — yaşlı müşteri, aktif telefon görüşmesi, "güvenli hesap" açıklaması, CoP uyuşmazlığı → **HOLD** + müşteriye gösterilen dinamik uyarı.

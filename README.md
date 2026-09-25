@@ -9,12 +9,15 @@
 ## 30 saniyede çalıştır
 
 ```bash
-cp .env.example .env        # LLM anahtarı yoksa DEMO modu; JWT_SECRET'ı doldurun
-SEED_DEMO_USERS=true docker compose up --build   # postgres, redis, migrate, api, worker, simulator
+cp .env.example .env        # LLM anahtarı yoksa DEMO modu
+# .env içinde JWT_SECRET, AUDIT_HMAC_KEY ve CONSORTIUM_SALT'ı doldurun; her biri için:
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+# yerel demo (dev modu + demo kullanıcıları):
+ENVIRONMENT=dev SEED_DEMO_USERS=true docker compose up --build   # postgres, redis, migrate, api, worker, simulator
 # → http://localhost:8000   (port doluysa: API_PORT=8010 docker compose up)
 ```
 
-Demo kullanıcıları (`analist / analist123`, `kidemli_analist / kidemli123`, `admin / admin123`) yalnızca geliştirme ortamında eklenir: `SEED_DEMO_USERS` tanımlı değilse `ENVIRONMENT=prod` dışında açık, prod'da kapalıdır. `docker compose` demo kullanıcılarını yalnızca `SEED_DEMO_USERS=true` ile ekler ve `JWT_SECRET` tanımlı değilse başlamaz.
+`docker compose` ve Docker imajı varsayılan olarak **`ENVIRONMENT=prod`** ile çalışır: `JWT_SECRET`, `AUDIT_HMAC_KEY` veya `CONSORTIUM_SALT` tanımlı değilse compose hiç başlamaz, başlangıç politikası da demo/zayıf sırları reddeder. Yerel demo için dev moduna `ENVIRONMENT=dev` ile **açıkça** geçilir. Demo kullanıcıları (`analist / analist123`, `kidemli_analist / kidemli123`, `admin / admin123`) yalnızca geliştirme ortamında eklenir: `SEED_DEMO_USERS` tanımlı değilse `ENVIRONMENT=prod` dışında açık, prod'da her zaman reddedilir; `docker compose` onları yalnızca `SEED_DEMO_USERS=true` ile ekler.
 
 Gözlemlenebilirlik: `/metrics` uç noktası `Authorization: Bearer <METRICS_TOKEN>` ister (`METRICS_TOKEN` boşsa 404 döner). Observability profilini açmadan önce aynı değeri `ops/prometheus/metrics_token` dosyasına yazın (dosya git'e girmez). Grafana anonim erişime kapalıdır: yönetici parolasını `ops/grafana/admin_password` dosyasına yazın (dosya git'e girmez). Sonra `docker compose --profile observability up` → Prometheus `:9090`, Grafana `:3000` (hazır pano, kullanıcı `admin`).
 
@@ -103,7 +106,7 @@ Aşağıdaki desenler kamuya açık ürün anlatımlarından esinlenmiştir. Ani
 ## Güvenlik notları
 
 - Demo kullanıcıları yalnızca `SEED_DEMO_USERS` açıkken eklenir (varsayılan: prod dışında açık).
-- `ENVIRONMENT=prod` boş/kısa/örnek `JWT_SECRET`, demo kullanıcıları veya demo `CONSORTIUM_SALT` ile başlamayı reddeder; `WEB_CONCURRENCY>1` her ortamda `JWT_SECRET` ister (`app/security/startup.py`).
+- `ENVIRONMENT=prod` (compose ve imajın varsayılanı) boş/kısa/örnek `JWT_SECRET`, demo kullanıcıları, demo `CONSORTIUM_SALT`, eksik/zayıf `AUDIT_HMAC_KEY`, 32 karakterden kısa ya da örnek `ADMIN_TOKEN` / `SERVICE_API_KEY` / `SERVICE_HMAC_SECRET` ve `memory://` hız sınırı deposu ile başlamayı reddeder; `WEB_CONCURRENCY>1` her ortamda `JWT_SECRET` ve `REDIS_URL` ister. Politika hem API'de hem worker'da uygulanır (`app/security/startup.py`).
 - SSE canlı akışı sorgu dizesinde JWT kabul etmez. İstemci `POST /api/stream/ticket` ile kısa ömürlü, **tek kullanımlık** bir bilet alır.
 - Servis ingest'i HMAC imzalıdır. Her istek bir `X-Nonce` taşır ve aynı nonce ikinci kez kabul edilmez (replay koruması).
 - `/metrics` `METRICS_TOKEN` ister (bkz. yukarı).
