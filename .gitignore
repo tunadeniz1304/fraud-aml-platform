@@ -38,3 +38,6 @@ frontend/*.tsbuildinfo
 Thumbs.db
 .idea/
 .vscode/
+
+# Public validation datasets (scripts/fetch_public_fraud_data.py)
+data/external/
