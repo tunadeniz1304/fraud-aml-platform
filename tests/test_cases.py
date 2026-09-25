@@ -100,6 +100,64 @@ class TestAlertIntake:
         alerts = await service.list_alerts()
         assert {a["transaction_id"] for a in alerts} == {"T1", "T2", "T3"}
 
+    async def test_a11_replayed_intake_creates_one_alert(self, service, store):
+        """An outbox replay / redelivery of the same decision is a no-op."""
+        first = await service.on_decision(event("DUP-1"))
+        assert first is not None
+        assert await service.on_decision(event("DUP-1")) is None
+        other = CaseService(store.db, accounts=store.accounts, writer=store.writer)
+        assert await other.on_decision(event("DUP-1")) is None  # another worker
+        case = await service.get_case(first)
+        assert case["alert_count"] == 1 and case["total_amount_try"] == 10_000
+        assert case["priority"] == pytest.approx(0.7 * 10_000)
+        assert [a["transaction_id"] for a in await service.list_alerts()] == ["DUP-1"]
+
+    async def test_a11_concurrent_intake_is_rolled_back_by_the_unique_index(
+        self, service, store, monkeypatch
+    ):
+        """The in-transaction check can race on another worker; the unique
+        ``alerts.transaction_id`` index is the backstop and the loser is a no-op."""
+        first = await service.on_decision(event("DUP-2"))
+        other = CaseService(store.db, accounts=store.accounts, writer=store.writer)
+        real_execute = type(other)._intake
+
+        async def _skip_check(self, ev):  # the racing worker saw no alert yet
+            from sqlalchemy.ext.asyncio import AsyncSession
+
+            orig = AsyncSession.execute
+            calls = {"n": 0}
+
+            async def execute(session, stmt, *a, **kw):
+                calls["n"] += 1
+                if calls["n"] == 1:  # the duplicate probe
+                    return await orig(session, select(Case.id).where(Case.id == -1), *a, **kw)
+                return await orig(session, stmt, *a, **kw)
+
+            monkeypatch.setattr(AsyncSession, "execute", execute)
+            try:
+                return await real_execute(self, ev)
+            finally:
+                monkeypatch.setattr(AsyncSession, "execute", orig)
+
+        monkeypatch.setattr(CaseService, "_intake", _skip_check)
+        assert await other.on_decision(event("DUP-2")) is None
+        case = await service.get_case(first)
+        assert case["alert_count"] == 1
+
+    async def test_a11_case_clock_starts_at_the_decision(self, service):
+        decided = datetime.now(UTC) - timedelta(days=2)
+        case_id = await service.on_decision(event("LATE-1", decided_at=decided.isoformat()))
+        case = await service.get_case(case_id)
+        assert abs((case["suspicion_at"] - decided).total_seconds()) < 1
+        assert abs((case["masak_deadline"] - sla.masak_deadline(decided)).total_seconds()) < 1
+        assert abs((case["internal_sla_due"] - sla.internal_sla_due(decided)).total_seconds()) < 1
+        # a decided_at in the future (clock skew) never pushes the deadline out
+        future = datetime.now(UTC) + timedelta(days=30)
+        other = await service.on_decision(
+            event("LATE-2", customer="CUST-0009", decided_at=future.isoformat())
+        )
+        assert (await service.get_case(other))["suspicion_at"] <= datetime.now(UTC)
+
     async def test_ring_grouping_and_window_expiry(self, service, store):
         a = await service.on_decision(event("R1", customer="CUST-0003", ring_id="RING-7"))
         b = await service.on_decision(event("R2", customer="CUST-0004", ring_id="RING-7"))

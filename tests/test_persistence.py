@@ -50,6 +50,76 @@ def test_alembic_migrations_match_models(tmp_path: Path):
     command.downgrade(cfg, "base")
 
 
+def _alembic_cfg(url: str) -> Config:
+    cfg = Config(str(BASE_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BASE_DIR / "alembic"))
+    cfg.attributes["url"] = url
+    return cfg
+
+
+def test_a11_migration_removes_duplicate_alerts(tmp_path: Path):
+    """0005 keeps the oldest alert per transaction and recounts the case
+    before it makes ``alerts.transaction_id`` unique."""
+    from sqlalchemy import create_engine, inspect
+
+    from app.db.models import Alert, Case
+
+    path = (tmp_path / "a11.db").as_posix()
+    cfg = _alembic_cfg(f"sqlite+aiosqlite:///{path}")
+    command.upgrade(cfg, "0004")
+    engine = create_engine(f"sqlite:///{path}")
+    now = datetime(2026, 9, 25, 10, 0)
+    with engine.begin() as conn:
+        conn.execute(
+            Case.__table__.insert(),
+            [
+                {
+                    "id": 1,
+                    "customer_id": "C1",
+                    "case_type": "DAVRANIS",
+                    "status": "YENI",
+                    "priority": 3 * 0.5 * 100,
+                    "total_amount_try": Decimal("300"),
+                    "alert_count": 3,
+                    "suspicion_at": now,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            ],
+        )
+        base = {
+            "customer_id": "C1",
+            "alert_type": "DAVRANIS",
+            "severity": "medium",
+            "risk_score": 0.5,
+            "amount_try": Decimal("100"),
+            "decision": "HOLD",
+            "reason_codes": [],
+            "case_id": 1,
+            "created_at": now,
+        }
+        conn.execute(
+            Alert.__table__.insert(),
+            [
+                {**base, "id": 1, "transaction_id": "TX-A"},
+                {**base, "id": 2, "transaction_id": "TX-A"},  # replayed duplicate
+                {**base, "id": 3, "transaction_id": "TX-B"},
+            ],
+        )
+    command.upgrade(cfg, "head")
+    with engine.connect() as conn:
+        ids = [r[0] for r in conn.execute(select(Alert.__table__.c.id).order_by("id"))]
+        case = conn.execute(select(Case.__table__)).mappings().one()
+    assert ids == [1, 3]
+    assert case["alert_count"] == 2
+    assert Decimal(str(case["total_amount_try"])) == Decimal("200")
+    assert case["priority"] == pytest.approx(100.0)
+    unique = {ix["name"]: ix["unique"] for ix in inspect(engine).get_indexes("alerts")}
+    assert unique["ix_alerts_transaction_id"]
+    engine.dispose()
+    command.downgrade(cfg, "base")
+
+
 async def test_money_is_exact_decimal(store):
     tx = {
         "transaction_id": "TX-M",

@@ -27,7 +27,7 @@ import logging
 import secrets
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -192,6 +192,26 @@ def _severity(event: dict[str, Any]) -> str:
     return "high" if event.get("decision") == "HOLD" else "medium"
 
 
+def _decided_at(event: dict[str, Any], now: datetime) -> datetime:
+    """A11: when the decision was taken (``decided_at`` on the DECIDED event,
+    also kept in the case outbox), so a replayed intake does not start the
+    MASAK deadline late. Falls back to ``now``; never in the future."""
+    raw = event.get("decided_at")
+    value: datetime | None = None
+    if isinstance(raw, datetime):
+        value = raw
+    elif isinstance(raw, str) and raw:
+        try:
+            value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            value = None
+    if value is None:
+        return now
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return min(value.astimezone(UTC), now)
+
+
 def _rank(kind: str) -> int:
     kind = LEGACY_TYPES.get(kind, kind)
     return _TYPE_RANK.index(kind) if kind in _TYPE_RANK else 0
@@ -258,17 +278,47 @@ class CaseService:
         return bool(event.get("case_required")) or event.get("decision") in ("HOLD", "BLOCK")
 
     async def on_decision(self, event: dict[str, Any]) -> int | None:
-        """Create an alert and attach it to an open case (or open one)."""
+        """Create an alert and attach it to an open case (or open one).
+
+        A11: idempotent per transaction — a transaction that already has an
+        alert (outbox replay, redelivery) is skipped and ``None`` returned; the
+        unique ``alerts.transaction_id`` index rolls back a concurrent second
+        intake on another worker. The case clock starts at the decision time.
+        """
         if not self.needs_alert(event):
             return None
+        try:
+            return await self._intake(event)
+        except IntegrityError:
+            if await self._has_alert(str(event["transaction_id"])):
+                logger.info("[Cases] %s zaten kayıtlı — tekrar atlandı", event["transaction_id"])
+                return None
+            raise
+
+    async def _has_alert(self, tx_id: str) -> bool:
+        async with self.db.session() as session:
+            found = await session.execute(
+                select(Alert.id).where(Alert.transaction_id == tx_id).limit(1)
+            )
+            return found.first() is not None
+
+    async def _intake(self, event: dict[str, Any]) -> int | None:
         kind = alert_type(event)
         risk = float(event.get("risk_score") or 0.0)
         amount = to_money(event.get("amount_try") or event.get("amount") or 0)
         customer_id = str(event["customer_id"])
         ring_id = event.get("ring_id")
+        tx_id = str(event["transaction_id"])
         now = utcnow()
+        decided = _decided_at(event, now)
         window = now - timedelta(hours=get_settings().case_group_window_hours)
         async with self._lock, self.db.transaction() as session:
+            duplicate = await session.execute(
+                select(Alert.id).where(Alert.transaction_id == tx_id).limit(1)
+            )
+            if duplicate.first() is not None:
+                logger.info("[Cases] %s zaten kayıtlı — tekrar atlandı", tx_id)
+                return None
             query = select(Case).where(Case.status.in_(OPEN_STATUSES), Case.updated_at >= window)
             if ring_id:
                 query = query.where((Case.customer_id == customer_id) | (Case.ring_id == ring_id))
@@ -287,9 +337,9 @@ class CaseService:
                     priority=0.0,
                     ring_id=ring_id,
                     total_amount_try=Decimal("0"),
-                    suspicion_at=now,
-                    masak_deadline=sla.masak_deadline(now),
-                    internal_sla_due=sla.internal_sla_due(now),
+                    suspicion_at=decided,
+                    masak_deadline=sla.masak_deadline(decided),
+                    internal_sla_due=sla.internal_sla_due(decided),
                     alert_count=0,
                     created_at=now,
                     updated_at=now,
