@@ -309,8 +309,20 @@ def train_from_rows(rows: list[BackfillRow], cfg: TrainingConfig) -> TrainingRep
         "anomaly": M.evaluate(y_te.tolist(), an_te, amounts_te),
         "hybrid": M.evaluate(y_te.tolist(), hybrid_te, amounts_te),
         "decisions_by_typology": _typology_outcomes(test, hybrid_te, thresholds),
+        # probability quality of the calibrated outputs on the untouched test period
+        "calibration": {
+            "ml": M.calibration(y_te, ml_te),
+            "hybrid": M.calibration(y_te, hybrid_te),
+        },
     }
     hybrid_va = fitted.hybrid(rule_va, ml_va, an_va)
+    amounts_va = [r.amount_try for r in valid]
+    # validation-period metrics: the only ones model selection may use (the
+    # stacker's three coefficients are fitted on this split, the GBM early-stops on it)
+    valid_metrics = {
+        "ml": M.evaluate(y_va.tolist(), ml_va, amounts_va),
+        "hybrid": M.evaluate(y_va.tolist(), hybrid_va, amounts_va),
+    }
     importance = gbm.feature_importance()
     top_features = sorted(importance, key=lambda k: -importance[k])[:10]
     psi_reference: dict[str, Any] = {}
@@ -323,6 +335,7 @@ def train_from_rows(rows: list[BackfillRow], cfg: TrainingConfig) -> TrainingRep
     elapsed = time.perf_counter() - started
     metrics = {
         "test": test_metrics,
+        "valid": valid_metrics,
         "valid_pr_auc_ml": round(M.pr_auc(y_va.tolist(), ml_va), 4),
         "split": {
             "train": [len(train), sum(r.label for r in train)],
@@ -372,6 +385,12 @@ def _summary_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
         "recall_at_1pct_fpr": h["recall_at_1pct_fpr"],
         "cost_weighted_recall": h["budget_1pct"]["cost_weighted_recall"],
         "ml_pr_auc": metrics["test"]["ml"]["pr_auc"],
+        "brier": metrics["test"]["calibration"]["hybrid"]["brier"],
+        "ece_10bin": metrics["test"]["calibration"]["hybrid"]["ece_10bin"],
+        "valid_pr_auc": metrics["valid"]["hybrid"]["pr_auc"],
+        "valid_cost_weighted_recall": metrics["valid"]["hybrid"]["budget_1pct"][
+            "cost_weighted_recall"
+        ],
     }
 
 
@@ -432,6 +451,24 @@ def render_model_card(meta: dict[str, Any]) -> str:
     data = meta.get("data") or {}
     typologies = ", ".join(f"{k}: {v}" for k, v in (data.get("typologies") or {}).items())
     st = meta["stacker"]
+    cal = t.get("calibration") or {}
+    cal_rows = [
+        f"| {label} | {cal[k]['brier']:.5f} | {cal[k]['ece_10bin']:.5f} | "
+        f"{cal[k]['mean_predicted']:.4f} | {cal[k]['observed_rate']:.4f} |"
+        for k, label in (("ml", "LightGBM (izotonik)"), ("hybrid", "Hibrit (stacker)"))
+        if k in cal
+    ]
+    fit = st.get("fit") or {}
+    abl = fit.get("ablation")
+    abl_rows = (
+        [
+            f"| `{name}` | {v['log_loss']:.5f} | {v['brier']:.5f} | {v['pr_auc']:.3f} "
+            f"| {v['coef']} |"
+            for name, v in abl["variants"].items()
+        ]
+        if abl
+        else []
+    )
     lines = [
         f"# Model kartı — `{meta['version']}`",
         "",
@@ -446,7 +483,8 @@ def render_model_card(meta: dict[str, Any]) -> str:
         f"{data.get('customers', '?')} müşteri, {data.get('transactions', '?')} işlem, "
         f"fraud oranı {data.get('fraud_rate', '?')}.",
         f"- Tipolojiler: {typologies or 'n/a'} (yaptırım isabetleri ML eğitiminden hariç).",
-        f"- Zaman bazlı bölme 70/15/15 — eğitim {split['train'][0]} ({split['train'][1]} fraud), "
+        f"- Zaman sıralı satır bölmesi 70/15/15 — eğitim {split['train'][0]} "
+        f"({split['train'][1]} fraud), "
         f"doğrulama {split['valid'][0]} ({split['valid'][1]}), test {split['test'][0]} "
         f"({split['test'][1]}); test dönemi {split['test_period'][0]} → {split['test_period'][1]}.",
         "- Feature'lar online skorlayıcıyla **aynı** motorla (feature store → kurallar → "
@@ -462,6 +500,14 @@ def render_model_card(meta: dict[str, Any]) -> str:
         "",
         "Maliyet ağırlıklı recall: işlemlerin en riskli %1'i alert olduğunda yakalanan fraud "
         "**tutarının** toplam fraud tutarına oranı.",
+        "",
+        "## Kalibrasyon (test dönemi)",
+        "| Çıktı | Brier | ECE (10 kutu) | Ort. tahmin | Gözlenen oran |",
+        "|---|---|---|---|---|",
+        *cal_rows,
+        "",
+        "Kalibrasyon doğrulama dağılımında yapılır; test döneminde taban oran kayarsa ECE "
+        "büyür. Etiket gürültüsü (kaçan fraud) gözlenen oranı gerçek oranın altında tutar.",
         "",
         "## Tipoloji bazında politika sonuçları (test, harici sinyaller hariç)",
         "| Tipoloji | Adet | ALLOW | STEP_UP | HOLD | BLOCK |",
@@ -482,9 +528,23 @@ def render_model_card(meta: dict[str, Any]) -> str:
         "",
         "## Stacker",
         f"Girdi: logit(kural), logit(ML), logit(anomali); katsayılar {st['coef']}, "
-        f"kesişim {st['intercept']:.3f}. Katsayılar ≥ 0.05 ile tabanlanır (monotonluk: hiçbir "
-        "bileşen riski düşüremez).",
+        f"kesişim {st['intercept']:.3f}. Doğrulama bölmesinde negatif olmayan lojistik regresyon "
+        "(çok değişkenli Platt): tek kısıt katsayı ≥ 0 (monotonluk — hiçbir bileşen riski "
+        "düşüremez). Eski taban (≥ 0.05, kural ≥ 0.3) kaldırıldı; katsayısı 0 olan bileşen "
+        f"kullanılmıyor demektir. Anomali girdisi: {fit.get('anomaly_input', 'n/a')}.",
         "",
+        *(
+            [
+                f"Ablasyon ({abl['protocol']}; satır {abl['rows']}, pozitif {abl['positives']}):",
+                "",
+                "| Varyant | Log-loss | Brier | PR-AUC | Katsayılar |",
+                "|---|---|---|---|---|",
+                *abl_rows,
+                "",
+            ]
+            if abl
+            else []
+        ),
         "## Sınırlamalar ve riskler",
         "- Sentetik veriyle eğitildi; gerçek dağılımlarda yeniden eğitim ve kalibrasyon şart.",
         "- APP dolandırıcılığında cihaz/konum tanıdık olduğundan model sosyal mühendislik "
