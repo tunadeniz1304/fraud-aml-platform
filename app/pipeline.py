@@ -924,6 +924,7 @@ async def build_pipeline(
             max_retries=settings.bus_max_retries,
             claim_idle_ms=settings.bus_claim_idle_ms,
             processing_lease_ms=settings.bus_processing_lease_ms,
+            commit_barrier=writer.barrier,  # H4: XACK only after the DB commit
         )
     engine = ScoringEngine.from_settings(extractor, ruleset=ruleset, registry=registry)
     logger.info(

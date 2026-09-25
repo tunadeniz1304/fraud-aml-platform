@@ -12,6 +12,12 @@ Topic = str
 Handler = Callable[[dict[str, Any]], Any | Awaitable[Any]]
 
 
+class RetryLater(Exception):
+    """The handler cannot process the message *yet* (e.g. another worker owns
+    its idempotency claim). The Redis bus leaves it pending without counting a
+    failed delivery; it is redelivered after ``claim_idle_ms``."""
+
+
 @dataclass(frozen=True)
 class DeadLetter:
     """A message whose handler kept failing after all retries."""

@@ -7,7 +7,15 @@
   ``claim_idle_ms``; once delivered more than ``max_retries`` times they move
   to the **dead-letter stream** ``{prefix}:dlq`` and are acked;
 * **idempotency**: a successfully processed ``key`` (the ``transaction_id``)
-  is remembered per group (``SET … EX``), so replays/redeliveries are skipped.
+  is remembered per group (``SET … EX``), so replays/redeliveries are skipped;
+* **ack after persistence** (H4): with a ``commit_barrier`` (the persistence
+  writer's :meth:`~app.db.writer.PersistenceWriter.barrier`) the messages of
+  one ``XREADGROUP`` batch are handled, the barrier is awaited once and only
+  then are they marked done and ``XACK``-ed. A crash before the commit leaves
+  them pending, so they are redelivered (at-least-once); the writes are
+  idempotent (``ON CONFLICT DO NOTHING`` on the transaction id);
+* a handler raising :class:`~app.bus.base.RetryLater` leaves its message
+  pending without counting a failed delivery.
 """
 
 from __future__ import annotations
@@ -18,10 +26,11 @@ import json
 import logging
 import socket
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from app.bus.base import Handler, Topic, handler_name, invoke
+from app.bus.base import Handler, RetryLater, Topic, handler_name, invoke
 from app.monitoring import metrics
 
 logger = logging.getLogger("fraud.eventbus.redis")
@@ -48,6 +57,7 @@ class RedisStreamsBus:
         idempotency_ttl: int = 7 * 24 * 3600,
         claim_idle_ms: int = 5_000,
         processing_lease_ms: int = 30_000,
+        commit_barrier: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self.redis = redis
         self.prefix = prefix
@@ -59,11 +69,13 @@ class RedisStreamsBus:
         self.idempotency_ttl = idempotency_ttl
         self.claim_idle_ms = claim_idle_ms
         self.processing_lease_ms = processing_lease_ms
+        self.commit_barrier = commit_barrier
         self._subs: list[_Subscription] = []
         self._tasks: list[asyncio.Task[None]] = []
         self._stopping = asyncio.Event()
         self.processed = 0
         self.duplicates = 0
+        self.deferred = 0
 
     # --- naming -----------------------------------------------------------------------
     def stream(self, topic: Topic) -> str:
@@ -123,8 +135,7 @@ class RedisStreamsBus:
                     sub.group, self.consumer, {stream: ">"}, count=self.batch, block=self.block_ms
                 )
                 for _, messages in response or []:
-                    for msg_id, fields in messages:
-                        await self._handle(sub, stream, msg_id, fields)
+                    await self._handle_batch(sub, stream, messages)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -141,9 +152,33 @@ class RedisStreamsBus:
             count=self.batch,
         )
         claimed = result[1] if isinstance(result, list | tuple) and len(result) > 1 else []
-        for msg_id, fields in claimed:
-            if fields:  # deleted entries come back as None
-                await self._handle(sub, stream, msg_id, fields)
+        # deleted entries come back as None
+        await self._handle_batch(sub, stream, [(m, f) for m, f in claimed if f])
+
+    async def _handle_batch(
+        self, sub: _Subscription, stream: str, messages: list[tuple[str, dict[str, str]]]
+    ) -> None:
+        """Handle a read batch, then acknowledge the successes after the commit."""
+        done: list[tuple[str, str]] = []
+        for msg_id, fields in messages:
+            if await self._handle(sub, stream, msg_id, fields):
+                done.append((msg_id, fields.get("key") or ""))
+        if not done:
+            return
+        if self.commit_barrier is not None:
+            # everything the handlers submitted to the write-behind writer is
+            # committed (or dead-lettered) before a single message is acked
+            await self.commit_barrier()
+        pipe = self.redis.pipeline()
+        for msg_id, key in done:
+            if key:
+                pipe.set(self._done_key(sub.group, key), "1", ex=self.idempotency_ttl)
+                pipe.delete(self._lease_key(sub.group, key))
+            pipe.xack(stream, sub.group, msg_id)
+            pipe.hdel(self._attempts_key(sub.group), msg_id)
+        await pipe.execute()
+        self.processed += len(done)
+        metrics.BUS_EVENTS.labels(topic=sub.topic, outcome="ok").inc(len(done))
 
     def _lease_key(self, group: str, key: str) -> str:
         return f"{self.prefix}:processing:{group}:{key}"
@@ -159,13 +194,14 @@ class RedisStreamsBus:
 
     async def _handle(
         self, sub: _Subscription, stream: str, msg_id: str, fields: dict[str, str]
-    ) -> None:
+    ) -> bool:
+        """Run the handler; True when the message must be acked after the commit."""
         key = fields.get("key") or ""
         if key and await self.redis.exists(self._done_key(sub.group, key)):
             self.duplicates += 1
             metrics.BUS_EVENTS.labels(topic=sub.topic, outcome="duplicate").inc()
             await self.redis.xack(stream, sub.group, msg_id)
-            return
+            return False
         lease = self._lease_key(sub.group, key) if key else None
         if lease is not None and not await self.redis.set(
             lease, self.consumer, nx=True, px=self.processing_lease_ms
@@ -173,10 +209,17 @@ class RedisStreamsBus:
             # another consumer is processing this key right now: leave it pending;
             # XAUTOCLAIM hands it back if that consumer dies before finishing
             metrics.BUS_EVENTS.labels(topic=sub.topic, outcome="in_progress").inc()
-            return
+            return False
         try:
             payload = json.loads(fields.get("payload") or "{}")
             await invoke(sub.handler, payload)
+        except RetryLater:
+            # not a failure: the key is owned elsewhere; stay pending, redeliver later
+            if lease is not None:
+                await self.redis.delete(lease)
+            self.deferred += 1
+            metrics.BUS_EVENTS.labels(topic=sub.topic, outcome="in_progress").inc()
+            return False
         except Exception as exc:  # noqa: BLE001 - failure path decides retry vs DLQ
             if lease is not None:
                 await self.redis.delete(lease)
@@ -207,16 +250,8 @@ class RedisStreamsBus:
                 )
             else:
                 metrics.BUS_EVENTS.labels(topic=sub.topic, outcome="retry").inc()
-            return
-        pipe = self.redis.pipeline()
-        if key:
-            pipe.set(self._done_key(sub.group, key), "1", ex=self.idempotency_ttl)
-            pipe.delete(self._lease_key(sub.group, key))
-        pipe.xack(stream, sub.group, msg_id)
-        pipe.hdel(self._attempts_key(sub.group), msg_id)
-        await pipe.execute()
-        self.processed += 1
-        metrics.BUS_EVENTS.labels(topic=sub.topic, outcome="ok").inc()
+            return False
+        return True
 
     # --- introspection -------------------------------------------------------------------------
     async def dlq_size(self) -> int:
