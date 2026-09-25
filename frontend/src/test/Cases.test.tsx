@@ -38,7 +38,7 @@ describe("CasesPage", () => {
     fireEvent.change(screen.getByLabelText("Durum"), { target: { value: "YENI" } });
     fireEvent.change(screen.getByLabelText("Sıralama"), { target: { value: "sla" } });
     await waitFor(() => {
-      const last = new URL(calledUrls(fetch).at(-1)!, "http://x");
+      const last = new URL(calledUrls(fetch).slice(-1)[0]!, "http://x");
       expect(last.searchParams.get("case_type")).toBe("MULE");
       expect(last.searchParams.get("status")).toBe("YENI");
       expect(last.searchParams.get("order")).toBe("sla");
