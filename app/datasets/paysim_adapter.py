@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -80,7 +81,9 @@ def read_rows(path: Path, flt: PaySimFilter | None = None) -> Iterator[dict[str,
                 yield row
 
 
-def to_transaction(row: dict[str, str], index: int) -> dict[str, Any]:
+def to_transaction(row: dict[str, str], index: int, offset_s: float = 0.0) -> dict[str, Any]:
+    """Map one PaySim row. ``offset_s`` (0 ≤ offset < 3600) places the event
+    inside its hour; PaySim only records the hour (``step``)."""
     settings = get_settings()
     base = datetime.fromisoformat(settings.paysim_base_date)
     step = int(row["step"])
@@ -88,7 +91,7 @@ def to_transaction(row: dict[str, str], index: int) -> dict[str, Any]:
     amount = round(float(row["amount"]) * settings.paysim_try_per_unit, 2)
     return {
         "transaction_id": f"PS-{index:08d}",
-        "ts": (base + timedelta(hours=step, seconds=index % 3600)).isoformat(),
+        "ts": (base + timedelta(hours=step, seconds=offset_s)).isoformat(),
         "customer_id": row["nameOrig"],
         "amount": amount,
         "amount_try": amount,
@@ -110,11 +113,27 @@ def to_transaction(row: dict[str, str], index: int) -> dict[str, Any]:
 def load_transactions(
     path: Path, flt: PaySimFilter | None = None, *, limit: int | None = None
 ) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
+    """Load (a sample of) PaySim as transactions, in file order.
+
+    PaySim only knows the hour of an event. The rows of one step are spread
+    evenly over that hour in file order (``rank / count · 3600`` s), so the
+    order is preserved, an event never leaks into the next hour and the offset
+    does not depend on the sample (before v3 ``index % 3600`` wrapped around
+    and depended on the global row index — L10).
+    """
+    rows: list[dict[str, str]] = []
     for i, row in enumerate(read_rows(path, flt)):
         if limit is not None and i >= limit:
             break
-        out.append(to_transaction(row, i))
+        rows.append(row)
+    per_step = Counter(int(r["step"]) for r in rows)
+    seen: Counter[int] = Counter()
+    out: list[dict[str, Any]] = []
+    for i, row in enumerate(rows):
+        step = int(row["step"])
+        offset = 3600.0 * seen[step] / per_step[step]
+        seen[step] += 1
+        out.append(to_transaction(row, i, round(offset, 3)))
     return out
 
 
