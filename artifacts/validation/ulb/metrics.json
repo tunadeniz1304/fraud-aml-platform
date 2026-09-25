@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-25T17:12:54+00:00",
+  "generated_at": "2026-09-25T17:47:32+00:00",
   "dataset": "ULB Credit Card (OpenML 1597)",
   "rows": {
     "train": 199364,
@@ -19,7 +19,7 @@
         "cost_weighted_recall": 0.6191,
         "cost": {
           "alerts": 214,
-          "false_alerts": 172,
+          "false_alerts": 172.0,
           "fraud_amount_total": 6168.88,
           "fraud_amount_caught": 3818.99,
           "fraud_amount_missed": 2349.89,
@@ -38,7 +38,7 @@
         "cost_weighted_recall": 0.7799,
         "cost": {
           "alerts": 427,
-          "false_alerts": 383,
+          "false_alerts": 383.0,
           "fraud_amount_total": 6168.88,
           "fraud_amount_caught": 4811.24,
           "fraud_amount_missed": 1357.64,
@@ -57,7 +57,7 @@
         "cost_weighted_recall": 0.7799,
         "cost": {
           "alerts": 854,
-          "false_alerts": 810,
+          "false_alerts": 810.0,
           "fraud_amount_total": 6168.88,
           "fraud_amount_caught": 4811.24,
           "fraud_amount_missed": 1357.64,
@@ -95,7 +95,7 @@
         "cost_weighted_recall": 0.3704,
         "cost": {
           "alerts": 214,
-          "false_alerts": 202,
+          "false_alerts": 202.0,
           "fraud_amount_total": 6168.88,
           "fraud_amount_caught": 2284.98,
           "fraud_amount_missed": 3883.9,
@@ -114,7 +114,7 @@
         "cost_weighted_recall": 0.396,
         "cost": {
           "alerts": 427,
-          "false_alerts": 398,
+          "false_alerts": 398.0,
           "fraud_amount_total": 6168.88,
           "fraud_amount_caught": 2442.65,
           "fraud_amount_missed": 3726.23,
@@ -133,7 +133,7 @@
         "cost_weighted_recall": 0.5571,
         "cost": {
           "alerts": 854,
-          "false_alerts": 820,
+          "false_alerts": 820.0,
           "fraud_amount_total": 6168.88,
           "fraud_amount_caught": 3436.6,
           "fraud_amount_missed": 2732.28,
@@ -165,7 +165,7 @@
         "cost_weighted_recall": 0.6174,
         "cost": {
           "alerts": 214,
-          "false_alerts": 174,
+          "false_alerts": 174.0,
           "fraud_amount_total": 6168.88,
           "fraud_amount_caught": 3808.79,
           "fraud_amount_missed": 2360.09,
@@ -184,7 +184,7 @@
         "cost_weighted_recall": 0.6186,
         "cost": {
           "alerts": 427,
-          "false_alerts": 386,
+          "false_alerts": 386.0,
           "fraud_amount_total": 6168.88,
           "fraud_amount_caught": 3815.85,
           "fraud_amount_missed": 2353.03,
@@ -203,7 +203,7 @@
         "cost_weighted_recall": 0.6191,
         "cost": {
           "alerts": 854,
-          "false_alerts": 811,
+          "false_alerts": 811.0,
           "fraud_amount_total": 6168.88,
           "fraud_amount_caught": 3818.99,
           "fraud_amount_missed": 2349.89,
