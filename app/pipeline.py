@@ -37,6 +37,7 @@ from app.agents.transaction_monitor import TransactionMonitor
 from app.bus.memory import InMemoryBus
 from app.bus.redis_streams import RedisStreamsBus
 from app.bus.writebehind import WriteBehindQueue
+from app.cases.outbox import CaseOutboxReplayer, needs_outbox
 from app.cases.service import OPEN_STATUSES, CaseService
 from app.config import Settings, get_settings
 from app.copilot.agent import CopilotAgent
@@ -49,7 +50,7 @@ from app.db import repository as repo
 from app.db.audit import AuditEntry
 from app.db.database import Database
 from app.db.models import Case, Decision, Label, Transaction
-from app.db.writer import PersistenceWriter
+from app.db.writer import PersistenceWriter, WriteOp
 from app.features.extractor import CustomerDirectory, FeatureExtractor
 from app.features.store import FeatureStateStore, MemoryFeatureStore, RedisFeatureStore
 from app.graph.entity_graph import EntityGraph
@@ -177,6 +178,13 @@ class Pipeline:
         self.config.register("thresholds", self._apply_thresholds, restore=True)
         self.config.register("rules", self._apply_rules)
         self.config.register("models", self._apply_models)
+        # M13: stale case-intake records are replayed from the DB outbox
+        self.outbox = CaseOutboxReplayer(
+            db,
+            self.cases.on_decision,
+            replay_s=settings.case_outbox_replay_s,
+            on_case=lambda case_id, event: self._spawn(self._enrich_case(case_id, event)),
+        )
         self.results: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._waiters: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._inflight: dict[str, str] = {}  # tx_id -> payload digest (M1)
@@ -409,7 +417,9 @@ class Pipeline:
             case_id = await self.cases.on_decision(event)
         except Exception:  # case intake must never break the decision flow
             logger.exception("[Cases] alert/vaka oluşturulamadı (%s)", event.get("transaction_id"))
-            return
+            return  # M13: the outbox row stays and is replayed later
+        if needs_outbox(event):
+            await self.writer.submit(WriteOp("outbox_done", str(event["transaction_id"])))
         if case_id is not None:
             self._spawn(self._enrich_case(case_id, event))
 
@@ -717,6 +727,7 @@ class Pipeline:
         await self.config.load()  # H3: persisted thresholds survive a restart
         self.config.start(self.settings.config_poll_ms / 1000)
         self.accounts.start_sync(self.settings.account_status_poll_ms / 1000)
+        self.outbox.start()
         await self.bus.start()
         if self.ingress is not None:
             await self.ingress.start()
@@ -782,6 +793,7 @@ class Pipeline:
         await self.wait_background()
         await self.config.stop()
         await self.accounts.stop_sync()
+        await self.outbox.stop()
         for task in (self._stream_task, self._vector_task, self._ring_task, self._drift_task):
             if task is not None and not task.done():
                 task.cancel()

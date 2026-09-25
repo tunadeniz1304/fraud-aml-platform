@@ -125,6 +125,7 @@ async def _crash(p: Pipeline) -> None:
     p.writer._task = None
     await p.config.stop()
     await p.accounts.stop_sync()
+    await p.outbox.stop()
     await p.bus.stop()
     await p.effects.stop()
 

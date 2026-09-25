@@ -26,6 +26,7 @@ from collections import deque
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from app.cases.outbox import needs_outbox, outbox_row
 from app.config import get_settings
 from app.core.event_bus import EventBus
 from app.db import repository as repo
@@ -130,19 +131,18 @@ class ActionAgent:
         metrics.RISK_SCORE.observe(risk)
 
         await self._apply_status(tx, decision, reason, risk)
-        await self._persist(tx, decision, reason, risk)
+        event = {
+            **tx,
+            "decision": decision,
+            "decision_legacy": LEGACY[decision],
+            "decision_reason": reason,
+        }
+        # M13: the case-intake record commits with the decision itself
+        outbox = outbox_row(event) if needs_outbox(event) else None
+        await self._persist(tx, decision, reason, risk, outbox=outbox)
         if decision == "BLOCK":
             await self.bus.publish(self.BLOCKED, self.blocked[-1], key=str(tx["transaction_id"]))
-        await self.bus.publish(
-            self.DECIDED,
-            {
-                **tx,
-                "decision": decision,
-                "decision_legacy": LEGACY[decision],
-                "decision_reason": reason,
-            },
-            key=str(tx["transaction_id"]),
-        )
+        await self.bus.publish(self.DECIDED, event, key=str(tx["transaction_id"]))
 
     async def _apply_status(
         self, tx: dict[str, Any], decision: str, reason: str, risk: float
@@ -165,7 +165,15 @@ class ActionAgent:
                 tx["transaction_id"],
             )
 
-    async def _persist(self, tx: dict[str, Any], decision: str, reason: str, risk: float) -> None:
+    async def _persist(
+        self,
+        tx: dict[str, Any],
+        decision: str,
+        reason: str,
+        risk: float,
+        *,
+        outbox: dict[str, Any] | None = None,
+    ) -> None:
         if self.writer is None:
             return
         hold_minutes = tx.get("hold_minutes")
@@ -211,6 +219,7 @@ class ActionAgent:
                         "reason_codes": [r.get("code") for r in tx.get("reason_codes") or []],
                     },
                 ),
+                outbox=outbox,
             )
         except Exception:
             logger.exception("[Action] kalıcılık hatası (%s)", tx["transaction_id"])
