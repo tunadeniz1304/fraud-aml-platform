@@ -2,7 +2,7 @@
 
 Tarih: 2026-09-25 · Ortam: Windows 11, Python 3.11, Docker 29.2, 8 CPU.
 
-> Bu rapor v2.0.0 anındaki durumu anlatır. Sonraki bağımsız denetimde bu tablodaki bazı kanıtlar geçersiz çıktı: sentetik verideki 0,971 PR-AUC bir etiket sızıntısından geliyordu, performans satırı yalnızca süreç içi motor ölçümüdür. Güncel durum ve halka açık veriyle doğrulama için v2 raporu `docs/FINAL_REPORT_v2.md` olacak (henüz yazılmadı); o zamana kadar `docs/VALIDATION_REPORT.md` ve `CHANGELOG.md` [2.1.0] bölümüne bakın.
+> Bu rapor v2.0.0 anındaki durumu anlatır. Sonraki bağımsız denetimde bu tablodaki bazı kanıtlar geçersiz çıktı: sentetik verideki 0,971 PR-AUC bir etiket sızıntısından geliyordu, performans satırı yalnızca süreç içi motor ölçümüdür. Güncel durum, halka açık veriyle doğrulama ve güncel test/kapsam sayıları `docs/FINAL_REPORT_v2.md` içindedir. Aşağıdaki tablo tarihsel kayıttır; 5. ve 7. satırdaki sayılar (0,971 PR-AUC, 388 test, %94 kapsam) v2.1.0 için geçerli değildir.
 
 | # | Kriter | Durum | Kanıt |
 |---|---|---|---|

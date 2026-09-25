@@ -11,8 +11,11 @@ Bağımsız denetim bulgularını kapatan sürüm. Bulgular önce `tests/test_au
 - Repoda internetsiz testler için atıflı PaySim ve Elliptic örnekleri (`tests/fixtures/`), birebir kopyalanmış satırlar.
 - Gölge replay ve katman ablasyonu: PaySim, Elliptic, ULB ve sentetik veri (`scripts/validate_public_data.py`, `app/validation/`, `docs/VALIDATION_REPORT.md`).
 - Sentetik üreticiden tipoloji parmak izleri kaldırıldı; sızıntı dedektörü testi eklendi. Eski 0,971 PR-AUC'nin bir sızıntıdan geldiği raporlandı.
-- `fraud_gbm_v3` champion, `fraud_gbm_v4` challenger; seçim replay kanıtıyla ve dört göz onayıyla yapıldı (`scripts/champion_selection.py`). v1 ve v2 arşivlendi.
-- Eksik cihaz ve nakit kanal göstergeleri feature olarak eklendi.
+- `fraud_gbm_v5` champion, `fraud_gbm_v6` challenger; seçim yalnız doğrulama dönemi metrikleriyle, test bir kez raporlanarak ve dört göz onayıyla yapıldı (`scripts/champion_selection.py`). v1–v4 arşivlendi.
+- Eksik cihaz ve nakit kanal göstergeleri feature olarak eklendi (46 → 48 feature).
+- 70/15/15 satır bölmesi, tabakalı bootstrap güven aralıkları, GBM–yığın farkları, Brier/ECE kalibrasyonu; bütçe kesiminde eşit skorlar paylaştırılıyor.
+- Stacker katsayı tabanları yerine doğrulama ablasyonuyla seçilen negatif olmayan Platt tipi birleştirici.
+- Replay'de kâhin (oracle) step-up geri bildirimi yerine kâhin olmayan OTP sonuç modeli; Elliptic graf feature'ları adım başına tümevarımsal.
 
 ### Düzeltmeler
 - **A1** Copilot otomatik ŞİB taslağı şema reddinde artık kaybolmuyor.
@@ -37,6 +40,14 @@ Bağımsız denetim bulgularını kapatan sürüm. Bulgular önce `tests/test_au
 - **C19** Ingest hız sınırı düşürüldü; HMAC imzasında tek kullanımlık `X-Nonce`.
 - **C20** PII maskeleme ASCII'ye katlanmış, büyük harfli ve alıcı adlarını da kapsıyor.
 - **C21** İç LLM sunucu adresi koddan ve dokümanlardan kaldırıldı.
+
+### Bağımsız denetim turu 1 düzeltmeleri
+- **Yetki ve oturum:** kısa ömürlü, iptal edilebilir oturumlar; step-up sonucu tek kullanımlık challenge'a bağlı; maker-checker yarış koşuluna karşı güvenli, türe göre onaylayıcı rolü, kendi talebini onaylama yok; kural ve eşik değişiklikleri onaydan geçiyor; FRAUD kapanışı ve yeniden açma kıdemli analist istiyor; audit ve DLQ yalnız kıdemli analiste, DLQ yükleri maskeli.
+- **Sertleştirme:** prod'da demo sırlarıyla açılış reddediliyor; anonim Grafana kapalı; kural DSL'i yalnız sayısal aritmetik, sınırlı literal ve süre sınırlı backtest; copilot'ta güvenilmeyen vaka metni sınırlandırılıyor ve araçlar vakanın müşterisiyle sınırlı; PII maskeleme boşluklu TCKN, yabancı IBAN, kart ve telefon varyantlarını kapsıyor; HSTS.
+- **Dayanıklılık:** ingress mesajları DB commit'inden sonra ack'leniyor; idempotency özet karşılaştırması ve 409 "işleniyor" yanıtı; yazıcı partileri yeniden deneniyor, bölünüyor, dead-letter'a düşüyor; hesap durumu compare-and-set ile yazılıyor ve worker'lar arası eşitleniyor; eşik, kural ve model nesilleri worker'lar arası paylaşılıyor; feature kilidi alınamazsa HOLD; vaka alımı outbox ile kalıcı.
+- **Audit:** isteğe bağlı HMAC anahtarlı audit zinciri ve doğrulama hatası metriği.
+- **Uyum:** süresi geçmiş MASAK vakaları ayrı sayılıyor (`fraud_cases_masak_overdue`, `MASAKSuresiGecti` alarmı).
+- **LLM:** ağ geçidi markası dokümanlardan ve varsayılanlardan kaldırıldı; eski ortam değişkeni adı geriye uyumluluk için kabul ediliyor.
 
 ### Arayüz
 - Doğrulama görünümü, sunucu taraflı sayfalı ve filtreli vaka kuyruğu, erişilebilirlik iyileştirmeleri, arayüz testleri.
