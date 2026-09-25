@@ -174,7 +174,7 @@ class ScenarioFactory:
         txs = self._prelude(c, "ato")
         avg = float(c.get("avg_amount") or 1000)
         start = self.now - timedelta(minutes=6)
-        device = f"DEV-ATO-{self.rng.randint(0, 0xFFFFF):05X}"
+        device = f"DEV-{self.rng.getrandbits(32):08X}"
         keys = []
         for k in range(2):
             tx = self._tx(
@@ -242,7 +242,7 @@ class ScenarioFactory:
             v = self._pick(exclude=used)
             used.add(v["customer_id"])
             victims.append(v)
-        shared_device = f"DEV-RING-{self.rng.randint(0, 0xFFFF):04X}"
+        shared_device = f"DEV-{self.rng.getrandbits(32):08X}"
         cashout = make_iban(self.rng)
         start = self.now - timedelta(minutes=40)
         txs: list[dict[str, Any]] = []
@@ -329,7 +329,7 @@ class ScenarioFactory:
         c = self._chosen(customer_id)
         txs = self._prelude(c, "card")
         start = self.now - timedelta(minutes=10)
-        device = f"DEV-BOT-{self.rng.randint(0, 0xFFFF):04X}"
+        device = f"DEV-{self.rng.getrandbits(32):08X}"
         for k in range(8):
             txs.append(
                 self._tx(

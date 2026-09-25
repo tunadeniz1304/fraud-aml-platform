@@ -19,6 +19,13 @@ volume); labelled fraud typologies are injected on top:
 
 Everything derives from one :class:`random.Random` seed, so the same seed
 always yields byte-identical output. Names/IBANs are fictional.
+
+**No fingerprints (v2).** Device ids come from one typology-independent
+format (:meth:`_Builder._device`), legitimate traffic changes devices at a
+realistic rate, part of the account takeovers run from the victim's *known*
+device (session hijack / remote access), mule rings do not always share a
+device and a configurable share of labels is flipped (label noise). A leakage
+detector test checks that identifier fields alone cannot predict fraud.
 """
 
 from __future__ import annotations
@@ -218,7 +225,18 @@ class SyntheticConfig:
     card_testing: int = 25
     structuring: int = 22
     sanctions_hits: int = 10
-    legit_new_device_rate: float = 0.015
+    #: one-off new device of a legitimate customer (borrowed phone, new browser)
+    legit_new_device_rate: float = 0.05
+    #: per-day probability that a customer permanently switches phones
+    phone_change_rate: float = 0.004
+    #: account takeovers performed from the victim's own device (hijack / RAT)
+    ato_known_device_rate: float = 0.35
+    #: mule transfers sent from a device shared inside the ring
+    mule_shared_device_rate: float = 0.35
+    #: card-testing bursts run from an already known device (infected browser)
+    card_known_device_rate: float = 0.25
+    #: share of labels flipped (missed chargebacks / friendly-fraud disputes)
+    label_noise_rate: float = 0.01
     legit_new_payee_rate: float = 0.07
     legit_travel_rate: float = 0.006
     legit_vpn_rate: float = 0.006
@@ -315,6 +333,10 @@ class _Builder:
                 self._used_names.add(name)
                 return name
         return f"{rng.choice(FIRST_NAMES)} {rng.choice(LAST_NAMES)} {rng.randint(2, 99)}"
+
+    def _device(self) -> str:
+        """Typology-independent device id (no ``DEV-ATO-*`` style prefixes)."""
+        return f"DEV-{self.rng.getrandbits(32):08X}"
 
     def _ip(self, prefix: str) -> str:
         parts = prefix.split(".")
@@ -433,10 +455,7 @@ class _Builder:
                 "name": name,
                 "home_city": home,
                 "home_country": "TR",
-                "known_device_ids": [
-                    f"DEV-{rng.randint(0, 0xFFFF):04X}-{rng.randint(10, 99)}"
-                    for _ in range(rng.choice((1, 1, 2, 2, 3)))
-                ],
+                "known_device_ids": [self._device() for _ in range(rng.choice((1, 1, 2, 2, 3)))],
                 "known_locations": list(dict.fromkeys(locations)),
                 "avg_amount": avg,
                 "typical_hours": hours,
@@ -463,7 +482,7 @@ class _Builder:
         # family members sharing a tablet (legitimate shared device)
         for _ in range(self.cfg.customers // 30):
             a, b = rng.sample(self.customers, 2)
-            shared = f"DEV-FAM-{rng.randint(0, 0xFFFF):04X}"
+            shared = self._device()
             for c in (a, b):
                 c["known_device_ids"] = [*c["known_device_ids"], shared]
                 c["_devices"] = [*c["_devices"], shared]
@@ -474,7 +493,7 @@ class _Builder:
         chosen = rng.sample(pool, self.cfg.mule_rings * self.cfg.ring_size)
         for r in range(self.cfg.mule_rings):
             members = chosen[r * self.cfg.ring_size : (r + 1) * self.cfg.ring_size]
-            devices = [f"DEV-RING{r + 1}-{k}" for k in range(rng.randint(1, 2))]
+            devices = [self._device() for _ in range(rng.randint(1, 2))]
             cashouts = [
                 self._payee(
                     self._name(),
@@ -508,8 +527,8 @@ class _Builder:
                 rate = c["_rate"] * (0.7 if date.weekday() >= 5 else 1.0)
                 if date.day in (1, 15):  # maaş günleri
                     rate += 1.0
-                if rng.random() < 0.002:  # telefon değişikliği: yeni cihaz kalıcı olur
-                    c["_devices"] = [f"DEV-{rng.randint(0, 0xFFFF):04X}-{rng.randint(10, 99)}"]
+                if rng.random() < self.cfg.phone_change_rate:  # telefon değişikliği (kalıcı)
+                    c["_devices"] = [self._device()]
                 for _ in range(_poisson(rng, rate)):
                     self._normal_tx(c, self._time(day, self._hour(c)))
                 if rng.random() < 0.03:  # aynı oturumda art arda fatura ödemeleri
@@ -551,7 +570,7 @@ class _Builder:
             self._to(tx, rng.choices(regular, weights=weights)[0])
         if rng.random() < self.cfg.legit_new_device_rate:
             # one-off legitimate new device (e.g. a borrowed phone) — never added to KYC
-            tx["device_id"] = f"DEV-{rng.randint(0, 0xFFFF):04X}-{rng.randint(10, 99)}"
+            tx["device_id"] = self._device()
         if rng.random() < self.cfg.legit_travel_rate:
             city, country, prefix = rng.choice(FOREIGN[:2])
             tx.update(location=city, country=country, ip_address=self._ip(prefix))
@@ -592,7 +611,9 @@ class _Builder:
                 target = next(c for c in self.customers if c["customer_id"] == peer)["iban"]
             tx = self._base_tx(member, t, amount)
             tx.update(
-                device_id=rng.choice(ring["devices"]) if rng.random() < 0.6 else tx["device_id"],
+                device_id=rng.choice(ring["devices"])
+                if rng.random() < self.cfg.mule_shared_device_rate
+                else tx["device_id"],
                 purpose=rng.choice(("", "Borç", "Ödeme", "Emanet")),
                 label=1,
                 typology="mule",
@@ -606,8 +627,9 @@ class _Builder:
             c = self._victim()
             day = rng.randint(8, self.cfg.days - 1)
             ts = self._time(day, rng.randint(0, 23))
-            rat = rng.random() < 0.15  # zararlı yazılım/RAT: kurbanın kendi cihazı
-            device = rng.choice(c["_devices"]) if rat else f"DEV-ATO-{rng.randint(0, 0xFFFFF):05X}"
+            # oturum çalma / uzaktan erişim: saldırı kurbanın bilinen cihazından gelir
+            rat = rng.random() < self.cfg.ato_known_device_rate
+            device = rng.choice(c["_devices"]) if rat else self._device()
             roll = rng.random()
             if rat:
                 ip, country, city = self._ip(c["_ip_prefix"]), "TR", c["home_city"]
@@ -713,7 +735,9 @@ class _Builder:
                     amount *= rng.uniform(0.95, 0.99)
                     tx = self._base_tx(src, ts, amount)
                     tx.update(
-                        device_id=rng.choice(ring["devices"]),
+                        device_id=rng.choice(ring["devices"])
+                        if rng.random() < self.cfg.mule_shared_device_rate
+                        else tx["device_id"],
                         purpose="Emanet",
                         label=1,
                         typology="mule",
@@ -725,7 +749,8 @@ class _Builder:
         for _ in range(self.cfg.card_testing):
             c = self._victim()
             ts = self._time(rng.randint(3, self.cfg.days - 1), rng.randint(0, 23))
-            device = f"DEV-BOT-{rng.randint(0, 0xFFFF):04X}"
+            known = rng.random() < self.cfg.card_known_device_rate
+            device = rng.choice(c["_devices"]) if known else self._device()
             ip = self._ip(rng.choice(ANON_IP_PREFIXES + DOMESTIC_IP_PREFIXES * 2))
             for _ in range(rng.randint(6, 16)):
                 ts = ts + timedelta(seconds=rng.uniform(10, 90))
@@ -778,6 +803,16 @@ class _Builder:
             self._emit(self._to(tx, iban))
 
     # --- assembly ---------------------------------------------------------------------------
+    def label_noise(self) -> None:
+        """Flip a small share of labels (missed chargebacks, friendly fraud)."""
+        rng = self.rng
+        for tx in self.tx:
+            if tx.get("exclude_from_training"):
+                continue
+            if rng.random() < self.cfg.label_noise_rate:
+                tx["label"] = 1 - int(tx["label"])
+                tx["label_noise"] = True
+
     def finish(self) -> SyntheticDataset:
         self.tx.sort(key=lambda t: (t["ts"], t["customer_id"], t["amount"]))
         for i, tx in enumerate(self.tx):
@@ -815,13 +850,14 @@ def generate(cfg: SyntheticConfig | None = None) -> SyntheticDataset:
     builder.card_testing()
     builder.structuring()
     builder.sanctions()
+    builder.label_noise()
     return builder.finish()
 
 
 #: Keys that exist only for training/evaluation and must be stripped before a
 #: synthetic transaction is sent through the API/bus (``TransactionIn`` forbids
 #: extra fields).
-LABEL_KEYS = ("label", "typology", "exclude_from_training")
+LABEL_KEYS = ("label", "typology", "exclude_from_training", "label_noise")
 
 
 def strip_labels(tx: dict[str, Any]) -> dict[str, Any]:

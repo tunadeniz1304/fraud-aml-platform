@@ -58,7 +58,8 @@ class TestGenerator:
             "sanctions",
         }
         for tx in small.transactions:
-            assert tx["label"] == (0 if tx["typology"] == "normal" else 1)
+            expected = 0 if tx["typology"] == "normal" else 1
+            assert tx["label"] == (expected ^ 1 if tx.get("label_noise") else expected)
         sanctions = [t for t in small.transactions if t["typology"] == "sanctions"]
         assert all(t["exclude_from_training"] for t in sanctions)
         screener = SanctionScreener().load()
