@@ -120,6 +120,45 @@ def test_a11_migration_removes_duplicate_alerts(tmp_path: Path):
     command.downgrade(cfg, "base")
 
 
+def test_l10_migration_supersedes_duplicate_pending_approvals(tmp_path: Path):
+    """0003 closes the older duplicate pending requests before it creates the
+    unique pending index (an upgrade used to fail on such a database)."""
+    from sqlalchemy import create_engine
+
+    from app.db.models import Approval
+
+    path = (tmp_path / "l10.db").as_posix()
+    cfg = _alembic_cfg(f"sqlite+aiosqlite:///{path}")
+    command.upgrade(cfg, "0002")
+    engine = create_engine(f"sqlite:///{path}")
+    now = datetime(2026, 9, 25, 10, 0)
+    base = {"kind": "UNBLOCK", "payload": {}, "requested_by": "a", "note": "", "created_at": now}
+    with engine.begin() as conn:
+        conn.execute(
+            Approval.__table__.insert(),
+            [
+                {**base, "id": 1, "target_id": "CUST-1", "status": "BEKLIYOR"},
+                {**base, "id": 2, "target_id": "CUST-1", "status": "BEKLIYOR"},
+                {**base, "id": 3, "target_id": "CUST-1", "status": "ONAYLANDI"},
+                {**base, "id": 4, "target_id": "CUST-2", "status": "BEKLIYOR"},
+            ],
+        )
+    command.upgrade(cfg, "head")
+    with engine.connect() as conn:
+        rows = {
+            r["id"]: r for r in conn.execute(select(Approval.__table__).order_by("id")).mappings()
+        }
+    engine.dispose()
+    assert {i: r["status"] for i, r in rows.items()} == {
+        1: "REDDEDILDI",
+        2: "BEKLIYOR",
+        3: "ONAYLANDI",
+        4: "BEKLIYOR",
+    }
+    assert rows[1]["decided_by"] == "system:migration-0003" and rows[1]["decided_at"]
+    command.downgrade(cfg, "base")
+
+
 async def test_money_is_exact_decimal(store):
     tx = {
         "transaction_id": "TX-M",
