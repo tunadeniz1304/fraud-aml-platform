@@ -13,21 +13,22 @@ from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
+from numpy.typing import ArrayLike
 
 
-def pr_auc(y: Sequence[int], scores: Sequence[float]) -> float:
+def pr_auc(y: ArrayLike, scores: ArrayLike) -> float:
     from sklearn.metrics import average_precision_score
 
     return float(average_precision_score(y, scores))
 
 
-def roc_auc(y: Sequence[int], scores: Sequence[float]) -> float:
+def roc_auc(y: ArrayLike, scores: ArrayLike) -> float:
     from sklearn.metrics import roc_auc_score
 
     return float(roc_auc_score(y, scores))
 
 
-def recall_at_fpr(y: Sequence[int], scores: Sequence[float], fpr: float = 0.01) -> float:
+def recall_at_fpr(y: ArrayLike, scores: ArrayLike, fpr: float = 0.01) -> float:
     ya, sa = np.asarray(y), np.asarray(scores, dtype=float)
     negatives = sa[ya == 0]
     positives = sa[ya == 1]
@@ -38,9 +39,9 @@ def recall_at_fpr(y: Sequence[int], scores: Sequence[float], fpr: float = 0.01) 
 
 
 def budget_metrics(
-    y: Sequence[int],
-    scores: Sequence[float],
-    amounts: Sequence[float],
+    y: ArrayLike,
+    scores: ArrayLike,
+    amounts: ArrayLike,
     budget: float = 0.01,
 ) -> dict[str, float]:
     ya = np.asarray(y)
@@ -76,10 +77,19 @@ def reference_bins(values: Sequence[float], bins: int = 10) -> list[float]:
     return sorted(set(np.round(qs, 8).tolist()))
 
 
+#: additive (Laplace) smoothing so empty bins never give log(0) or a division by zero
+PSI_EPSILON = 1e-4
+
+
 def _hist(values: Sequence[float], edges: Sequence[float]) -> np.ndarray:
     idx = np.searchsorted(np.asarray(edges), np.asarray(values, dtype=float), side="right")
     counts = np.bincount(idx, minlength=len(edges) + 1).astype(float)
     return counts / max(1.0, counts.sum())
+
+
+def _smooth(share: np.ndarray) -> np.ndarray:
+    smoothed = np.asarray(share, dtype=float) + PSI_EPSILON
+    return smoothed / smoothed.sum()
 
 
 def psi(
@@ -87,16 +97,16 @@ def psi(
 ) -> float:
     """Population stability index (0.1 = watch, 0.25 = significant drift)."""
     edges = list(edges) if edges is not None else reference_bins(expected)
-    e = np.clip(_hist(expected, edges), 1e-4, None)
-    a = np.clip(_hist(actual, edges), 1e-4, None)
+    e = _smooth(_hist(expected, edges))
+    a = _smooth(_hist(actual, edges))
     return float(np.sum((a - e) * np.log(a / e)))
 
 
 def psi_from_distribution(
     expected_share: Sequence[float], actual: Sequence[float], edges: Sequence[float]
 ) -> float:
-    e = np.clip(np.asarray(expected_share, dtype=float), 1e-4, None)
-    a = np.clip(_hist(actual, edges), 1e-4, None)
+    e = _smooth(np.asarray(expected_share, dtype=float))
+    a = _smooth(_hist(actual, edges))
     return float(np.sum((a - e) * np.log(a / e)))
 
 

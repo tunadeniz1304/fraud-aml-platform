@@ -237,19 +237,52 @@ async def test_a6_block_flags_graph_fraud_nodes(pipeline: Any) -> None:
 
 
 # --- A7: PSI must not alarm on the demo population at startup ---------------------------------
-@open_finding("A7")
-async def test_a7_no_drift_alarm_on_demo_startup(demo_env: Path, monkeypatch) -> None:
-    from app.pipeline import build_pipeline
+async def test_a7_no_drift_alarm_on_demo_startup_but_real_drift_alarms(
+    demo_env: Path, monkeypatch
+) -> None:
+    """The demo stream replays the demo population: PSI stays quiet at startup and
+    for that stream, while the same stream with STREAM_DRIFT-style inflated amounts
+    alarms."""
+    from app.pipeline import build_pipeline, load_transactions, rebase_timestamps
 
-    monkeypatch.setenv("STREAM_MODE", "batch")
-    get_settings.cache_clear()
     p = await build_pipeline(get_settings())
     await p.start()
     try:
-        status = p.engine.drift.status()
-        assert status["alerts"] == [], status["psi"]
+        drift = p.engine.drift
+        await p._drift_task  # population reference built in the background
+        startup = drift.status()
+        assert startup["reference"] == "population" and not startup["pending"]
+        assert startup["alerts"] == []
+        stream = rebase_timestamps(load_transactions(get_settings().resolved_transactions_path))
+        for tx in stream:
+            await p.ingest({**tx, "transaction_id": "S1-" + tx["transaction_id"]})
+        stable = drift.status()
+        assert stable["observed"] >= 1000
+        assert stable["alerts"] == [], stable["psi"]
+        shifted = rebase_timestamps(stream, end=datetime.now() + timedelta(days=7))
+        for tx in shifted:
+            await p.ingest(
+                {
+                    **tx,
+                    "transaction_id": "S2-" + tx["transaction_id"],
+                    "amount": round(float(tx["amount"]) * 4, 2),
+                }
+            )
+        drifted = drift.status()
+        assert drifted["alerts"], drifted["psi"]
     finally:
         await p.stop()
+
+
+def test_a7_psi_handles_empty_bins_and_windows() -> None:
+    import math
+
+    from app.ml.metrics import psi, psi_from_distribution
+
+    assert psi([1.0, 2.0, 3.0], [1.0, 2.0, 3.0], [1.5, 2.5]) == pytest.approx(0.0)
+    value = psi_from_distribution([1.0, 0.0, 0.0], [5.0, 5.0], [1.5, 2.5])  # empty bins
+    assert math.isfinite(value) and value > 0.25
+    assert math.isfinite(psi_from_distribution([0.5, 0.5], [], [1.0]))  # empty window
 
 
 # --- B8: per-customer ordering ----------------------------------------------------------------

@@ -250,7 +250,8 @@ class ScoringEngine:
         self.challenger = challenger
         self.policy.stacker = champion.stacker if champion else None
         reference = (champion.metadata.get("psi_reference") if champion else None) or {}
-        self.drift = DriftMonitor(reference) if reference else None
+        pending = get_settings().drift_population_reference
+        self.drift = DriftMonitor(reference, pending=pending) if reference else None
         for role, bundle in (("champion", champion), ("challenger", challenger)):
             if bundle is not None:
                 metrics.MODEL_INFO.labels(role=role, version=bundle.version).set(1)

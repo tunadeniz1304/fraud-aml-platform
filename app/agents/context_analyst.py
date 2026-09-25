@@ -66,6 +66,8 @@ class ContextAnalyst:
         self.analyzed: deque[dict[str, Any]] = deque(maxlen=buffer or settings.analyzed_buffer)
         self.stats = OnlineStats()
         self.account_status = account_status
+        #: off while the startup warm-up batch initialises state (not live traffic)
+        self.observe_drift = True
         self.bus.subscribe(self.MONITORED, self._on_monitored)
 
     @property
@@ -122,7 +124,7 @@ class ContextAnalyst:
         else:
             await self.engine.commit(result)
             self.stats.update(result.risk_score)
-            if self.engine.drift is not None:
+            if self.engine.drift is not None and self.observe_drift:
                 self.engine.drift.observe(result.features, result.policy.stacked)
             metrics.SCORE_LATENCY.observe(result.latency_ms / 1000)
             if result.model is not None:

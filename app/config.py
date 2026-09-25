@@ -103,6 +103,14 @@ class Settings(BaseSettings):
     stream_mode: Literal["batch", "stream", "off"] = "batch"
     stream_rate: float = 2.0
     stream_drift: float = 0.0
+    # PSI reference: "model" (champion validation split), "population" (the demo
+    # population replayed at startup) or "auto" (population outside prod).
+    drift_reference: Literal["auto", "model", "population"] = "auto"
+    # Score PSI uses fixed, decision-relevant risk bands: quantile bins of a score
+    # whose mass sits near 5e-5 are 1e-6 wide and alarm on meaningless jitter.
+    drift_score_edges: list[float] = Field(
+        default_factory=lambda: [0.01, 0.05, 0.1, 0.2, 0.35, 0.6, 0.85]
+    )
 
     # --- Vector store (copilot RAG; never on the synchronous scoring path) ---
     vector_store: Literal["chroma", "off"] = "chroma"
@@ -296,6 +304,13 @@ class Settings(BaseSettings):
     @property
     def resolved_transactions_path(self) -> Path:
         return self.transactions_path or self.data_dir / "transactions.json"
+
+    @property
+    def drift_population_reference(self) -> bool:
+        """Build the PSI reference from the demo population (not the model's)."""
+        if self.drift_reference == "auto":
+            return self.environment != "prod"
+        return self.drift_reference == "population"
 
     @property
     def high_risk_country_set(self) -> frozenset[str]:

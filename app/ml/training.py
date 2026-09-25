@@ -42,6 +42,7 @@ from app.features.store import MemoryFeatureStore
 from app.ml import metrics as M
 from app.ml.anomaly import ECODScorer, FastIsolationForest, QuantileCalibrator
 from app.ml.gbm import GBMModel
+from app.ml.monitoring import score_edges
 from app.ml.registry import ModelRegistry, save_bundle
 from app.ml.stacker import Stacker
 from app.scoring.policy import Thresholds, default_thresholds
@@ -192,22 +193,47 @@ def _typology_outcomes(
     return {k: dict(sorted(v.items())) for k, v in sorted(out.items())}
 
 
-def train_from_rows(rows: list[BackfillRow], cfg: TrainingConfig) -> TrainingReport:
+@dataclass
+class FittedHybrid:
+    """The trained components of the hybrid scorer (GBM + anomaly + stacker)."""
+
+    gbm: GBMModel
+    iforest: FastIsolationForest
+    ecod: ECODScorer
+    cal_iforest: QuantileCalibrator
+    cal_ecod: QuantileCalibrator
+    stacker: Stacker | None = None
+
+    def ml(self, x: np.ndarray) -> list[float]:
+        return [float(v) for v in self.gbm.predict(x).tolist()]
+
+    def anomaly(self, x: np.ndarray) -> list[float]:
+        return [
+            0.5 * (self.cal_iforest(self.iforest.anomaly(r)) + self.cal_ecod(self.ecod.score(r)))
+            for r in x.tolist()
+        ]
+
+    def hybrid(
+        self, rule: Sequence[float], ml: Sequence[float], an: Sequence[float]
+    ) -> list[float]:
+        stacker = self.stacker
+        assert stacker is not None, "fit_hybrid() fits the stacker"
+        return [stacker.predict(r, m, a) for r, m, a in zip(rule, ml, an, strict=True)]
+
+
+def fit_hybrid(
+    train: Sequence[BackfillRow], valid: Sequence[BackfillRow], cfg: TrainingConfig
+) -> FittedHybrid:
+    """Fit GBM (early stopping on ``valid``), IForest + ECOD on clean training
+    rows, their calibrators and the stacker on the validation split."""
     from sklearn.ensemble import IsolationForest
 
-    started = time.perf_counter()
     names = model_feature_names()
-    train, valid, test = _split(rows, cfg)
     x_tr, y_tr = _xy(train)
     x_va, y_va = _xy(valid)
-    x_te, y_te = _xy(test)
-    if y_tr.sum() == 0 or y_va.sum() == 0 or y_te.sum() == 0:
-        raise ValueError("her bölümde en az bir fraud örneği olmalı (veri çok küçük)")
-
     gbm = GBMModel.train(
         x_tr, y_tr, x_va, y_va, names, seed=cfg.seed, num_boost_round=cfg.num_boost_round
     )
-
     clean = x_tr[y_tr == 0]
     iso = IsolationForest(
         n_estimators=cfg.iforest_estimators, max_samples=256, random_state=cfg.seed
@@ -216,25 +242,36 @@ def train_from_rows(rows: list[BackfillRow], cfg: TrainingConfig) -> TrainingRep
     rng = np.random.default_rng(cfg.seed)
     ref_idx = rng.choice(len(clean), size=min(cfg.ecod_reference_rows, len(clean)), replace=False)
     ecod = ECODScorer.fit(clean[np.sort(ref_idx)])
-
     va_clean = x_va[y_va == 0]
     cal_if = QuantileCalibrator.fit([iforest.anomaly(r) for r in va_clean.tolist()])
     cal_ec = QuantileCalibrator.fit([ecod.score(r) for r in va_clean.tolist()])
-
-    def anomaly_scores(x: np.ndarray) -> list[float]:
-        return [0.5 * (cal_if(iforest.anomaly(r)) + cal_ec(ecod.score(r))) for r in x.tolist()]
-
-    ml_va = gbm.predict(x_va).tolist()
-    an_va = anomaly_scores(x_va)
+    fitted = FittedHybrid(gbm, iforest, ecod, cal_if, cal_ec)
+    ml_va, an_va = fitted.ml(x_va), fitted.anomaly(x_va)
     rule_va = [r.rule_score for r in valid]
-    stacker = Stacker.fit(
+    fitted.stacker = Stacker.fit(
         list(zip(rule_va, ml_va, an_va, strict=True)), y_va.tolist(), seed=cfg.seed
     )
+    return fitted
 
-    ml_te = gbm.predict(x_te).tolist()
-    an_te = anomaly_scores(x_te)
+
+def train_from_rows(rows: list[BackfillRow], cfg: TrainingConfig) -> TrainingReport:
+    started = time.perf_counter()
+    names = model_feature_names()
+    train, valid, test = _split(rows, cfg)
+    x_va, y_va = _xy(valid)
+    x_te, y_te = _xy(test)
+    if not (any(r.label for r in train) and y_va.sum() and y_te.sum()):
+        raise ValueError("her bölümde en az bir fraud örneği olmalı (veri çok küçük)")
+    fitted = fit_hybrid(train, valid, cfg)
+    gbm, stacker = fitted.gbm, fitted.stacker
+    assert stacker is not None
+    iforest, ecod, cal_if, cal_ec = fitted.iforest, fitted.ecod, fitted.cal_iforest, fitted.cal_ecod
+    ml_va, an_va = fitted.ml(x_va), fitted.anomaly(x_va)
+    rule_va = [r.rule_score for r in valid]
+
+    ml_te, an_te = fitted.ml(x_te), fitted.anomaly(x_te)
     rule_te = [r.rule_score for r in test]
-    hybrid_te = [stacker.predict(r, m, a) for r, m, a in zip(rule_te, ml_te, an_te, strict=True)]
+    hybrid_te = fitted.hybrid(rule_te, ml_te, an_te)
     amounts_te = [r.amount_try for r in test]
     thresholds = default_thresholds()
     test_metrics = {
@@ -244,14 +281,14 @@ def train_from_rows(rows: list[BackfillRow], cfg: TrainingConfig) -> TrainingRep
         "hybrid": M.evaluate(y_te.tolist(), hybrid_te, amounts_te),
         "decisions_by_typology": _typology_outcomes(test, hybrid_te, thresholds),
     }
-    hybrid_va = [stacker.predict(r, m, a) for r, m, a in zip(rule_va, ml_va, an_va, strict=True)]
+    hybrid_va = fitted.hybrid(rule_va, ml_va, an_va)
     importance = gbm.feature_importance()
     top_features = sorted(importance, key=lambda k: -importance[k])[:10]
     psi_reference: dict[str, Any] = {}
     for name, values in [("score", hybrid_va)] + [
         (f, x_va[:, names.index(f)].tolist()) for f in top_features
     ]:
-        edges = M.reference_bins(values)
+        edges = score_edges() if name == "score" else M.reference_bins(values)
         psi_reference[name] = {"edges": edges, "share": M.distribution(values, edges)}
 
     elapsed = time.perf_counter() - started
@@ -259,7 +296,7 @@ def train_from_rows(rows: list[BackfillRow], cfg: TrainingConfig) -> TrainingRep
         "test": test_metrics,
         "valid_pr_auc_ml": round(M.pr_auc(y_va.tolist(), ml_va), 4),
         "split": {
-            "train": [len(train), int(y_tr.sum())],
+            "train": [len(train), sum(r.label for r in train)],
             "valid": [len(valid), int(y_va.sum())],
             "test": [len(test), int(y_te.sum())],
             "test_period": [test[0].ts, test[-1].ts],

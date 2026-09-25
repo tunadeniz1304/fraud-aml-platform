@@ -157,6 +157,7 @@ class Pipeline:
         self._stream_task: asyncio.Task[None] | None = None
         self._vector_task: asyncio.Task[None] | None = None
         self._ring_task: asyncio.Task[None] | None = None
+        self._drift_task: asyncio.Task[None] | None = None
         self.rings: list[dict[str, Any]] = []
         self.stream_done = asyncio.Event()
         bus.subscribe(ActionAgent.DECIDED, self._remember)
@@ -584,6 +585,53 @@ class Pipeline:
         except Exception:
             logger.exception("[Vector] RAG deposu başlatılamadı — copilot RAG'siz çalışacak")
 
+    async def build_drift_reference(self) -> int:
+        """Replay the demo population through a throwaway copy of the live engine
+        (same rules, model, signals; empty state) and install its feature / score
+        distribution as the PSI reference. Returns the number of events used."""
+        drift = self.engine.drift
+        if drift is None:
+            return 0
+        from app.scoring.engine import build_signals
+        from app.scoring.policy import PolicyEngine
+
+        path = self.settings.resolved_transactions_path
+        events = sorted(load_transactions(path), key=lambda t: (t["ts"], t["transaction_id"]))
+        extractor = FeatureExtractor(MemoryFeatureStore(), self.customers)
+        graph, payees, signals = build_signals(self.customers)
+        model = self.engine.model
+        shadow = ScoringEngine(
+            extractor,
+            ruleset=self.engine.ruleset,
+            policy=PolicyEngine(model.stacker if model else None),
+            sanctions=self.engine.sanctions,
+            model=model,
+            signals=signals,
+            graph=graph,
+            payees=payees,
+        )
+        samples: dict[str, list[float]] = {name: [] for name in drift.reference}
+        for tx in events:
+            result = await shadow.score(tx)
+            if not result.scored:
+                continue
+            for name, values in samples.items():
+                value = result.policy.stacked if name == "score" else result.features.get(name)
+                if value is not None:
+                    values.append(float(value))
+            await shadow.commit(result)
+        drift.replace_reference(samples, source="population")
+        logger.info("[Drift] PSI referansı demo popülasyonundan kuruldu (%d olay)", len(events))
+        return len(events)
+
+    async def _drift_reference_task(self) -> None:
+        try:
+            await self.build_drift_reference()
+        except Exception:  # monitoring must never stop the pipeline
+            logger.exception("[Drift] popülasyon referansı kurulamadı — model referansı kullanılır")
+            if self.engine.drift is not None:
+                self.engine.drift.pending = False
+
     async def start(self) -> None:
         await self.writer.start()
         await self.bus.start()
@@ -592,6 +640,11 @@ class Pipeline:
             logger.info("Redis Streams ingress aktif (grup: pipeline)")
         if self.settings.vector_store == "chroma" and self.vector is None:
             self._vector_task = asyncio.create_task(self._init_vector(), name="vector-init")
+        drift = self.engine.drift
+        if drift is not None and drift.pending:
+            self._drift_task = asyncio.create_task(
+                self._drift_reference_task(), name="drift-reference"
+            )
         flagged = await self.load_graph_flags()
         if flagged:
             logger.info("[Graph] %d doğrulanmış fraud işlemi grafta işaretlendi", flagged)
@@ -602,8 +655,10 @@ class Pipeline:
             batch = load_transactions(self.settings.resolved_transactions_path)
             if self.settings.batch_rebase_ts:
                 batch = rebase_timestamps(batch)
+            self.analyst.observe_drift = False  # warm-up initialises state
             await self.feed(batch)
             await self.drain()
+            self.analyst.observe_drift = True
             self.stream_done.set()
             logger.info(
                 "Pipeline hazır: %d işlem analiz edildi, %d bloke",
@@ -626,7 +681,7 @@ class Pipeline:
 
     async def stop(self) -> None:
         await self.wait_background()
-        for task in (self._stream_task, self._vector_task, self._ring_task):
+        for task in (self._stream_task, self._vector_task, self._ring_task, self._drift_task):
             if task is not None and not task.done():
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
