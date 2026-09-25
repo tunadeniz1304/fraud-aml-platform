@@ -37,7 +37,9 @@ class FeatureDefinition:
 FEATURES: dict[str, FeatureDefinition] = {}
 
 
-def feature(name: str, description: str, group: str = "davranış"):
+def feature(
+    name: str, description: str, group: str = "davranış"
+) -> Callable[[Callable[[FeatureContext], float]], Callable[[FeatureContext], float]]:
     def deco(fn: Callable[[FeatureContext], float]) -> Callable[[FeatureContext], float]:
         if name in FEATURES:  # pragma: no cover - programming error
             raise ValueError(f"feature '{name}' iki kez tanımlandı")

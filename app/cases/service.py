@@ -158,7 +158,9 @@ class CaseService:
         }
 
     # --- helpers ---------------------------------------------------------------------
-    async def _audit(self, event: str, entity: str, actor: str, reason: str, **payload: Any):
+    async def _audit(
+        self, event: str, entity: str, actor: str, reason: str, **payload: Any
+    ) -> None:
         entry = AuditEntry(
             event_type=event,
             entity_type="case" if event.startswith("CASE") else "approval",
@@ -684,7 +686,9 @@ class CaseService:
         )
         return await self.get_case(case_id)
 
-    async def _settle_account(self, customer_id: str, outcome: str, actor: str, case_id: int):
+    async def _settle_account(
+        self, customer_id: str, outcome: str, actor: str, case_id: int
+    ) -> None:
         if self.accounts is None or not self.accounts.exists(customer_id):
             return
         current = self.accounts.get_status(customer_id)

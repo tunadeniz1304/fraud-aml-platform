@@ -97,6 +97,11 @@ check_untyped_defs = true
 no_implicit_optional = true
 exclude = ["frontend/", "alembic/versions/"]
 
+[[tool.mypy.overrides]]
+# hot path and money/state handling: every function must be annotated
+module = ["app.scoring.*", "app.features.*", "app.bus.*", "app.cases.*"]
+disallow_untyped_defs = true
+
 # --------------------------------------------------------------------------
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
