@@ -35,7 +35,7 @@ import statistics
 import sys
 import time
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -71,6 +71,12 @@ def synthetic(count: int, seed: int = 11) -> tuple[list[dict[str, Any]], list[di
     return data.customers, [strip_labels(t) for t in data.transactions[:count]]
 
 
+def _now(utc: bool) -> str:
+    """Send-time timestamp in the server's naive clock (a container runs in UTC)."""
+    now = datetime.now(UTC).replace(tzinfo=None) if utc else datetime.now()
+    return now.isoformat(timespec="milliseconds")
+
+
 def demo_traffic(count: int, path: Path = DEMO_TRANSACTIONS) -> list[dict[str, Any]]:
     """The demo population's history, cycled to ``count`` events, as live traffic."""
     with path.open(encoding="utf-8") as fh:
@@ -83,9 +89,11 @@ def demo_traffic(count: int, path: Path = DEMO_TRANSACTIONS) -> list[dict[str, A
     ]
 
 
-def traffic(source: str, count: int) -> list[dict[str, Any]]:
+def traffic(source: str, count: int, population: Path | None = None) -> list[dict[str, Any]]:
     if source == "demo":
-        return demo_traffic(count)
+        return demo_traffic(
+            count, population / "transactions.json" if population else DEMO_TRANSACTIONS
+        )
     run = uuid.uuid4().hex[:6]
     _, txs = synthetic(count, seed=23)
     return [{**tx, "transaction_id": f"LT-{run}-{tx['transaction_id']}"} for tx in txs]
@@ -130,12 +138,14 @@ async def http_load(
     *,
     tps: float | None = None,
     source: str = "demo",
+    population: Path | None = None,
+    utc: bool = False,
     warmup: int = 50,
 ) -> dict[str, Any]:
     """``concurrency`` clients; open loop at ``tps`` when given (see module doc)."""
     import httpx
 
-    txs = traffic(source, count + warmup)
+    txs = traffic(source, count + warmup, population)
     limits = httpx.Limits(max_connections=concurrency, max_keepalive_connections=concurrency)
     async with httpx.AsyncClient(base_url=url, timeout=30, limits=limits) as client:
         headers = await _auth_headers(client, api_key)
@@ -146,6 +156,7 @@ async def http_load(
         scheduled_latencies: list[float] = []
         errors = 0
         statuses: dict[int, int] = {}
+        decisions: dict[str, int] = {}
         next_index = 0
         clock = time.perf_counter  # loop.time() ticks at ~15.6 ms on Windows
         started = clock()
@@ -161,10 +172,14 @@ async def http_load(
                     await asyncio.sleep(delay)
                 t0 = clock()
                 try:
-                    resp = await client.post("/api/transactions", json=work[index], headers=headers)
+                    tx = {**work[index], "ts": _now(utc)}
+                    resp = await client.post("/api/transactions", json=tx, headers=headers)
                     statuses[resp.status_code] = statuses.get(resp.status_code, 0) + 1
                     if resp.status_code != 200:
                         errors += 1
+                    else:
+                        decision = str(resp.json().get("decision"))
+                        decisions[decision] = decisions.get(decision, 0) + 1
                 except httpx.HTTPError:
                     errors += 1
                 done = clock()
@@ -179,6 +194,7 @@ async def http_load(
         "n": len(latencies),
         "errors": errors,
         "statuses": statuses,
+        "decisions": decisions,
         "concurrency": concurrency,
         "target_tps": tps,
         "tps": round(len(latencies) / elapsed, 1),
@@ -191,7 +207,15 @@ async def http_load(
 
 def to_markdown(results: list[dict[str, Any]], note: str = "") -> str:
     rows = []
+    mixes = []
     for r in results:
+        if r.get("decisions"):
+            total = sum(r["decisions"].values())
+            share = ", ".join(
+                f"{k} %{100 * v / total:.0f}" for k, v in sorted(r["decisions"].items())
+            )
+            target = r.get("target_tps") or "-"
+            mixes.append(f"- {r['mode']} @ {target} TPS karar dağılımı: {share}")
         lat = r["latency_ms"]
         sched = r.get("scheduled_latency_ms", {}).get("p99", "-")
         target = r.get("target_tps") or "-"
@@ -213,6 +237,8 @@ def to_markdown(results: list[dict[str, Any]], note: str = "") -> str:
             "|---|---|---|---|---|---|---|---|---|---|---|",
             *rows,
             "",
+            *mixes,
+            *([""] if mixes else []),
         ]
     )
 
@@ -226,6 +252,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tps", type=float, default=None, help="open-loop hedef istek/sn")
     parser.add_argument("--seconds", type=float, default=None, help="--tps ile: süre (count=tps*s)")
     parser.add_argument("--source", choices=["demo", "synthetic"], default="demo")
+    parser.add_argument(
+        "--population",
+        type=Path,
+        default=None,
+        help="demo nüfus dizini (build_demo_population.py --out); sunucu da aynısını yüklemeli",
+    )
+    parser.add_argument("--utc", action="store_true", help="ts'yi UTC gönder (konteyner saati)")
     parser.add_argument("--api-key", default=os.environ.get("SERVICE_API_KEY"))
     parser.add_argument("--note", default="", help="rapor başlığına eklenecek ortam notu")
     parser.add_argument("--json", type=Path, default=None, help="ham sonuçları JSON'a yaz")
@@ -237,7 +270,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.mode in ("engine", "both"):
         results.append(asyncio.run(engine_benchmark(count)))
     if args.mode in ("http-seq", "both"):
-        results.append(asyncio.run(http_load(args.url, count, 1, args.api_key, source=args.source)))
+        results.append(
+            asyncio.run(
+                http_load(
+                    args.url,
+                    count,
+                    1,
+                    args.api_key,
+                    source=args.source,
+                    population=args.population,
+                    utc=args.utc,
+                )
+            )
+        )
     if args.mode in ("http", "both"):
         results.append(
             asyncio.run(
@@ -248,6 +293,8 @@ def main(argv: list[str] | None = None) -> int:
                     args.api_key,
                     tps=args.tps,
                     source=args.source,
+                    population=args.population,
+                    utc=args.utc,
                 )
             )
         )
