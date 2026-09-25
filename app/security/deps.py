@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -20,6 +21,7 @@ from app.security.auth import (
     service_hmac_secret,
     verify_signature,
 )
+from app.security.revocation import REVOKED
 from app.security.tickets import TICKETS
 
 _bearer = HTTPBearer(auto_error=False)
@@ -53,6 +55,29 @@ def principal_from_token(token: str) -> Principal:
         raise _unauthorized(str(exc)) from None
 
 
+async def _session_principal(request: Request, token: str) -> Principal:
+    """Bearer token → principal, re-validated against current state.
+
+    A signed JWT alone is not enough: the token must not have been revoked
+    (logout), and the user must still exist in the user directory — its role
+    is taken from the directory, so a demotion or removal applies to tokens
+    already issued, not only after they expire. The break-glass ADMIN_TOKEN
+    has no directory entry and is not checked there.
+    """
+    principal = principal_from_token(token)
+    if principal.via != "jwt":
+        return principal
+    if await REVOKED.is_revoked(principal.token_id):
+        raise _unauthorized("Oturum sonlandırıldı — yeniden giriş yapın")
+    users = getattr(request.app.state, "users", None)
+    if users is None:
+        return principal
+    record = users.users.get(principal.username)
+    if record is None:
+        raise _unauthorized("Kullanıcı hesabı bulunamadı ya da devre dışı")
+    return replace(principal, role=record.role, display_name=record.display_name)
+
+
 def _bind(request: Request, principal: Principal) -> Principal:
     """Remember the authenticated principal: the rate-limit key switches from
     the client IP to the principal only after authentication succeeded."""
@@ -66,7 +91,7 @@ async def current_principal(
 ) -> Principal:
     if creds is None or not creds.credentials:
         raise _unauthorized()
-    return _bind(request, principal_from_token(creds.credentials))
+    return _bind(request, await _session_principal(request, creds.credentials))
 
 
 async def stream_principal(
@@ -77,7 +102,7 @@ async def stream_principal(
     ``POST /api/stream/ticket``. JWTs in the query string (``?access_token=``)
     are refused: they end up in access logs and browser history."""
     if creds is not None and creds.credentials:
-        return _bind(request, principal_from_token(creds.credentials))
+        return _bind(request, await _session_principal(request, creds.credentials))
     ticket = request.query_params.get("ticket")
     principal = await TICKETS.redeem(ticket) if ticket else None
     if principal is None:
@@ -136,7 +161,7 @@ async def ingest_principal(
                 "Prod ortamında işlem girişi yalnızca servis kimliğiyle "
                 "(X-API-Key / X-Signature) yapılabilir"
             )
-        return _bind(request, principal_from_token(creds.credentials))
+        return _bind(request, await _session_principal(request, creds.credentials))
     raise _unauthorized("Servis kimliği (X-API-Key / X-Signature) veya oturum gerekli")
 
 

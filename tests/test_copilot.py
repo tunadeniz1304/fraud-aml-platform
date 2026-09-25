@@ -28,7 +28,7 @@ def _h(user: str, role: str) -> dict[str, str]:
 
 ANALYST, SENIOR, ADMIN = (
     _h("analist", "analist"),
-    _h("kidemli", "kidemli_analist"),
+    _h("kidemli_analist", "kidemli_analist"),
     _h("admin", "admin"),
 )
 

@@ -127,7 +127,7 @@ export default function App() {
             {llm && <span title="LLM modu">LLM: {llm}</span>}
             <span aria-label="Rol">{auth.role()}</span>
             <Button variant="ghost" onClick={() => setDark(!dark)} aria-label={dark ? "Açık temaya geç" : "Koyu temaya geç"}><span aria-hidden="true">{dark ? "☀︎" : "☾"}</span></Button>
-            <Button variant="ghost" onClick={() => { auth.clear(); window.location.hash = "#/login"; }}>Çıkış</Button>
+            <Button variant="ghost" onClick={() => { api("/api/auth/logout", { method: "POST" }).catch(() => undefined).finally(() => { auth.clear(); window.location.hash = "#/login"; }); }}>Çıkış</Button>
           </div>
         </div>
       </header>

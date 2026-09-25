@@ -246,3 +246,37 @@ def test_m7_copilot_is_rate_limited(app_env: Path, monkeypatch: pytest.MonkeyPat
             c.post("/api/cases/99999/copilot/summary", headers=h).status_code for _ in range(3)
         ]
         assert codes == [404, 404, 429]
+
+
+# --- M8: short-lived, revocable sessions re-checked against the user store -----------------
+class TestSessions:
+    def test_m8_default_ttl_is_one_hour_and_tokens_have_jti(self, app_env: Path) -> None:
+        from app.security.auth import decode_token
+
+        token, ttl = issue_token(Principal("analist", "analist", "a"))
+        assert ttl == 3600
+        assert decode_token(token).token_id
+
+    def test_m8_logout_revokes_the_token(self, app_env: Path) -> None:
+        with TestClient(create_app()) as c:
+            h = _bearer("analist", "analist")
+            assert c.get("/api/auth/me", headers=h).status_code == 200
+            assert c.post("/api/auth/logout", headers=h).json() == {"logged_out": True}
+            after = c.get("/api/auth/me", headers=h)
+            assert after.status_code == 401 and "sonlandırıldı" in after.json()["detail"]
+            # other sessions of the same user are unaffected
+            assert c.get("/api/auth/me", headers=_bearer("analist", "analist")).status_code == 200
+
+    def test_m8_role_comes_from_the_user_store(self, app_env: Path) -> None:
+        with TestClient(create_app()) as c:
+            h = _bearer("kidemli_analist", "kidemli_analist")
+            assert c.get("/api/auth/me", headers=h).json()["role"] == "kidemli_analist"
+            users = c.app.state.users  # type: ignore[attr-defined]
+            users.add("kidemli_analist", "analist", "Demoted", "irrelevant-pw")
+            assert c.get("/api/auth/me", headers=h).json()["role"] == "analist"
+            del users.users["kidemli_analist"]
+            gone = c.get("/api/auth/me", headers=h)
+            assert gone.status_code == 401 and "bulunamadı" in gone.json()["detail"]
+            # a token forged for a role the user never had is downgraded too
+            forged = _bearer("analist", "admin")
+            assert c.get("/api/auth/me", headers=forged).json()["role"] == "analist"

@@ -273,7 +273,8 @@ class Settings(BaseSettings):
     # (METRICS_TOKEN) is required, or the endpoint answers 404 when none is set
     metrics_public: bool = False
     metrics_token: SecretStr = SecretStr("")
-    jwt_ttl_minutes: int = 480
+    # short-lived access tokens; logout revokes them earlier (jti denylist)
+    jwt_ttl_minutes: int = 60
     admin_token: SecretStr = SecretStr("")
     service_api_key: SecretStr = SecretStr("")
     service_hmac_secret: SecretStr = SecretStr("")

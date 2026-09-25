@@ -11,6 +11,7 @@ from app.config import get_settings
 from app.security.auth import AuthError, Principal, issue_token
 from app.security.deps import current_principal
 from app.security.ratelimit import limiter, login_limit
+from app.security.revocation import REVOKED
 from app.security.tickets import TICKETS
 
 logger = logging.getLogger("fraud.auth")
@@ -49,6 +50,14 @@ async def me(principal: Principal = Depends(current_principal)) -> dict[str, str
         "display_name": principal.display_name,
         "via": principal.via,
     }
+
+
+@router.post("/logout")
+async def logout(principal: Principal = Depends(current_principal)) -> dict[str, bool]:
+    """Revoke the presented access token (its ``jti``) until it expires."""
+    await REVOKED.revoke(principal.token_id, principal.expires_at)
+    logger.info("[Auth] çıkış: %s", principal.username)
+    return {"logged_out": True}
 
 
 @router.get("/config")

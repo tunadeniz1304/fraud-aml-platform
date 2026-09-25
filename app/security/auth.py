@@ -55,6 +55,9 @@ class Principal:
     role: Role
     display_name: str = ""
     via: str = "jwt"
+    # JWT id and expiry (unix s) — used by logout/revocation; not part of identity
+    token_id: str = field(default="", compare=False)
+    expires_at: int = field(default=0, compare=False)
 
     def has_role(self, minimum: Role) -> bool:
         return ROLE_RANK.get(self.role, -1) >= ROLE_RANK[minimum]
@@ -161,6 +164,7 @@ def issue_token(principal: Principal, *, ttl_minutes: int | None = None) -> tupl
         "iat": now,
         "exp": now + ttl,
         "iss": "anil3-fraud",
+        "jti": secrets.token_urlsafe(16),
     }
     return jwt.encode(payload, _jwt_secret(), algorithm=_ALGORITHM), ttl
 
@@ -175,7 +179,15 @@ def decode_token(token: str) -> Principal:
     role = data.get("role")
     if role not in ROLE_RANK:
         raise AuthError("Geçersiz rol")
-    return Principal(str(data["sub"]), role, str(data.get("name", "")))
+    if not data.get("jti"):
+        raise AuthError("Geçersiz token")
+    return Principal(
+        str(data["sub"]),
+        role,
+        str(data.get("name", "")),
+        token_id=str(data["jti"]),
+        expires_at=int(data.get("exp", 0)),
+    )
 
 
 # --- static credentials ----------------------------------------------------------
