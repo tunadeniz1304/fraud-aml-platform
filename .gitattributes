@@ -5,3 +5,5 @@ Dockerfile text eol=lf
 *.png binary
 *.gif binary
 *.txt.gz binary
+# public-data samples are kept byte-for-byte (licence: verbatim sharing only)
+tests/fixtures/** -text
