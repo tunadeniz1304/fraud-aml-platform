@@ -33,11 +33,13 @@ import contextlib
 import dataclasses
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from sqlalchemy.exc import DBAPIError
 
+from app.core.account_state import Actor
 from app.db import repository as repo
 from app.db.audit import AuditChain, AuditEntry
 from app.db.database import Database
@@ -70,8 +72,11 @@ class StatusChange:
     reason: str
     actor: str = "system"
     transaction_id: str | None = None
-    #: status generation (``accounts.version`` after the change) when known
+    #: ``accounts.version`` the change was computed against (M10 compare-and-set);
+    #: ``None`` re-reads the row inside the write transaction
     version: int | None = None
+    #: state-machine actor kind: ``system`` may only escalate
+    kind: Actor = "system"
 
 
 @dataclass
@@ -187,6 +192,8 @@ class PersistenceWriter:
         self.retries = 0
         self.dead_lettered = 0
         self.lost = 0  # dead-letter insert failed too (logged CRITICAL with payload)
+        #: called with each committed status transition, *after* the commit (M10)
+        self.status_listeners: list[Callable[[repo.StatusResult], None]] = []
 
     # --- lifecycle ---------------------------------------------------------------
     @property
@@ -360,21 +367,33 @@ class PersistenceWriter:
         )
 
     async def _apply(self, batch: _Batch) -> None:
+        results: list[repo.StatusResult] = []
         async with self.chain.lock, self.db.transaction() as session:
             await repo.insert_transactions(session, batch.transactions)
             await repo.insert_decisions(session, batch.decisions)
             for change in batch.statuses:
-                await repo.set_account_status(
+                result = await repo.transition_account_status(
                     session,
                     change.customer_id,
                     change.new,
-                    previous=change.previous,
+                    kind=change.kind,
                     reason=change.reason,
                     actor=change.actor,
+                    expected=(
+                        (change.previous, change.version) if change.version is not None else None
+                    ),
                     transaction_id=change.transaction_id,
                 )
+                if result is not None:
+                    results.append(result)
             await repo.insert_case_outbox(session, batch.outbox)
             await self.chain.append_many(session, batch.audits)
             await repo.delete_case_outbox(session, batch.outbox_done)
         self.batches_written += 1
+        for result in results:
+            for listener in self.status_listeners:
+                try:
+                    listener(result)
+                except Exception:  # a cache listener must never fail a committed batch
+                    logger.exception("[DB] durum dinleyicisi hata verdi (%s)", result.customer_id)
         metrics.DB_BATCH_SIZE.observe(len(batch))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
@@ -11,6 +12,7 @@ from sqlalchemy import Select, delete, func, select, update
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.account_state import Actor, next_status
 from app.db.base import to_money, utcnow
 from app.db.models import (
     Account,
@@ -110,6 +112,100 @@ async def list_accounts_filtered(session: AsyncSession, customer_id: str) -> lis
     ]
 
 
+class AccountStatusConflict(RuntimeError):
+    """The account row kept changing under the compare-and-set (M10)."""
+
+
+@dataclass(frozen=True)
+class StatusResult:
+    """Outcome of a compare-and-set status transition (M10)."""
+
+    customer_id: str
+    previous: str
+    new: str
+    version: int
+    changed: bool
+
+
+async def account_state(session: AsyncSession, customer_id: str) -> tuple[str, int] | None:
+    row = (
+        await session.execute(
+            select(Account.status, Account.version).where(Account.customer_id == customer_id)
+        )
+    ).first()
+    return (row[0], int(row[1])) if row is not None else None
+
+
+async def account_states(session: AsyncSession) -> dict[str, tuple[str, int, datetime]]:
+    """``{customer_id: (status, version, updated_at)}`` for every account."""
+    rows = await session.execute(
+        select(Account.customer_id, Account.status, Account.version, Account.updated_at)
+    )
+    return {cid: (status, int(version), ts) for cid, status, version, ts in rows.all()}
+
+
+async def accounts_changed_since(
+    session: AsyncSession, since: datetime
+) -> list[tuple[str, str, int, datetime]]:
+    """Accounts whose status row changed at or after ``since`` (H3 poller)."""
+    rows = await session.execute(
+        select(Account.customer_id, Account.status, Account.version, Account.updated_at)
+        .where(Account.updated_at >= since)
+        .order_by(Account.updated_at)
+    )
+    return [(cid, status, int(version), ts) for cid, status, version, ts in rows.all()]
+
+
+async def transition_account_status(
+    session: AsyncSession,
+    customer_id: str,
+    requested: str,
+    *,
+    kind: Actor,
+    reason: str,
+    actor: str,
+    expected: tuple[str, int] | None = None,
+    transaction_id: str | None = None,
+    attempts: int = 5,
+) -> StatusResult | None:
+    """Compare-and-set status transition (M10).
+
+    ``UPDATE accounts SET status=:new, version=:v+1 WHERE customer_id=:id AND
+    version=:v``. When the row moved on since ``expected`` was read (another
+    worker, or an earlier queued change) the current row is re-read and the
+    state machine re-applied to it, so a stale cache can never downgrade an
+    account (``BLOKE`` written by another worker stays ``BLOKE`` for a system
+    escalation). Returns ``None`` when the account does not exist.
+    """
+    state = expected if expected is not None else await account_state(session, customer_id)
+    for _ in range(max(1, attempts)):
+        if state is None:
+            return None
+        current, version = state
+        target = next_status(current, requested, actor=kind)
+        if target == current:
+            return StatusResult(customer_id, current, current, version, changed=False)
+        result = await session.execute(
+            update(Account)
+            .where(Account.customer_id == customer_id, Account.version == version)
+            .values(status=target, updated_at=utcnow(), version=version + 1)
+        )
+        if (result.rowcount or 0) == 1:  # type: ignore[attr-defined]
+            session.add(
+                AccountStatusHistory(
+                    customer_id=customer_id,
+                    from_status=current,
+                    to_status=target,
+                    reason=reason,
+                    actor=actor,
+                    transaction_id=transaction_id,
+                )
+            )
+            return StatusResult(customer_id, current, target, version + 1, changed=True)
+        state = await account_state(session, customer_id)
+    raise AccountStatusConflict(customer_id)
+
+
 async def set_account_status(
     session: AsyncSession,
     customer_id: str,
@@ -120,24 +216,18 @@ async def set_account_status(
     actor: str,
     transaction_id: str | None = None,
 ) -> bool:
-    result = await session.execute(
-        update(Account)
-        .where(Account.customer_id == customer_id)
-        .values(status=new_status, updated_at=utcnow(), version=Account.version + 1)
+    """Analyst-style unconditional target (kept for scripts); goes through the CAS."""
+    del previous  # the CAS reads the authoritative previous status itself
+    result = await transition_account_status(
+        session,
+        customer_id,
+        new_status,
+        kind="analyst",
+        reason=reason,
+        actor=actor,
+        transaction_id=transaction_id,
     )
-    if (result.rowcount or 0) == 0:  # type: ignore[attr-defined]
-        return False
-    session.add(
-        AccountStatusHistory(
-            customer_id=customer_id,
-            from_status=previous,
-            to_status=new_status,
-            reason=reason,
-            actor=actor,
-            transaction_id=transaction_id,
-        )
-    )
-    return True
+    return result is not None
 
 
 # --- transactions / decisions ---------------------------------------------------
