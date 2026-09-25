@@ -107,7 +107,7 @@ class TestLifecycle:
         assert final["status"] == "SIB_GONDERILDI" and final["sib_draft"]["masak_reference"]
 
         audit = {
-            row["event_type"] for row in client.get("/api/audit?limit=200", headers=ANALYST).json()
+            row["event_type"] for row in client.get("/api/audit?limit=200", headers=SENIOR).json()
         }
         assert {"CASE_OPENED", "CASE_ASSIGNED", "CASE_DECISION", "APPROVAL_DECIDED"} <= audit
         assert client.get("/api/audit/verify", headers=ANALYST).json()["ok"] is True

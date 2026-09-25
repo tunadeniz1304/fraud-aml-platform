@@ -19,6 +19,7 @@ from app.api.schemas import (
 )
 from app.db import repository as repo
 from app.db.audit import verify_chain
+from app.llm.redaction import Redactor
 from app.security.auth import Principal
 from app.security.challenges import CHALLENGES
 from app.security.deps import ingest_principal, require_role, service_principal
@@ -26,6 +27,22 @@ from app.security.ratelimit import ingest_limit, limiter, principal_rate_key, st
 
 router = APIRouter(prefix="/api", tags=["pipeline"])
 analyst_only = Depends(require_role("analist"))
+#: the audit trail and dead letters carry raw customer data (payloads, reasons)
+senior_only = Depends(require_role("kidemli_analist"))
+MASK = "•••"
+
+
+def _mask_dead_letter(entry: dict[str, Any]) -> dict[str, Any]:
+    """Keep the routing metadata, hide the payload values and PII in the error."""
+    masked = dict(entry)
+    payload = entry.get("payload")
+    if isinstance(payload, dict):
+        masked["payload"] = {key: MASK for key in payload}
+    elif payload is not None:
+        masked["payload"] = MASK
+    if isinstance(entry.get("error"), str):
+        masked["error"] = Redactor().redact(entry["error"])
+    return masked
 
 
 @router.get("/status", response_model=PipelineStatusOut, dependencies=[analyst_only])
@@ -70,7 +87,7 @@ async def accounts() -> list[AccountOut]:
     return [AccountOut(**a) for a in await pipeline.accounts.list_accounts()]
 
 
-@router.get("/audit", response_model=list[AuditRowOut], dependencies=[analyst_only])
+@router.get("/audit", response_model=list[AuditRowOut], dependencies=[senior_only])
 async def audit(limit: int = Query(100, ge=1, le=1000)) -> list[AuditRowOut]:
     pipeline = require_pipeline()
     await pipeline.settle()
@@ -88,16 +105,26 @@ async def audit_verify() -> dict[str, Any]:
     return result.as_dict()
 
 
-@router.get("/bus/dlq", dependencies=[analyst_only])
-async def dead_letters(limit: int = Query(50, ge=1, le=500)) -> dict[str, Any]:
-    """Dead-letter queue contents (in-memory bus + Redis ingress stream)."""
+@router.get("/bus/dlq")
+async def dead_letters(
+    limit: int = Query(50, ge=1, le=500),
+    principal: Principal = Depends(require_role("kidemli_analist")),
+) -> dict[str, Any]:
+    """Dead-letter queue contents (in-memory bus + Redis ingress stream).
+
+    Senior analysts see the routing metadata with masked payload values; only
+    an admin sees the raw payloads (needed to replay or repair a message).
+    """
     pipeline = require_pipeline()
     entries = pipeline.bus.dlq_entries(limit)
     size = len(pipeline.bus.dlq)
     if pipeline.ingress is not None:
         entries += await pipeline.ingress.dlq_entries(limit)
         size += await pipeline.ingress.dlq_size()
-    return {"size": size, "entries": entries[:limit]}
+    entries = entries[:limit]
+    if principal.role != "admin":
+        entries = [_mask_dead_letter(e) for e in entries]
+    return {"size": size, "entries": entries}
 
 
 @router.post("/transactions", response_model=AnalyzedTransactionOut)

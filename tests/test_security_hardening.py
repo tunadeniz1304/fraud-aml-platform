@@ -447,3 +447,16 @@ def test_h6_m17_compose_requires_secrets_and_closes_grafana() -> None:
     example = (BASE_DIR / ".env.example").read_text(encoding="utf-8")
     for key in ("JWT_SECRET=", "CONSORTIUM_SALT=", "WEB_CONCURRENCY=", "SEED_DEMO_USERS="):
         assert f"\n{key}\n" in example
+
+
+# --- M11: the audit trail is not for every analyst -------------------------------------
+def test_m11_audit_log_needs_a_senior_analyst(demo_env: Path) -> None:
+    with TestClient(create_app()) as c:
+        analyst = _bearer("analist", "analist")
+        assert c.get("/api/audit", headers=analyst).status_code == 403
+        assert c.get("/api/bus/dlq", headers=analyst).status_code == 403
+        senior = _bearer("kidemli_analist", "kidemli_analist")
+        assert c.get("/api/audit", headers=senior).status_code == 200
+        assert c.get("/api/bus/dlq", headers=senior).status_code == 200
+        # integrity check stays available to every analyst
+        assert c.get("/api/audit/verify", headers=analyst).status_code == 200

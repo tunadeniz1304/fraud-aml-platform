@@ -276,9 +276,10 @@ async def test_10k_replay_through_pipeline_is_idempotent(app_env, monkeypatch):
     await pipeline.stop()
 
 
-def test_dlq_entries_are_visible_over_api(app_env, analyst_headers):
+def test_dlq_entries_are_visible_over_api(app_env, analyst_headers, admin_headers):
     from app.api.dashboard import create_app
     from app.api.state import state
+    from app.security.auth import Principal, issue_token
 
     with TestClient(create_app()) as client:
 
@@ -300,8 +301,19 @@ def test_dlq_entries_are_visible_over_api(app_env, analyst_headers):
             headers=analyst_headers,
         )
         assert r.status_code == 200
-        dlq = client.get("/api/bus/dlq", headers=analyst_headers).json()
+        # M11: dead letters carry raw payloads -> senior+, raw values admin only
+        assert client.get("/api/bus/dlq", headers=analyst_headers).status_code == 403
+        dlq = client.get("/api/bus/dlq", headers=admin_headers).json()
         assert dlq["size"] >= 1
         assert any(e["key"] == "TX-DLQ" and "arızası" in e["error"] for e in dlq["entries"])
+        assert any(e["payload"].get("customer_id") == "CUST-0003" for e in dlq["entries"])
+        senior = {
+            "Authorization": "Bearer "
+            + issue_token(Principal("kidemli_analist", "kidemli_analist", "K"))[0]
+        }
+        masked = client.get("/api/bus/dlq", headers=senior).json()
+        entry = next(e for e in masked["entries"] if e["key"] == "TX-DLQ")
+        assert entry["payload"] and set(entry["payload"].values()) == {"•••"}
+        assert "CUST-0003" not in str(masked)
         verify = client.get("/api/audit/verify", headers=analyst_headers).json()
         assert verify["ok"] is True and verify["checked"] >= 10

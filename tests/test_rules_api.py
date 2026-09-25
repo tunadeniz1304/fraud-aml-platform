@@ -96,7 +96,7 @@ class TestRuleCrud:
         history = client.get("/api/rules/R_TEST_BIG", headers=ANALYST).json()["history"]
         assert [h["version"] for h in history] == [3, 2, 1]
 
-        audit = client.get("/api/audit?limit=50", headers=ANALYST).json()
+        audit = client.get("/api/audit?limit=50", headers=SENIOR).json()
         events = {row["event_type"] for row in audit}
         assert {"RULE_CREATE", "RULE_UPDATE", "RULE_DISABLE"} <= events
         assert client.get("/api/audit/verify", headers=ANALYST).json()["ok"] is True
@@ -285,7 +285,7 @@ class TestPolicyApi:
             headers=ADMIN,
         )
         assert bad.status_code == 422
-        audit = client.get("/api/audit?limit=20", headers=ANALYST).json()
+        audit = client.get("/api/audit?limit=20", headers=SENIOR).json()
         assert any(row["event_type"] == "POLICY_THRESHOLDS" for row in audit)
 
     def test_models_listing(self, client):
