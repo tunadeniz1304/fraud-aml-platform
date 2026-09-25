@@ -90,6 +90,14 @@ class Settings(BaseSettings):
     # --- Feature store (P0.4) ----------------------------------------------
     feature_store: Literal["auto", "memory", "redis"] = "auto"
     feature_max_entities: int = 200_000
+    # Redis feature store: TTL of payee/device first-seen keys (bounded memory),
+    # per-customer lock lease and the longest wait before scoring without it.
+    feature_entity_ttl_days: int = 180
+    feature_lock_ttl_ms: int = 2_000
+    feature_lock_wait_ms: int = 250
+    # Redis Streams: "processing" lease of a message (SET NX PX) before a
+    # redelivery to another consumer may start it.
+    bus_processing_lease_ms: int = 30_000
     profile_alpha: float = 0.05
     profile_prior_weight: float = 5.0
     night_start_hour: int = 0

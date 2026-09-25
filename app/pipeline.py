@@ -828,6 +828,7 @@ async def build_pipeline(
             prefix=settings.redis_stream_prefix,
             max_retries=settings.bus_max_retries,
             claim_idle_ms=settings.bus_claim_idle_ms,
+            processing_lease_ms=settings.bus_processing_lease_ms,
         )
     engine = ScoringEngine.from_settings(extractor, ruleset=ruleset, registry=registry)
     logger.info(

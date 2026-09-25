@@ -106,8 +106,12 @@ class ContextAnalyst:
     async def _on_monitored(self, tx: dict[str, Any]) -> None:
         customer_id = str(tx["customer_id"])
         status = self.account_status(customer_id) if self.account_status else None
-        with tracing.span("scoring.score", transaction_id=tx.get("transaction_id")):
-            result = await self.engine.score(tx, account_status=status)
+        # snapshot → score → commit of one customer is serialised (no lost velocity)
+        async with self.extractor.store.customer_lock(customer_id):
+            with tracing.span("scoring.score", transaction_id=tx.get("transaction_id")):
+                result = await self.engine.score(tx, account_status=status)
+            if result.scored:
+                await self.engine.commit(result)
         analyzed = {**tx, **result.event_fields()}
         if result.flags.get("account_blocked"):
             logger.warning(
@@ -122,7 +126,6 @@ class ContextAnalyst:
                 customer_id,
             )
         else:
-            await self.engine.commit(result)
             self.stats.update(result.risk_score)
             if self.engine.drift is not None and self.observe_drift:
                 self.engine.drift.observe(result.features, result.policy.stacked)

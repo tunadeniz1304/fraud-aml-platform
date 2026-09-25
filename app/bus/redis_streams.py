@@ -47,6 +47,7 @@ class RedisStreamsBus:
         maxlen: int = 200_000,
         idempotency_ttl: int = 7 * 24 * 3600,
         claim_idle_ms: int = 5_000,
+        processing_lease_ms: int = 30_000,
     ) -> None:
         self.redis = redis
         self.prefix = prefix
@@ -57,6 +58,7 @@ class RedisStreamsBus:
         self.maxlen = maxlen
         self.idempotency_ttl = idempotency_ttl
         self.claim_idle_ms = claim_idle_ms
+        self.processing_lease_ms = processing_lease_ms
         self._subs: list[_Subscription] = []
         self._tasks: list[asyncio.Task[None]] = []
         self._stopping = asyncio.Event()
@@ -143,6 +145,9 @@ class RedisStreamsBus:
             if fields:  # deleted entries come back as None
                 await self._handle(sub, stream, msg_id, fields)
 
+    def _lease_key(self, group: str, key: str) -> str:
+        return f"{self.prefix}:processing:{group}:{key}"
+
     def _attempts_key(self, group: str) -> str:
         return f"{self.prefix}:attempts:{group}"
 
@@ -161,10 +166,20 @@ class RedisStreamsBus:
             metrics.BUS_EVENTS.labels(topic=sub.topic, outcome="duplicate").inc()
             await self.redis.xack(stream, sub.group, msg_id)
             return
+        lease = self._lease_key(sub.group, key) if key else None
+        if lease is not None and not await self.redis.set(
+            lease, self.consumer, nx=True, px=self.processing_lease_ms
+        ):
+            # another consumer is processing this key right now: leave it pending;
+            # XAUTOCLAIM hands it back if that consumer dies before finishing
+            metrics.BUS_EVENTS.labels(topic=sub.topic, outcome="in_progress").inc()
+            return
         try:
             payload = json.loads(fields.get("payload") or "{}")
             await invoke(sub.handler, payload)
         except Exception as exc:  # noqa: BLE001 - failure path decides retry vs DLQ
+            if lease is not None:
+                await self.redis.delete(lease)
             deliveries = await self._record_failure(sub.group, msg_id)
             if deliveries > self.max_retries:
                 await self.redis.xadd(
@@ -196,6 +211,7 @@ class RedisStreamsBus:
         pipe = self.redis.pipeline()
         if key:
             pipe.set(self._done_key(sub.group, key), "1", ex=self.idempotency_ttl)
+            pipe.delete(self._lease_key(sub.group, key))
         pipe.xack(stream, sub.group, msg_id)
         pipe.hdel(self._attempts_key(sub.group), msg_id)
         await pipe.execute()

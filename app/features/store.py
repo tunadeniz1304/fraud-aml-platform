@@ -1,24 +1,38 @@
 """Sliding-window feature state: in-memory and Redis backends.
 
-Both backends expose the same two calls:
+Both backends expose the same calls:
 
 * ``snapshot(tx)`` — read the point-in-time state needed by the feature
   functions (history of the last 7 days, payee/device relations, profile);
 * ``commit(tx, profile)`` — append the event to every window and persist the
-  (possibly updated) profile.
+  (possibly updated) profile. **Idempotent per transaction id**: a redelivered
+  event (crash after commit, Redis Streams retry) is a no-op, so counters never
+  double. The Redis commit is one atomic Lua script;
+* ``customer_lock(customer_id)`` — serialises snapshot → score → commit of the
+  same customer (asyncio lock in memory, ``SET NX PX`` lock in Redis), so
+  concurrent transactions of one customer cannot read the same stale window.
 
 Memory is bounded: windows are trimmed by event time and entity maps are LRU
-capped (in-memory) or carry TTLs (Redis).
+capped (in-memory) or every key carries a TTL (Redis, ``feature_entity_ttl_days``).
 """
 
 from __future__ import annotations
 
+import asyncio
 import bisect
+import contextlib
 import json
+import logging
+import time
+import uuid
 from collections import OrderedDict
+from collections.abc import AsyncIterator
 from typing import Any, Protocol
 
+from app.config import get_settings
 from app.features.types import HistEvent, ProfileState, StateSnapshot, TxView
+
+logger = logging.getLogger("fraud.features")
 
 DAY = 86400.0
 WEEK = 7 * DAY
@@ -32,6 +46,8 @@ class FeatureStateStore(Protocol):
     async def commit(self, tx: TxView, profile: ProfileState) -> None: ...
 
     async def put_profile(self, customer_id: str, profile: ProfileState) -> None: ...
+
+    def customer_lock(self, customer_id: str) -> contextlib.AbstractAsyncContextManager[None]: ...
 
     async def close(self) -> None: ...
 
@@ -71,6 +87,8 @@ class MemoryFeatureStore:
         self.device_first: _LRU = _LRU(max_entities)  # device -> first seen
         self.device_customers: _LRU = _LRU(max_entities)  # device -> {cid: last ts}
         self.profiles: _LRU = _LRU(max_entities)  # cid -> ProfileState
+        self.committed: _LRU = _LRU(max_entities * 4)  # tx id -> True (idempotency)
+        self._locks: _LRU = _LRU(max_entities)  # cid -> asyncio.Lock
 
     async def snapshot(self, tx: TxView) -> StateSnapshot:
         now = tx.epoch
@@ -94,7 +112,19 @@ class MemoryFeatureStore:
             profile=profile.copy() if profile is not None else None,
         )
 
+    @contextlib.asynccontextmanager
+    async def customer_lock(self, customer_id: str) -> AsyncIterator[None]:
+        lock = self._locks.get(customer_id)
+        if lock is None:
+            lock = asyncio.Lock()
+        self._locks.touch(customer_id, lock)
+        async with lock:
+            yield
+
     async def commit(self, tx: TxView, profile: ProfileState) -> None:
+        if tx.transaction_id in self.committed:
+            return  # redelivered event: already in every window
+        self.committed.touch(tx.transaction_id, True)
         now = tx.epoch
         entry: tuple[list[float], list[HistEvent]] | None = self.events.get(tx.customer_id)
         stamps, events = entry if entry is not None else ([], [])
@@ -144,24 +174,91 @@ class MemoryFeatureStore:
         }
 
 
+#: Atomic, idempotent commit: nothing is written if the transaction id was
+#: already committed (``done`` key), and every key gets a TTL.
+_COMMIT_LUA = """
+if redis.call('SET', KEYS[8], '1', 'NX', 'EX', ARGV[16]) == false then return 0 end
+redis.call('ZADD', KEYS[1], ARGV[1], ARGV[2])
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[3])
+redis.call('EXPIRE', KEYS[1], ARGV[4])
+if ARGV[5] ~= '' then
+  redis.call('HSETNX', KEYS[2], ARGV[5], ARGV[1])
+  redis.call('EXPIRE', KEYS[2], ARGV[6])
+  redis.call('SET', KEYS[3], ARGV[1], 'NX', 'EX', ARGV[7])
+  redis.call('ZADD', KEYS[4], ARGV[1], ARGV[8])
+  redis.call('ZREMRANGEBYSCORE', KEYS[4], '-inf', ARGV[9])
+  redis.call('EXPIRE', KEYS[4], ARGV[10])
+end
+if ARGV[11] ~= '' then
+  redis.call('SET', KEYS[5], ARGV[1], 'NX', 'EX', ARGV[7])
+  redis.call('ZADD', KEYS[6], ARGV[1], ARGV[8])
+  redis.call('ZREMRANGEBYSCORE', KEYS[6], '-inf', ARGV[12])
+  redis.call('EXPIRE', KEYS[6], ARGV[13])
+end
+redis.call('SET', KEYS[7], ARGV[14], 'EX', ARGV[15])
+return 1
+"""
+_UNLOCK_LUA = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end
+return 0
+"""
+
+
 class RedisFeatureStore:
     """Shared store for multi-process deployments (one round trip per call)."""
 
     def __init__(self, redis: Any, *, prefix: str = "fs") -> None:
         self.redis = redis
         self.prefix = prefix
+        settings = get_settings()
+        self.entity_ttl_s = int(settings.feature_entity_ttl_days * DAY)
+        self.lock_ttl_ms = settings.feature_lock_ttl_ms
+        self.lock_wait_s = settings.feature_lock_wait_ms / 1000
+        self._local: _LRU = _LRU(settings.feature_max_entities)
 
     def _k(self, *parts: str) -> str:
         return ":".join((self.prefix, *parts))
+
+    @contextlib.asynccontextmanager
+    async def customer_lock(self, customer_id: str) -> AsyncIterator[None]:
+        """Per-customer lock: an in-process asyncio lock (exact within a worker,
+        no polling) plus a cross-process ``SET NX PX`` lease with owner-checked
+        release. The lease wait is bounded: after ``feature_lock_wait_ms`` the
+        event is scored without the cross-process lease and it is logged.
+        """
+        local = self._local.get(customer_id)
+        if local is None:
+            local = asyncio.Lock()
+        self._local.touch(customer_id, local)
+        async with local, self._lease(customer_id):
+            yield
+
+    @contextlib.asynccontextmanager
+    async def _lease(self, customer_id: str) -> AsyncIterator[None]:
+        key, token = self._k("lock", customer_id), uuid.uuid4().hex
+        deadline = time.monotonic() + self.lock_wait_s
+        acquired = False
+        while True:
+            acquired = bool(await self.redis.set(key, token, nx=True, px=self.lock_ttl_ms))
+            if acquired or time.monotonic() >= deadline:
+                break
+            await asyncio.sleep(0.002)
+        if not acquired:
+            logger.warning("[Features] %s için kilit alınamadı — kilitsiz devam", customer_id)
+        try:
+            yield
+        finally:
+            if acquired:
+                await self.redis.eval(_UNLOCK_LUA, 1, key, token)
 
     async def snapshot(self, tx: TxView) -> StateSnapshot:
         now = tx.epoch
         pipe = self.redis.pipeline(transaction=False)
         pipe.zrangebyscore(self._k("ev", tx.customer_id), f"({now - WEEK}", now)
         pipe.hget(self._k("pair", tx.customer_id), tx.beneficiary or "-")
-        pipe.hget(self._k("payee_first"), tx.beneficiary or "-")
+        pipe.get(self._k("pf", tx.beneficiary or "-"))
         pipe.zrangebyscore(self._k("payee_snd", tx.beneficiary or "-"), f"({now - DAY}", now)
-        pipe.hget(self._k("dev_first"), tx.device_id or "-")
+        pipe.get(self._k("df", tx.device_id or "-"))
         pipe.zrangebyscore(self._k("dev_cust", tx.device_id or "-"), f"({now - WEEK}", now)
         pipe.get(self._k("prof", tx.customer_id))
         ev, pair, payee_first, senders, dev_first, dev_cust, prof = await pipe.execute()
@@ -184,28 +281,36 @@ class RedisFeatureStore:
 
     async def commit(self, tx: TxView, profile: ProfileState) -> None:
         now = tx.epoch
-        pipe = self.redis.pipeline(transaction=False)
-        ev_key = self._k("ev", tx.customer_id)
         member = json.dumps([*_event(tx).as_list(), tx.transaction_id], ensure_ascii=False)
-        pipe.zadd(ev_key, {member: now})
-        pipe.zremrangebyscore(ev_key, "-inf", now - WEEK)
-        pipe.expire(ev_key, int(WEEK + DAY))
-        if tx.beneficiary:
-            pipe.hsetnx(self._k("pair", tx.customer_id), tx.beneficiary, now)
-            pipe.expire(self._k("pair", tx.customer_id), PAIR_TTL_S)
-            pipe.hsetnx(self._k("payee_first"), tx.beneficiary, now)
-            snd = self._k("payee_snd", tx.beneficiary)
-            pipe.zadd(snd, {tx.customer_id: now})
-            pipe.zremrangebyscore(snd, "-inf", now - DAY)
-            pipe.expire(snd, int(2 * DAY))
-        if tx.device_id:
-            pipe.hsetnx(self._k("dev_first"), tx.device_id, now)
-            dc = self._k("dev_cust", tx.device_id)
-            pipe.zadd(dc, {tx.customer_id: now})
-            pipe.zremrangebyscore(dc, "-inf", now - WEEK)
-            pipe.expire(dc, int(WEEK + DAY))
-        pipe.set(self._k("prof", tx.customer_id), json.dumps(profile.to_dict()), ex=PROFILE_TTL_S)
-        await pipe.execute()
+        keys = [
+            self._k("ev", tx.customer_id),
+            self._k("pair", tx.customer_id),
+            self._k("pf", tx.beneficiary or "-"),
+            self._k("payee_snd", tx.beneficiary or "-"),
+            self._k("df", tx.device_id or "-"),
+            self._k("dev_cust", tx.device_id or "-"),
+            self._k("prof", tx.customer_id),
+            self._k("done", tx.transaction_id),
+        ]
+        args = [
+            repr(now),
+            member,
+            repr(now - WEEK),
+            int(WEEK + DAY),
+            tx.beneficiary,
+            PAIR_TTL_S,
+            self.entity_ttl_s,
+            tx.customer_id,
+            repr(now - DAY),
+            int(2 * DAY),
+            tx.device_id,
+            repr(now - WEEK),
+            int(WEEK + DAY),
+            json.dumps(profile.to_dict()),
+            PROFILE_TTL_S,
+            self.entity_ttl_s,
+        ]
+        await self.redis.eval(_COMMIT_LUA, len(keys), *keys, *args)
 
     async def put_profile(self, customer_id: str, profile: ProfileState) -> None:
         await self.redis.set(

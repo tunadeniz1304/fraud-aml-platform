@@ -286,21 +286,36 @@ def test_a7_psi_handles_empty_bins_and_windows() -> None:
 
 
 # --- B8: per-customer ordering ----------------------------------------------------------------
-@open_finding("B8")
-async def test_b8_concurrent_same_customer_velocity_is_exact(pipeline: Any) -> None:
-    c = _customers()[7]
-    now = datetime.now()
-    txs = [
-        _transfer(c, f"TX-CC-{i:04d}", now + timedelta(seconds=i), 50, beneficiary_id="TR-SAME")
-        for i in range(50)
-    ]
-    results = await asyncio.gather(*(pipeline.ingest(t) for t in txs))
-    counts = sorted(r["features"]["cnt_1h"] for r in results)
-    assert counts == [float(i) for i in range(50)]
+async def test_b8_concurrent_same_customer_velocity_is_exact(demo_env: Path, monkeypatch) -> None:
+    """A burst of 50 payments in the same second (card testing) against the shared
+    Redis feature store: whatever the arrival order, every event must see all
+    previously committed ones. Without per-customer serialisation the snapshots
+    of concurrent events read the same stale window (network round trips yield)."""
+    import fakeredis.aioredis
+
+    from app.pipeline import build_pipeline
+
+    monkeypatch.setenv("FEATURE_STORE", "redis")
+    get_settings.cache_clear()
+    fake = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    p = await build_pipeline(get_settings(), redis=fake)
+    await p.start()
+    try:
+        c = _customers()[7]
+        now = datetime.now()
+        txs = [
+            _transfer(c, f"TX-CC-{i:04d}", now, 50, beneficiary_id="TR-SAME") for i in range(50)
+        ]
+        results = await asyncio.gather(*(p.ingest(t) for t in txs))
+        counts = sorted(r["features"]["cnt_1h"] for r in results)
+        assert counts == [float(i) for i in range(50)]
+        after = await p.ingest(_transfer(c, "TX-CC-9999", now + timedelta(seconds=1), 50))
+        assert after["features"]["cnt_1h"] == 50.0
+    finally:
+        await p.stop()
 
 
 # --- B9: bounded Redis hashes -----------------------------------------------------------------
-@open_finding("B9")
 async def test_b9_every_feature_store_key_has_a_ttl() -> None:
     import fakeredis.aioredis
 
@@ -325,7 +340,6 @@ async def test_b9_every_feature_store_key_has_a_ttl() -> None:
 
 
 # --- B10: idempotent handlers -----------------------------------------------------------------
-@open_finding("B10")
 async def test_b10_replayed_commit_does_not_double_count() -> None:
     from app.features.store import MemoryFeatureStore
     from app.features.types import ProfileState, TxView
@@ -341,6 +355,59 @@ async def test_b10_replayed_commit_does_not_double_count() -> None:
     )
     snap = await store.snapshot(later)
     assert len(snap.history) == 1
+
+
+async def test_b10_redis_commit_is_atomic_and_idempotent() -> None:
+    import fakeredis.aioredis
+
+    from app.features.store import RedisFeatureStore
+    from app.features.types import ProfileState, TxView
+
+    store = RedisFeatureStore(fakeredis.aioredis.FakeRedis(decode_responses=True))
+    tx = TxView.from_payload(
+        {
+            "transaction_id": "T1",
+            "customer_id": "C1",
+            "ts": "2026-09-25T10:00:00",
+            "amount": 10,
+            "beneficiary_id": "B1",
+            "device_id": "D1",
+        }
+    )
+    await store.commit(tx, ProfileState())
+    await store.commit(tx, ProfileState())  # handler crashed after commit, retried
+    later = TxView.from_payload(
+        {"transaction_id": "T2", "customer_id": "C1", "ts": "2026-09-25T10:01:00", "amount": 10}
+    )
+    assert len((await store.snapshot(later)).history) == 1
+
+
+async def test_b10_stream_message_in_progress_is_not_processed_twice() -> None:
+    import json as _json
+
+    import fakeredis.aioredis
+
+    from app.bus.redis_streams import RedisStreamsBus
+
+    redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    calls: list[str] = []
+    gate = asyncio.Event()
+
+    async def slow(payload: dict) -> None:
+        calls.append(payload["transaction_id"])
+        await gate.wait()
+
+    a = RedisStreamsBus(redis, consumer="a")
+    b = RedisStreamsBus(redis, consumer="b")
+    for bus in (a, b):
+        bus.subscribe("t", slow, group="g")
+    fields = {"key": "TX-1", "payload": _json.dumps({"transaction_id": "TX-1"})}
+    first = asyncio.create_task(a._handle(a._subs[0], "s", "1-0", fields))
+    await asyncio.sleep(0.01)
+    await b._handle(b._subs[0], "s", "1-0", fields)  # redelivery while a still works
+    gate.set()
+    await first
+    assert calls == ["TX-1"]
 
 
 # --- B13: dynamic holiday calendar ------------------------------------------------------------
