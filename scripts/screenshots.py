@@ -34,7 +34,7 @@ def _post(base: str, path: str, token: str | None = None, body: dict | None = No
     req.add_header("Content-Type", "application/json")
     if token:
         req.add_header("Authorization", f"Bearer {token}")
-    with urllib.request.urlopen(req, timeout=60) as res:  # noqa: S310 - local dev server
+    with urllib.request.urlopen(req, timeout=60) as res:
         return json.loads(res.read())
 
 
@@ -54,7 +54,9 @@ def _shot(target: Page | Locator, out: Path, name: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--base-url", default=os.environ.get("SCREENSHOT_BASE_URL", "http://localhost:8010"))
+    parser.add_argument(
+        "--base-url", default=os.environ.get("SCREENSHOT_BASE_URL", "http://localhost:8010")
+    )
     parser.add_argument("--out", type=Path, default=ROOT / "docs" / "img")
     parser.add_argument("--light", action="store_true", help="light theme instead of dark")
     args = parser.parse_args()
@@ -62,11 +64,15 @@ def main() -> None:
     out: Path = args.out
     out.mkdir(parents=True, exist_ok=True)
 
-    token = _post(base, "/api/auth/login", body={"username": "kidemli_analist", "password": USERS["kidemli_analist"]})[
-        "access_token"
-    ]
+    token = _post(
+        base,
+        "/api/auth/login",
+        body={"username": "kidemli_analist", "password": USERS["kidemli_analist"]},
+    )["access_token"]
     mule = _post(base, "/api/scenarios/mule_ring", token)
-    mule_case = next((c["id"] for c in mule["cases"] if c["case_type"] == "MULE"), mule["cases"][0]["id"])
+    mule_case = next(
+        (c["id"] for c in mule["cases"] if c["case_type"] == "MULE"), mule["cases"][0]["id"]
+    )
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
@@ -93,7 +99,9 @@ def main() -> None:
         _shot(page, out, "case_detail.png")
 
         # graph card of the mule ring case
-        graph = page.locator("section").filter(has=page.get_by_role("heading", name="Varlık ağı (2 adım)"))
+        graph = page.locator("section").filter(
+            has=page.get_by_role("heading", name="Varlık ağı (2 adım)")
+        )
         graph.scroll_into_view_if_needed()
         expect(graph.locator("canvas").first).to_be_visible(timeout=20_000)
         page.wait_for_timeout(1500)
@@ -112,7 +120,9 @@ def main() -> None:
         page.get_by_role("button", name="Çıkış").click()
         _login(page, "admin")
         page.goto("/app/#/validation")
-        expect(page.get_by_role("table", name="PaySim — katman bazında metrikler")).to_be_visible(timeout=20_000)
+        expect(page.get_by_role("table", name="PaySim — katman bazında metrikler")).to_be_visible(
+            timeout=20_000
+        )
         page.wait_for_timeout(500)
         _shot(page, out, "validation.png")
 
