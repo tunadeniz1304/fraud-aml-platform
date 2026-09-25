@@ -24,7 +24,7 @@ from app.cases.service import (
     MakerCheckerError,
 )
 from app.security.auth import Principal
-from app.security.deps import require_role
+from app.security.deps import forbid_break_glass_maker, require_role
 
 router = APIRouter(prefix="/api", tags=["cases"])
 analyst = require_role("analist")
@@ -254,6 +254,7 @@ async def submit_sib(
     case_id: int, body: ApprovalNoteIn | None = None, principal: Principal = Depends(analyst)
 ) -> dict[str, Any]:
     note = body.note if body else ""
+    forbid_break_glass_maker(principal)
     return await _call(
         cases_service().request_approval, "SIB", str(case_id), {}, principal.username, note
     )
@@ -275,6 +276,7 @@ async def unblock_request(
         raise HTTPException(status_code=404, detail="Müşteri bulunamadı")
     if status != "BLOKE":
         raise HTTPException(status_code=409, detail="Hesap BLOKE değil")
+    forbid_break_glass_maker(principal)
     return await _call(
         cases_service().request_approval,
         "UNBLOCK",

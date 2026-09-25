@@ -300,10 +300,15 @@ class TestApprovals:
         glass = {"Authorization": "Bearer break-glass-credential-for-tests"}
         with TestClient(create_app()) as c:
             c.post("/api/admin/accounts/CUST-0003/status?status=BLOKE", headers=glass)
-            req = c.post("/api/admin/accounts/CUST-0003/status?status=AKTIF", headers=glass)
+            # L11 (round 2): break-glass cannot be the maker either
+            refused = c.post("/api/admin/accounts/CUST-0003/status?status=AKTIF", headers=glass)
+            assert refused.status_code == 403 and "Break-glass" in refused.json()["detail"]
+            req = c.post(
+                "/api/admin/accounts/CUST-0003/status?status=AKTIF",
+                headers=_bearer("admin", "admin"),
+            )
             approval = req.json()["approval"]
-            # recorded as the break-glass identity, never as a directory user
-            assert approval["requested_by"] == BREAK_GLASS_USERNAME
+            assert approval["requested_by"] != BREAK_GLASS_USERNAME
             denied = c.post(f"/api/approvals/{approval['id']}/approve", headers=glass)
             assert denied.status_code == 403 and "break-glass" in denied.json()["detail"]
             ok = c.post(

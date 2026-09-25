@@ -118,6 +118,20 @@ async def stream_principal(
     return _bind(request, await _revalidate(request, principal))
 
 
+def forbid_break_glass_maker(principal: Principal) -> None:
+    """The break-glass ADMIN_TOKEN is a shared, non-personal, non-revocable
+    credential: it may neither approve (``decide_approval``) nor file a
+    maker-checker request, so every four-eyes action needs a named maker."""
+    if principal.via == "admin_token":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Break-glass anahtarı maker-checker talebi oluşturamaz — "
+                "kişisel bir oturumla giriş yapın"
+            ),
+        )
+
+
 def require_role(minimum: Role) -> Callable[..., Awaitable[Principal]]:
     """Dependency factory: authenticated principal with at least ``minimum`` role."""
 

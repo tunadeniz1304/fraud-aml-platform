@@ -5,19 +5,25 @@ Each test names the finding it pins down (A1, A8, A9, A10, L3, L5, L11, M8).
 
 from __future__ import annotations
 
+import json
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import fakeredis
 import jwt
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 from starlette.requests import Request
 
+from app.api.dashboard import create_app
+from app.config import BASE_DIR
 from app.llm.redaction import Redactor
 from app.llm.service import UNTRUSTED_CLOSE, UNTRUSTED_OPEN, untrusted_block
 from app.security import auth as auth_module
 from app.security.auth import (
+    BREAK_GLASS_USERNAME,
     JWT_AUDIENCE,
     JWT_ISSUER,
     AuthError,
@@ -25,7 +31,7 @@ from app.security.auth import (
     decode_token,
     issue_token,
 )
-from app.security.deps import stream_principal
+from app.security.deps import forbid_break_glass_maker, stream_principal
 from app.security.revocation import REVOKED
 from app.security.tickets import TICKETS, TicketStore
 
@@ -166,3 +172,42 @@ async def test_m8_redis_ticket_keeps_token_id_for_revocation() -> None:
     assert redeemed is not None
     assert redeemed.token_id == issued.token_id
     assert redeemed.expires_at == issued.expires_at
+
+
+# --- L11: break-glass cannot be a maker -------------------------------------
+
+
+def test_l11_forbid_break_glass_maker_unit() -> None:
+    glass = Principal(BREAK_GLASS_USERNAME, "admin", "Break-glass", via="admin_token")
+    with pytest.raises(HTTPException) as exc:
+        forbid_break_glass_maker(glass)
+    assert exc.value.status_code == 403
+    forbid_break_glass_maker(Principal("admin", "admin", "Yönetici"))  # named user: fine
+
+
+def test_l11_break_glass_cannot_file_maker_checker_requests(
+    app_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    glass_value = "break-glass-" + "g" * 20
+    monkeypatch.setenv("ADMIN_TOKEN", glass_value)
+    glass = {"Authorization": f"Bearer {glass_value}"}
+    registry = json.loads((BASE_DIR / "models" / "registry.json").read_text(encoding="utf-8"))
+    rule = {
+        "id": "R_GLASS",
+        "name": "Break-glass kural",
+        "when": "amount_try >= 100000",
+        "score": 0.4,
+        "reason_template": "Tutar {amount_try:.0f} TL",
+        "severity": "high",
+        "tags": ["test"],
+    }
+    with TestClient(create_app()) as client:
+        assert client.get("/api/admin/accounts", headers=glass).status_code == 200
+        for response in (
+            client.post("/api/rules", json=rule, headers=glass),
+            client.post(f"/api/models/{registry['challenger']}/promote", headers=glass),
+        ):
+            assert response.status_code == 403, response.text
+            assert "Break-glass" in response.json()["detail"]
+        pending = client.get("/api/approvals", headers=glass)
+        assert pending.status_code == 200 and pending.json() == []

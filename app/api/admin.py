@@ -22,7 +22,7 @@ from app.cases.service import CaseError
 from app.core.account_state import STATUSES
 from app.db import repository as repo
 from app.security.auth import Principal
-from app.security.deps import require_role
+from app.security.deps import forbid_break_glass_maker, require_role
 from app.services.accounts import AccountNotFoundError
 
 logger = logging.getLogger("fraud.admin")
@@ -72,6 +72,7 @@ async def set_status(
     if current is None:
         raise HTTPException(status_code=404, detail="Müşteri bulunamadı")
     if current == "BLOKE" and normalized != "BLOKE":
+        forbid_break_glass_maker(principal)
         try:
             approval = await pipeline.cases.request_approval(
                 "UNBLOCK",
