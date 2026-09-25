@@ -2,6 +2,51 @@
 
 Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/) · sürümleme: [SemVer](https://semver.org/lang/tr/).
 
+## [2.1.0] — 2026-09-25
+
+Bağımsız denetim bulgularını kapatan sürüm. Bulgular önce `tests/test_audit_v2.py` içinde `xfail(strict=True)` testleriyle kayda geçirildi (`docs/PLAN_v2.md`). Bu bölüm performans sayısı içermez; ölçümler `docs/PERFORMANCE.md` içindedir.
+
+### Doğrulama
+- Halka açık veri indiricisi: PaySim (Zenodo), Elliptic (PyG aynası), ULB (OpenML 1597); kaldığı yerden devam eden indirme, sabitlenmiş checksum'lar (`scripts/fetch_public_fraud_data.py`, `docs/DATA.md`).
+- Repoda internetsiz testler için atıflı PaySim ve Elliptic örnekleri (`tests/fixtures/`), birebir kopyalanmış satırlar.
+- Gölge replay ve katman ablasyonu: PaySim, Elliptic, ULB ve sentetik veri (`scripts/validate_public_data.py`, `app/validation/`, `docs/VALIDATION_REPORT.md`).
+- Sentetik üreticiden tipoloji parmak izleri kaldırıldı; sızıntı dedektörü testi eklendi. Eski 0,971 PR-AUC'nin bir sızıntıdan geldiği raporlandı.
+- `fraud_gbm_v3` champion, `fraud_gbm_v4` challenger; seçim replay kanıtıyla ve dört göz onayıyla yapıldı (`scripts/champion_selection.py`). v1 ve v2 arşivlendi.
+- Eksik cihaz ve nakit kanal göstergeleri feature olarak eklendi.
+
+### Düzeltmeler
+- **A1** Copilot otomatik ŞİB taslağı şema reddinde artık kaybolmuyor.
+- **A2** Başarılı step-up veya temiz etiketle doğrulanan cihaz/alıcı profile öğreniliyor (`POST /api/transactions/{id}/step-up-result`).
+- **A3** Backfill ve canlı sistem tek öğrenme kuralını paylaşıyor (`app/features/learning.py::should_learn`).
+- **A4** Düşük riskli kural HOLD tabanları STEP_UP'a yumuşatıldı.
+- **A5** Kart testi `ATO` yerine `CARD_TESTING` olarak tipleniyor.
+- **A6** Fan-in mağdurları halka üyesi sayılmıyor; BLOCK kararında karşı taraf düğümleri işaretleniyor.
+- **A7** Demo popülasyonunda yanlış PSI alarmı giderildi (prod dışında popülasyon referansı).
+- **B8, B10** Aynı müşterinin skorlaması sıralanıyor (müşteri başına kilit); Redis commit'i idempotent Lua betiği.
+- **B9** Global alıcı/cihaz ilk görülme hash'leri, TTL'li varlık başına anahtarlara dönüştü (`feature_entity_ttl_days`).
+- **B12** Simülatör trafik testi deterministik.
+- **B13** Türk resmî tatilleri her yıl için hesaplanıyor (`holidays.Turkey`, arife politikası ayarlanabilir).
+- **B14** Yüksek riskli ülkeler versiyonlu FATF listesinden (`data/jurisdictions/fatf_2026-06.json`).
+- **B15** Yaptırım taraması blocking indeksi ve ikincil anahtarlarla (doğum yılı, uyruk) eşleşme güveni.
+- **B11** HTTP gecikme çalışması ayrı yürütülüyor; sonuçlar `docs/PERFORMANCE.md`.
+
+### Güvenlik
+- **C16** Demo kullanıcıları yalnız `SEED_DEMO_USERS` açıkken (varsayılan prod dışı).
+- **C17** SSE için tek kullanımlık kısa ömürlü bilet (`POST /api/stream/ticket`); sorgu dizesinde JWT kabul edilmiyor.
+- **C18** `/metrics` `METRICS_TOKEN` istiyor; Prometheus aynı değeri `ops/prometheus/metrics_token` dosyasından okuyor.
+- **C19** Ingest hız sınırı düşürüldü; HMAC imzasında tek kullanımlık `X-Nonce`.
+- **C20** PII maskeleme ASCII'ye katlanmış, büyük harfli ve alıcı adlarını da kapsıyor.
+- **C21** İç LLM sunucu adresi koddan ve dokümanlardan kaldırıldı.
+
+### Arayüz
+- Doğrulama görünümü, sunucu taraflı sayfalı ve filtreli vaka kuyruğu, erişilebilirlik iyileştirmeleri, arayüz testleri.
+- `docs/img/` altında ekran görüntüleri.
+
+### Dokümantasyon
+- README: ürün eşitliği tablosu ve statik kapsam/p99 rozetleri kaldırıldı; "İlham alınan desenler" ve "Sınırlamalar" bölümleri, CI durum rozeti, gecikme iddiaları "motor (süreç içi)" olarak etiketlendi.
+- `docs/COMPLIANCE.md`: her yasal referans resmî URL ve uygulayan modülle eşlendi; doğrulanamayanlar işaretlendi.
+- `docs/MODEL_CARD.md`, `docs/ARCHITECTURE.md` v3 modeline ve v2 değişikliklerine göre güncellendi; `docs/DATA.md`, `docs/VALIDATION_REPORT.md`, `docs/PLAN_v2.md` eklendi.
+
 ## [2.0.0] — 2026-09-25
 
 ### Eklendi
