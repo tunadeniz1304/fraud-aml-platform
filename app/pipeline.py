@@ -162,6 +162,7 @@ class Pipeline:
         bus.subscribe(ActionAgent.DECIDED, self._remember)
         bus.subscribe(ActionAgent.DECIDED, self._to_cases)
         bus.subscribe(ActionAgent.DECIDED, self._to_live)
+        bus.subscribe(ActionAgent.DECIDED, self._graph_feedback)
         bus.subscribe(TransactionMonitor.REJECTED, self._remember)
         if ingress is not None:
             ingress.subscribe(TransactionMonitor.CREATED, self._from_ingress, group="pipeline")
@@ -194,6 +195,19 @@ class Pipeline:
         graph.flag_customer(customer_id)
         for account in beneficiaries:
             graph.flag_account(account)
+
+    def _graph_feedback(self, event: dict[str, Any]) -> None:
+        """A scored BLOCK marks the counterparties (payee account, device) as fraud
+        so risk propagates to whoever touches them next. The customer node is
+        flagged only by an analyst's fraud label: in a takeover the customer is
+        the victim."""
+        graph = self.graph
+        if graph is None or event.get("decision") != "BLOCK" or event.get("account_blocked"):
+            return
+        if not event.get("scored", True):
+            return
+        graph.flag_account(str(event.get("beneficiary_iban") or event.get("beneficiary_id") or ""))
+        graph.flag_device(str(event.get("device_id") or ""))
 
     async def _labelled(self, tx_ids: list[str], feedback: str) -> None:
         """Analyst labels are profile feedback: a clean label teaches the profile."""

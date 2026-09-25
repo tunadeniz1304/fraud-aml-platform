@@ -36,7 +36,9 @@ class TestRealtimeSignals:
         assert out.pass_through == 0.9
         assert any(code == "GRAPH_PASS_THROUGH" for code, _, _ in out.reasons)
         assert out.score > 0.5 and out.ring_id == "RING-0001"
-        assert g.ring_id("C1") == "RING-0001" and g.ring_id("C5") is None
+        assert g.ring_id("C0") == "RING-0001" and g.ring_id("C5") is None
+        # money direction: the fan-in sources only paid in — victims, not members
+        assert g.ring_id("C1") is None
         # outside the 30-minute window the inflow no longer counts
         late = send(g, "C0", "TRXX-CASH", 1_000, T0 + 600 + 3600)
         assert late.fan_in_30m == 0 and late.pass_through == 0.0
@@ -96,7 +98,9 @@ class TestBatchAndExport:
         assert len(rings) == 1
         ring = rings[0]
         assert ring["id"] == "RING-0001"
-        assert {"C0", "C1", "C2", "C3"} <= set(ring["members"])
+        assert "C0" in ring["members"]  # the pass-through mule
+        assert {"C1", "C2", "C3"} <= set(ring["affected"])  # fan-in victims
+        assert not {"C1", "C2", "C3"} & set(ring["members"])
         assert ring["stats"]["shared_devices"] >= 1
         assert ring["stats"]["total_amount_try"] >= 60_000
         assert (

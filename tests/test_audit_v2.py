@@ -211,7 +211,6 @@ async def test_a5_card_testing_opens_card_testing_case(pipeline: Any) -> None:
 
 
 # --- A6: graph direction + BLOCK feedback -----------------------------------------------------
-@open_finding("A6")
 def test_a6_fan_in_victims_are_affected_not_ring_members() -> None:
     from app.graph.entity_graph import EntityGraph
 
@@ -230,7 +229,6 @@ def test_a6_fan_in_victims_are_affected_not_ring_members() -> None:
     assert {"V1", "V2", "V3"} <= set(ring["affected"])
 
 
-@open_finding("A6")
 async def test_a6_block_flags_graph_fraud_nodes(pipeline: Any) -> None:
     before = pipeline.graph.stats()["fraud_nodes"]
     out = await pipeline.run_scenario("ato")

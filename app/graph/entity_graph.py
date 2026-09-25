@@ -302,7 +302,9 @@ class EntityGraph:
 
             suspicious_link = signals.pass_through >= 0.7 or signals.cycle
             if suspicious_link:
-                members = [c, *senders]
+                # money direction: a fan-in source that never received money itself
+                # is an affected victim, not a ring member
+                members = [c, *(x for x in senders if self._has_inflow(x, since))]
                 if payee is not None:
                     members.append(self.owner.get(payee, payee))
                 signals.ring_id = self._ring_of(*members)
@@ -313,6 +315,17 @@ class EntityGraph:
             if self._updates % self.cfg.prune_every == 0:
                 self.prune()
             return signals
+
+    def _has_inflow(self, customer: str, since: float) -> bool:
+        return any(
+            t >= since and sender != customer
+            for account in self.accounts_of.get(customer, ())
+            for t, sender, _ in self.in_tx.get(account, ())
+        )
+
+    def flag_device(self, device: str) -> None:
+        if device:
+            self.flag_fraud(f"D:{device}")
 
     def _neighbours(self, node: str) -> Iterable[str]:
         nbrs = self.adj.get(node, {})
@@ -500,6 +513,7 @@ class EntityGraph:
                 total = sum(s[1] for s in internal)
                 flagged = [c for c in customers if c in self.fraud_nodes]
                 linked = [c for c in customers if c in self._ring_parent]
+                affected = self._affected(customers, community, devices, flagged)
                 if not (devices or flagged or len(linked) >= 2):
                     continue  # ordinary community (family, colleagues)
                 labels = {self._ring_label.get(self._find(c)) for c in linked}
@@ -512,13 +526,15 @@ class EntityGraph:
                     .hexdigest()[:8]
                     .upper()
                 )
-                members = [c[2:] for c in customers]
+                members = [c[2:] for c in customers if c not in affected]
                 rings.append(
                     {
                         "id": ring_id,
                         "members": members,
+                        "affected": [c[2:] for c in affected],
                         "stats": {
                             "accounts": len(members),
+                            "affected": [c[2:] for c in affected],
                             "shared_devices": len(devices),
                             "internal_transfers": int(sum(s[0] for s in internal)),
                             "total_amount_try": round(total, 2),
@@ -532,6 +548,27 @@ class EntityGraph:
                 )
         rings.sort(key=lambda r: -r["stats"]["total_amount_try"])
         return rings
+
+    def _affected(
+        self, customers: list[str], community: set[str], devices: set[str], flagged: list[str]
+    ) -> set[str]:
+        """Customers who only *send* into the community: fan-in sources (victims).
+
+        A member receives money from the community, shares one of its devices or
+        is confirmed fraud; everybody else merely paid into it.
+        """
+        out = set()
+        for c in customers:
+            if c in flagged or any(n in devices for n in self.adj.get(c, {})):
+                continue
+            received = any(
+                sender in community
+                for account in self.accounts_of.get(c, ())
+                for _, sender, _ in self.in_tx.get(account, ())
+            )
+            if not received:
+                out.add(c)
+        return out
 
     def stats(self) -> dict[str, int]:
         with self._lock:
