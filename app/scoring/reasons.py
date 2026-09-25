@@ -90,6 +90,7 @@ POLICY_CODES: dict[str, str] = {
     "ACCOUNT_BLOCKED": "Hesap zaten BLOKE — işlem skorlanmadan reddedildi",
     "UNKNOWN_CUSTOMER": "Bilinmeyen müşteri — insan incelemesine yönlendirildi",
     "RULE_FLOOR": "Kural aksiyon tabanı uygulandı",
+    "RULE_FLOOR_SOFTENED": "Düşük risk ve tutar: kuralın bekletme tabanı ek doğrulamaya indirildi",
     "ANOMALY_HIGH": "Davranış anomali skoru çok yüksek (IsolationForest/ECOD)",
     "TYPOLOGY_CAP": (
         "APP/mule/AML örüntüsü: sert bloke yerine bekletme (mağdur koruması, tipping-off yasağı)"

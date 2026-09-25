@@ -337,7 +337,8 @@ class ScoringEngine:
                 signals={name: r.score for name, r in signal_results.items()},
                 action_hint=rules.action_hint,
                 sanctions_hit=bool(sanctions),
-                cap=self._typology_cap(rules, signal_results, features),
+                cap=self.typology_cap(rules, signal_results, features),
+                amount_try=extraction.tx.amount_try,
             )
         )
         if (
@@ -372,7 +373,7 @@ class ScoringEngine:
         return result
 
     @staticmethod
-    def _typology_cap(
+    def typology_cap(
         rules: RuleEvaluation, signals: dict[str, SignalResult], features: dict[str, float]
     ) -> str | None:
         """APP victims and (possibly unwitting) mules: HOLD + warn, not BLOCK —
@@ -402,7 +403,8 @@ class ScoringEngine:
         features: dict[str, float],
     ) -> list[ReasonCode]:
         settings = get_settings()
-        policy = [policy_reason(code) for code in decision.overrides if code != "RULE_FLOOR"]
+        hidden = ("RULE_FLOOR", "RULE_FLOOR_SOFTENED")
+        policy = [policy_reason(code) for code in decision.overrides if code not in hidden]
         rule_reasons = [ReasonCode(h.reason_code, h.text, "rule", h.score) for h in rules.hits]
         ml = ml_reasons(model_score.contributions, features) if model_score else []
         anomaly: list[ReasonCode] = []

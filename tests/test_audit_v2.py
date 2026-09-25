@@ -193,7 +193,6 @@ async def test_a3_backfill_and_live_replay_produce_identical_features() -> None:
 
 
 # --- A4: rule floors must not force HOLD below the hold threshold for thin histories ----------
-@open_finding("A4")
 async def test_a4_second_transfer_of_the_day_is_step_up_not_hold(pipeline: Any) -> None:
     c = _customers()[2]
     now = datetime.now()

@@ -80,6 +80,8 @@ class PolicyInput:
     unknown_customer: bool = False
     #: typology cap (e.g. APP / mule → at most HOLD: hold and warn, don't block)
     cap: str | None = None
+    #: transaction amount (TRY) — a low-risk, low-amount HOLD floor is softened
+    amount_try: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -161,8 +163,18 @@ class PolicyEngine:
         base = self.thresholds.action(risk)
         decision = base
         overrides: list[str] = []
-        if inp.action_hint and ACTIONS.index(inp.action_hint) > ACTIONS.index(decision):
-            decision = inp.action_hint
+        floor = inp.action_hint
+        if (
+            floor == "HOLD"
+            and risk < settings.rule_floor_hold_min_risk
+            and inp.amount_try < settings.rule_floor_hold_min_amount_try
+        ):
+            # thin-history customers (first transfers of the day, new payees) trip
+            # pattern rules easily: challenge them instead of freezing the account
+            floor = "STEP_UP"
+            overrides.append("RULE_FLOOR_SOFTENED")
+        if floor and ACTIONS.index(floor) > ACTIONS.index(decision):
+            decision = floor
             overrides.append("RULE_FLOOR")
         if inp.cap and ACTIONS.index(decision) > ACTIONS.index(inp.cap):
             decision = inp.cap

@@ -138,6 +138,9 @@ class Settings(BaseSettings):
     policy_step_up: float = 0.35
     policy_hold: float = 0.60
     policy_block: float = 0.85
+    # A rule's HOLD floor below this risk *and* amount becomes STEP_UP (audit A4).
+    rule_floor_hold_min_risk: float = 0.45
+    rule_floor_hold_min_amount_try: float = 25_000.0
     # Weights of external signals in risk = 1-(1-stack)·Π(1-w·s).
     policy_signal_weights: dict[str, float] = Field(
         default_factory=lambda: {

@@ -61,9 +61,20 @@ class TestDecisions:
         assert unknown.risk_score == base.risk_score
 
     def test_rule_hint_is_a_floor(self, engine):
-        d = engine.decide(PolicyInput(ml_score=0.001, anomaly_score=0.1, action_hint="HOLD"))
+        d = engine.decide(
+            PolicyInput(ml_score=0.001, anomaly_score=0.1, action_hint="HOLD", amount_try=60_000)
+        )
         assert d.base_decision == "ALLOW" and d.decision == "HOLD"
         assert "RULE_FLOOR" in d.overrides and d.hold_minutes and d.case_required
+
+    def test_low_risk_low_amount_hold_floor_is_softened_to_step_up(self, engine):
+        """Audit A4: a thin-history transfer (risk 0.29, 5 096 TRY) must not freeze
+        the account — the rule's HOLD floor becomes a step-up challenge."""
+        d = engine.decide(
+            PolicyInput(ml_score=0.001, anomaly_score=0.1, action_hint="HOLD", amount_try=5_096)
+        )
+        assert d.decision == "STEP_UP" and not d.case_required
+        assert "RULE_FLOOR_SOFTENED" in d.overrides
 
     def test_sanctions_force_hold_and_case(self, engine):
         d = engine.decide(PolicyInput(ml_score=0.001, sanctions_hit=True))
