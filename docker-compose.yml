@@ -2,6 +2,7 @@
 #   docker compose up --build            -> http://localhost:8000 (API_PORT ile değişir)
 #   docker compose --profile observability up   (+ Prometheus :9090, Grafana :3000; PROMETHEUS_PORT / GRAFANA_PORT)
 #
+# JWT_SECRET zorunludur; demo kullanıcıları için SEED_DEMO_USERS=true verin.
 # .env (opsiyonel) env_file ile verilir, imaja kopyalanmaz. Postgres parolası
 # yalnızca yerel demo içindir; üretimde secret yönetimiyle değiştirilir.
 name: anil3
@@ -19,6 +20,12 @@ x-app: &app
     # /metrics requires "Authorization: Bearer $METRICS_TOKEN"; Prometheus reads
     # the same value from ops/prometheus/metrics_token (git-ignored, see README)
     METRICS_TOKEN: ${METRICS_TOKEN:-}
+    # Zorunlu: tüm süreçler aynı imza anahtarını paylaşır (boşsa compose durur).
+    # Üretmek için: python -c "import secrets; print(secrets.token_urlsafe(48))"
+    JWT_SECRET: ${JWT_SECRET:?JWT_SECRET tanımlayın (.env veya ortam değişkeni)}
+    # Demo kullanıcıları (bilinen parolalar) yalnızca açıkça istenirse:
+    #   SEED_DEMO_USERS=true docker compose up
+    SEED_DEMO_USERS: ${SEED_DEMO_USERS:-false}
     FEATURE_STORE: redis
     DB_AUTO_CREATE: "false"
     LOG_JSON: "true"
@@ -136,12 +143,16 @@ services:
     image: grafana/grafana:11.2.0
     profiles: ["observability"]
     environment:
-      GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      # anonim erişim kapalı: panolar işlem hacmi ve karar dağılımını gösterir
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # yönetici parolası git'e girmeyen dosyadan (bkz. README)
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
       GF_USERS_DEFAULT_LANGUAGE: tr-TR
     volumes:
       - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./ops/grafana/admin_password:/run/secrets/grafana_admin_password:ro
     ports:
       - "${GRAFANA_PORT:-3000}:3000"
     depends_on:

@@ -392,3 +392,58 @@ class TestCaseClosure:
             await service.set_status(case_id, "INCELENIYOR", "analist", role="analist")
         reopened = await service.set_status(case_id, "INCELENIYOR", "admin", role="admin")
         assert reopened["status"] == "INCELENIYOR"
+
+
+# --- H6 / M17: fail-fast production configuration --------------------------------------
+@pytest.mark.parametrize(
+    ("env", "fragment"),
+    [
+        ({"JWT_SECRET": ""}, "JWT_SECRET tanımlı olmalıdır"),
+        ({"JWT_SECRET": "kısa-anahtar"}, "en az 32 karakter"),
+        ({"JWT_SECRET": "change-me-" + "z" * 30}, "örnek/varsayılan"),
+        ({"SEED_DEMO_USERS": "true"}, "demo kullanıcılar"),
+        ({"CONSORTIUM_SALT": "anil3-consortium-demo"}, "demo konsorsiyum tuzu"),
+    ],
+)
+def test_h6_prod_refuses_to_start_with_demo_secrets(
+    prod_env: Path, monkeypatch: pytest.MonkeyPatch, env: dict[str, str], fragment: str
+) -> None:
+    for key, value in env.items():
+        if value:
+            monkeypatch.setenv(key, value)
+        else:
+            monkeypatch.delenv(key, raising=False)
+    get_settings.cache_clear()
+    with pytest.raises(RuntimeError, match=fragment):
+        create_app()
+
+
+def test_h6_prod_starts_with_real_secrets(prod_env: Path) -> None:
+    from app.security.startup import startup_problems
+
+    assert startup_problems(get_settings()) == []
+    assert create_app() is not None
+
+
+def test_h6_several_workers_need_a_shared_jwt_secret(
+    demo_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("WEB_CONCURRENCY", "4")
+    monkeypatch.delenv("JWT_SECRET", raising=False)
+    get_settings.cache_clear()
+    with pytest.raises(RuntimeError, match="WEB_CONCURRENCY"):
+        create_app()
+    monkeypatch.setenv("JWT_SECRET", "shared-signing-material-" + "w" * 16)
+    get_settings.cache_clear()
+    assert create_app() is not None
+
+
+def test_h6_m17_compose_requires_secrets_and_closes_grafana() -> None:
+    compose = (BASE_DIR / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "JWT_SECRET: ${JWT_SECRET:?" in compose
+    assert "SEED_DEMO_USERS: ${SEED_DEMO_USERS:-false}" in compose
+    assert 'GF_AUTH_ANONYMOUS_ENABLED: "false"' in compose
+    assert 'GF_AUTH_ANONYMOUS_ENABLED: "true"' not in compose
+    example = (BASE_DIR / ".env.example").read_text(encoding="utf-8")
+    for key in ("JWT_SECRET=", "CONSORTIUM_SALT=", "WEB_CONCURRENCY=", "SEED_DEMO_USERS="):
+        assert f"\n{key}\n" in example

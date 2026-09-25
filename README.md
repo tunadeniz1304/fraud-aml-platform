@@ -9,14 +9,14 @@
 ## 30 saniyede çalıştır
 
 ```bash
-cp .env.example .env        # opsiyonel — LLM anahtarı yoksa DEMO modu
-docker compose up --build   # postgres, redis, migrate, api, worker, simulator
+cp .env.example .env        # LLM anahtarı yoksa DEMO modu; JWT_SECRET'ı doldurun
+SEED_DEMO_USERS=true docker compose up --build   # postgres, redis, migrate, api, worker, simulator
 # → http://localhost:8000   (port doluysa: API_PORT=8010 docker compose up)
 ```
 
-Demo kullanıcıları (`analist / analist123`, `kidemli_analist / kidemli123`, `admin / admin123`) yalnızca geliştirme ortamında eklenir: `SEED_DEMO_USERS` tanımlı değilse `ENVIRONMENT=prod` dışında açık, prod'da kapalıdır.
+Demo kullanıcıları (`analist / analist123`, `kidemli_analist / kidemli123`, `admin / admin123`) yalnızca geliştirme ortamında eklenir: `SEED_DEMO_USERS` tanımlı değilse `ENVIRONMENT=prod` dışında açık, prod'da kapalıdır. `docker compose` demo kullanıcılarını yalnızca `SEED_DEMO_USERS=true` ile ekler ve `JWT_SECRET` tanımlı değilse başlamaz.
 
-Gözlemlenebilirlik: `/metrics` uç noktası `Authorization: Bearer <METRICS_TOKEN>` ister (`METRICS_TOKEN` boşsa 404 döner). Observability profilini açmadan önce aynı değeri `ops/prometheus/metrics_token` dosyasına yazın (dosya git'e girmez). Sonra `docker compose --profile observability up` → Prometheus `:9090`, Grafana `:3000` (hazır pano).
+Gözlemlenebilirlik: `/metrics` uç noktası `Authorization: Bearer <METRICS_TOKEN>` ister (`METRICS_TOKEN` boşsa 404 döner). Observability profilini açmadan önce aynı değeri `ops/prometheus/metrics_token` dosyasına yazın (dosya git'e girmez). Grafana anonim erişime kapalıdır: yönetici parolasını `ops/grafana/admin_password` dosyasına yazın (dosya git'e girmez). Sonra `docker compose --profile observability up` → Prometheus `:9090`, Grafana `:3000` (hazır pano, kullanıcı `admin`).
 
 **LLM modu:** `.env`'de `LLM_API_KEY` varsa başlangıç logu `LLM: CANLI (<model> @ <LLM_BASE_URL sunucusu>)` der ve copilot canlı modeli kullanır. Yoksa deterministik **DEMO** moduna düşer: özet, karar önerisi, ŞİB ve sohbet şablonlardan üretilir. Canlı çağrı hata verirse o çağrı `llm_mode="fallback"` ile demo çıktısına düşer. Anahtar hiçbir log/yanıtta görünmez. LLM'e giden veride TCKN/IBAN/telefon/e-posta/isim pseudonimleştirilir (KVKK).
 
@@ -103,6 +103,7 @@ Aşağıdaki desenler kamuya açık ürün anlatımlarından esinlenmiştir. Ani
 ## Güvenlik notları
 
 - Demo kullanıcıları yalnızca `SEED_DEMO_USERS` açıkken eklenir (varsayılan: prod dışında açık).
+- `ENVIRONMENT=prod` boş/kısa/örnek `JWT_SECRET`, demo kullanıcıları veya demo `CONSORTIUM_SALT` ile başlamayı reddeder; `WEB_CONCURRENCY>1` her ortamda `JWT_SECRET` ister (`app/security/startup.py`).
 - SSE canlı akışı sorgu dizesinde JWT kabul etmez. İstemci `POST /api/stream/ticket` ile kısa ömürlü, **tek kullanımlık** bir bilet alır.
 - Servis ingest'i HMAC imzalıdır. Her istek bir `X-Nonce` taşır ve aynı nonce ikinci kez kabul edilmez (replay koruması).
 - `/metrics` `METRICS_TOKEN` ister (bkz. yukarı).

@@ -65,6 +65,8 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_json: bool = False
     api_docs: bool = Field(default=False, description="Swagger UI (/docs) açık mı")
+    #: uvicorn worker count (same env var uvicorn reads); >1 needs a JWT_SECRET
+    web_concurrency: int = 1
 
     # --- Storage -----------------------------------------------------------
     data_dir: Path = BASE_DIR / "data"
@@ -218,7 +220,8 @@ class Settings(BaseSettings):
     )
     online_anomaly_enabled: bool = True
     consortium_enabled: bool = True
-    # Konsorsiyum tuzu (üyeler arası paylaşılan gizli değer; demo varsayılanı).
+    # Konsorsiyum tuzu (üyeler arası paylaşılan gizli değer; demo varsayılanı,
+    # prod'da reddedilir — app/security/startup.py).
     consortium_salt: str = "anil3-consortium-demo"
     frontend_dist: Path | None = Field(default=None, validation_alias="FRONTEND_DIST")
     fp_cost_try: float = 50.0  # operasyonel maliyet: bir yanlış alarmın inceleme maliyeti
