@@ -152,7 +152,9 @@ class TestLatencyBudget:
             result = await engine.score(strip_labels(tx))
             await engine.commit(result)
             latencies.append(result.latency_ms)
-            if tx["label"]:
+            # ground truth, not the noisy label: a fraud whose label was flipped
+            # to 0 (unreported fraud, generator label noise) is not a false positive
+            if tx["label"] != bool(tx.get("label_noise")):
                 fraud += 1
                 caught += result.decision != "ALLOW"
             else:
