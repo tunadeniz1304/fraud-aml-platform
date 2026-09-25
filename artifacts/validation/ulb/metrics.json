@@ -1,0 +1,60 @@
+{
+  "generated_at": "2026-09-25T10:39:06+00:00",
+  "dataset": "ULB Credit Card (OpenML 1597)",
+  "rows": {
+    "train": 169461,
+    "valid": 29904,
+    "test": 85442
+  },
+  "test_fraud": 108,
+  "test_fraud_rate": 0.00126,
+  "results": {
+    "gbm": {
+      "n": 85442,
+      "positives": 108,
+      "pr_auc": 0.7969,
+      "roc_auc": 0.9826,
+      "recall_at_1pct_fpr": 0.8796,
+      "budget_1pct": {
+        "alert_budget": 0.01,
+        "alerts": 854,
+        "precision": 0.1112,
+        "recall": 0.8796,
+        "cost_weighted_recall": 0.8744
+      },
+      "brier": 0.00044,
+      "mean_score": 0.001128
+    },
+    "anomaly": {
+      "n": 85442,
+      "positives": 108,
+      "pr_auc": 0.0436,
+      "roc_auc": 0.9431,
+      "recall_at_1pct_fpr": 0.5185,
+      "budget_1pct": {
+        "alert_budget": 0.01,
+        "alerts": 854,
+        "precision": 0.0644,
+        "recall": 0.5093,
+        "cost_weighted_recall": 0.5653
+      }
+    },
+    "hybrid": {
+      "n": 85442,
+      "positives": 108,
+      "pr_auc": 0.7704,
+      "roc_auc": 0.9569,
+      "recall_at_1pct_fpr": 0.8241,
+      "budget_1pct": {
+        "alert_budget": 0.01,
+        "alerts": 854,
+        "precision": 0.103,
+        "recall": 0.8148,
+        "cost_weighted_recall": 0.8273
+      },
+      "brier": 0.000429,
+      "mean_score": 0.001141
+    }
+  },
+  "limitation": "Özellikler PCA bileşenleri: kural motoru, feature store ve graf katmanı uygulanamaz; yalnızca GBM + anomali + kalibrasyon hattı test edilir."
+}

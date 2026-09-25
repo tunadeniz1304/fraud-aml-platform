@@ -216,6 +216,7 @@ class Settings(BaseSettings):
     fp_cost_try: float = 50.0  # operasyonel maliyet: bir yanlış alarmın inceleme maliyeti
     retrain_min_new_labels: int = 50
     # --- Public-data validation (docs/VALIDATION_REPORT.md) ---------------------
+    validation_dir: Path | None = None  # default: artifacts/validation
     paysim_base_date: str = "2026-01-01T00:00:00"
     #: PaySim money unit → TRY (PaySim amounts carry no currency; 1:1 keeps them as is)
     paysim_try_per_unit: float = 1.0

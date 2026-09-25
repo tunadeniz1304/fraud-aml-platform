@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -18,6 +19,7 @@ from app.security.deps import require_role
 
 router = APIRouter(prefix="/api/models", tags=["models"])
 analyst = Depends(require_role("analist"))
+senior = Depends(require_role("kidemli_analist"))
 
 
 def _registry() -> ModelRegistry:
@@ -160,3 +162,18 @@ async def active_learning(
         }
         for d in candidates
     ]
+
+
+@router.get("/validation", dependencies=[senior])
+async def validation() -> dict[str, Any]:
+    """Public-data validation results (``artifacts/validation/*/metrics.json``):
+    PaySim replay, Elliptic graph, ULB, synthetic side by side and the
+    champion selection evidence (docs/VALIDATION_REPORT.md)."""
+    root = get_settings().resolved_validation_dir
+    out: dict[str, Any] = {}
+    for path in sorted(root.glob("*/metrics.json")):
+        out[path.parent.name] = json.loads(path.read_text(encoding="utf-8"))
+    selection = root / "champion_selection.json"
+    if selection.is_file():
+        out["champion_selection"] = json.loads(selection.read_text(encoding="utf-8"))
+    return out

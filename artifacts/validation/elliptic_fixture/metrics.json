@@ -1,0 +1,69 @@
+{
+  "generated_at": "2026-09-25T10:44:39+00:00",
+  "dataset": "Elliptic",
+  "source": "tests\\fixtures\\elliptic_sample",
+  "nodes": 510,
+  "edges": 649,
+  "train": {
+    "nodes": 131,
+    "illicit": 21
+  },
+  "test": {
+    "nodes": 71,
+    "illicit": 10
+  },
+  "split": "zaman adımı 1–34 eğitim, 35+ test",
+  "results": {
+    "graph": {
+      "illicit_f1": 0.25,
+      "illicit_precision": 0.1579,
+      "illicit_recall": 0.6,
+      "illicit_f1_at_0.5": 0.0,
+      "pr_auc": 0.1884,
+      "threshold": 0.2156,
+      "features": 4
+    },
+    "local": {
+      "illicit_f1": 0.3333,
+      "illicit_precision": 1.0,
+      "illicit_recall": 0.2,
+      "illicit_f1_at_0.5": 0.3333,
+      "pr_auc": 0.527,
+      "threshold": 0.7938,
+      "features": 93
+    },
+    "local+graph": {
+      "illicit_f1": 0.3333,
+      "illicit_precision": 1.0,
+      "illicit_recall": 0.2,
+      "illicit_f1_at_0.5": 0.3333,
+      "pr_auc": 0.5252,
+      "threshold": 0.7399,
+      "features": 97
+    },
+    "all": {
+      "illicit_f1": 0.3077,
+      "illicit_precision": 0.6667,
+      "illicit_recall": 0.2,
+      "illicit_f1_at_0.5": 0.3333,
+      "pr_auc": 0.5033,
+      "threshold": 0.0993,
+      "features": 165
+    },
+    "all+graph": {
+      "illicit_f1": 0.5333,
+      "illicit_precision": 0.8,
+      "illicit_recall": 0.4,
+      "illicit_f1_at_0.5": 0.3333,
+      "pr_auc": 0.5238,
+      "threshold": 0.0837,
+      "features": 169
+    }
+  },
+  "graph_features": [
+    "pagerank",
+    "in_degree",
+    "out_degree",
+    "component_size"
+  ]
+}

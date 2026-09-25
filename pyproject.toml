@@ -106,6 +106,7 @@ addopts = "-q"
 markers = [
     "slow: uzun süren testler (eğitim, 10k replay)",
     "benchmark: gecikme ölçüm testleri",
+    "external_data: tam halka açık veri seti gerektirir (yoksa atlanır)",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning",
