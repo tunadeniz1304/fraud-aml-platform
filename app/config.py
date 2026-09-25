@@ -77,6 +77,11 @@ class Settings(BaseSettings):
     writer_batch_size: int = 500
     writer_flush_ms: int = 50
     writer_queue_size: int = 20_000
+    # H4: failed batches are retried (backoff), then bisected; poison writes
+    # go to the dead_letters table, never dropped
+    writer_max_retries: int = 2
+    writer_retry_base_ms: int = 50
+    writer_retry_max_ms: int = 2_000
 
     # --- Event bus (P0.2) --------------------------------------------------
     event_bus: Literal["memory", "redis"] = "memory"
@@ -91,6 +96,16 @@ class Settings(BaseSettings):
     enrich_concurrency: int = 2
     # Redis idempotency window of POST /api/transactions (multi-worker replays)
     idempotency_ttl_s: int = 86_400
+    # M1: lease of a PENDING claim (refreshed while the owner is scoring) and
+    # how long a concurrent retry waits before answering 409 "processing"
+    idempotency_pending_ttl_s: int = 45
+    idempotency_pending_wait_ms: int = 250
+    # H3: multi-worker propagation — account-status poll (DB fallback when
+    # Redis is not configured) and runtime-config (thresholds/rules/models) poll
+    account_status_poll_ms: int = 500
+    config_poll_ms: int = 1_000
+    # M13: case-outbox rows older than this are replayed by any worker
+    case_outbox_replay_s: int = 120
     # slowapi storage: "memory://" (per process) or e.g. "redis://redis:6379/1"
     rate_limit_storage_uri: str = "memory://"
     bus_claim_idle_ms: int = 5_000

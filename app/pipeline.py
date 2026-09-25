@@ -896,6 +896,9 @@ async def build_pipeline(
         batch_size=settings.writer_batch_size,
         flush_interval=settings.writer_flush_ms / 1000,
         queue_size=settings.writer_queue_size,
+        max_retries=settings.writer_max_retries,
+        retry_base=settings.writer_retry_base_ms / 1000,
+        retry_max=settings.writer_retry_max_ms / 1000,
     )
     accounts = AccountService(db, writer)
     await accounts.load()

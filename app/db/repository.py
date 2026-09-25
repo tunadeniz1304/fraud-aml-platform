@@ -7,7 +7,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Select, func, select, update
+from sqlalchemy import Select, delete, func, select, update
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +16,7 @@ from app.db.models import (
     Account,
     AccountStatusHistory,
     AuditLog,
+    CaseOutbox,
     Customer,
     Decision,
     GraphRing,
@@ -162,6 +163,7 @@ def transaction_values(tx: dict[str, Any]) -> dict[str, Any]:
         "beneficiary_name": str(tx.get("beneficiary_name") or ""),
         "purpose": str(tx.get("purpose") or ""),
         "session": session_block if isinstance(session_block, dict) else None,
+        "payload_hash": str(tx["payload_hash"]) if tx.get("payload_hash") else None,
         "received_at": utcnow(),
     }
 
@@ -177,6 +179,22 @@ async def insert_decisions(session: AsyncSession, rows: list[dict[str, Any]]) ->
     if rows:
         stmt = _insert(session, Decision).on_conflict_do_nothing(index_elements=["transaction_id"])
         await session.execute(stmt, rows)
+
+
+async def insert_case_outbox(session: AsyncSession, rows: list[dict[str, Any]]) -> None:
+    """Durable case-intake records (M13); a replayed decision is ignored."""
+    if rows:
+        stmt = _insert(session, CaseOutbox).on_conflict_do_nothing(
+            index_elements=["transaction_id"]
+        )
+        await session.execute(stmt, rows)
+
+
+async def delete_case_outbox(session: AsyncSession, transaction_ids: list[str]) -> None:
+    if transaction_ids:
+        await session.execute(
+            delete(CaseOutbox).where(CaseOutbox.transaction_id.in_(transaction_ids))
+        )
 
 
 async def count(session: AsyncSession, model: Any) -> int:

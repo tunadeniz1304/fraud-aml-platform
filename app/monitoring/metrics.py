@@ -103,6 +103,12 @@ DB_BATCH_SIZE = Histogram(
     buckets=(1, 5, 10, 25, 50, 100, 250, 500, 1000),
     registry=REGISTRY,
 )
+WRITER_DEAD_LETTERS = Counter(
+    "fraud_writer_dead_letters_total",
+    "Yazılamayıp DLQ'ya alınan (stored) ya da yalnız loglanan (log_only) kayıtlar",
+    ["outcome"],
+    registry=REGISTRY,
+)
 BUS_EVENTS = Counter(
     "fraud_bus_events_total", "Olay veriyolu mesajları", ["topic", "outcome"], registry=REGISTRY
 )
