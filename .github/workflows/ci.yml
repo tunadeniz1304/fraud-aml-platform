@@ -21,7 +21,7 @@ jobs:
       - name: Mypy
         run: mypy app
       - name: Tests + coverage (>= 80%)
-        run: python -m pytest -q --cov=app --cov-fail-under=80
+        run: python -m pytest -q -p randomly --timeout 900 --cov=app --cov-fail-under=90
 
   frontend:
     runs-on: ubuntu-latest
