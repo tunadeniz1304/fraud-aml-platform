@@ -878,9 +878,21 @@ class CaseService:
             await self.accounts.set_by_analyst(customer_id, "AKTIF", actor=actor, reason=reason)
 
     async def customer_confirmation(
-        self, transaction_id: str, *, knows_payee: bool, note: str = ""
+        self,
+        transaction_id: str,
+        *,
+        knows_payee: bool,
+        note: str = "",
+        actor: str | None = None,
     ) -> dict[str, Any]:
-        """Simulated "Bu kişiyi tanıyor musunuz?" answer for a held APP payment."""
+        """Simulated "Bu kişiyi tanıyor musunuz?" answer for a held APP payment.
+
+        L4: ``actor`` is the authenticated user who entered the answer (the
+        API passes the principal); it is recorded as the actor of the case
+        event and the audit entry, with ``on_behalf_of="müşteri"``. Only an
+        internal caller (no principal) is recorded as the customer itself.
+        """
+        recorded_by = actor or "müşteri"
         async with self.db.transaction() as session:
             alert = (
                 (
@@ -901,10 +913,11 @@ class CaseService:
                 self._event(
                     case.id,
                     "CUSTOMER_CONFIRMATION",
-                    "müşteri",
+                    recorded_by,
                     transaction_id=transaction_id,
                     knows_payee=knows_payee,
                     note=note,
+                    on_behalf_of="müşteri",
                 )
             )
             if not knows_payee:
@@ -914,6 +927,17 @@ class CaseService:
                     case.status = "INCELENIYOR"
             case.updated_at = utcnow()
             case_id = case.id
+            customer = case.customer_id
+        await self._audit(
+            "CASE_CUSTOMER_CONFIRMATION",
+            str(case_id),
+            recorded_by,
+            f"Müşteri adına alıcı teyidi girildi: {'tanıyor' if knows_payee else 'tanımıyor'}",
+            customer_id=customer,
+            transaction_id=transaction_id,
+            knows_payee=knows_payee,
+            on_behalf_of="müşteri",
+        )
         message = (
             "Teşekkürler. İşlem, cooling-off süresi sonunda analist onayıyla serbest bırakılacak."
             if knows_payee
