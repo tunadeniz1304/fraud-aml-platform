@@ -110,7 +110,7 @@ Aşağıdaki desenler kamuya açık ürün anlatımlarından esinlenmiştir. Ani
 
 ## Senaryo tetikleme (Demo modu)
 
-Konsolda **Senaryo** sekmesi (veya `POST /api/scenarios/{ad}`): `ato` → **BLOCK**, `app` → **HOLD + dinamik uyarı**, `mule_ring` → **HOLD + vaka + graf halkası**, `smurfing` → **HOLD + AML vakası + otomatik ŞİB taslağı**, `card_testing` → **BLOCK** (`CARD_TESTING` vakası). Simülatör ayrıca her 3 dakikada rastgele bir saldırı enjekte eder (`SIM_SCENARIO_EVERY`).
+Konsolda **Senaryo** sekmesi (veya `POST /api/scenarios/{ad}`): `ato` → **BLOCK**, `app` → **HOLD + dinamik uyarı**, `mule_ring` → **HOLD + vaka + graf halkası**, `smurfing` → **HOLD + AML vakası + otomatik ŞİB taslağı**, `card_testing` → **STEP_UP → HOLD** (tekrarlayan mikro ödemelerde artan risk, `CARD_TESTING` vakası). Simülatör ayrıca her 3 dakikada rastgele bir saldırı enjekte eder (`SIM_SCENARIO_EVERY`).
 
 ## Geliştirme
 
