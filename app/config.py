@@ -186,6 +186,15 @@ class Settings(BaseSettings):
     frontend_dist: Path | None = Field(default=None, validation_alias="FRONTEND_DIST")
     fp_cost_try: float = 50.0  # operasyonel maliyet: bir yanlış alarmın inceleme maliyeti
     retrain_min_new_labels: int = 50
+    # --- Public-data validation (docs/VALIDATION_REPORT.md) ---------------------
+    paysim_base_date: str = "2026-01-01T00:00:00"
+    #: PaySim money unit → TRY (PaySim amounts carry no currency; 1:1 keeps them as is)
+    paysim_try_per_unit: float = 1.0
+    #: alert budgets (share of traffic) reported by the validation
+    validation_budgets: list[float] = Field(default_factory=lambda: [0.005, 0.01])
+    validation_bootstrap_rounds: int = 200
+    #: channels that move cash out of the bank (feature ``is_cash_channel``)
+    cash_channels: list[str] = Field(default_factory=lambda: ["atm", "cash"])
     #: scored-but-unlearned events kept for late step-up / analyst feedback
     feedback_pending_max: int = 50_000
     auto_sib_case_types: list[str] = Field(default_factory=lambda: ["AML", "MULE", "YAPTIRIM"])

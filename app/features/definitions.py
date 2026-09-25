@@ -187,15 +187,24 @@ def _payee_age(ctx: FeatureContext) -> float:
 
 
 # --- device / network ---------------------------------------------------------------------
-@feature("is_new_device", "Cihaz müşteri için yeni", "cihaz")
+@feature("device_missing", "İşlemde cihaz bilgisi yok (şube/ATM/eski kanal)", "cihaz")
+def _device_missing(ctx: FeatureContext) -> float:
+    return 0.0 if ctx.tx.device_id else 1.0
+
+
+@feature("is_new_device", "Cihaz müşteri için yeni (cihaz bilgisi yoksa 0)", "cihaz")
 def _is_new_device(ctx: FeatureContext) -> float:
     dev = ctx.tx.device_id
+    if not dev:  # unknown is not "new": the missing indicator carries it
+        return 0.0
     known = dev in ctx.customer.known_devices or dev in ctx.profile.devices
     return 0.0 if known else 1.0
 
 
-@feature("device_age_d", "Cihazın sistemde ilk görülmesinden bu yana gün", "cihaz")
+@feature("device_age_d", "Cihazın sistemde ilk görülmesinden bu yana gün (-1: cihaz yok)", "cihaz")
 def _device_age(ctx: FeatureContext) -> float:
+    if not ctx.tx.device_id:
+        return -1.0
     first = ctx.state.device_first_seen
     return 0.0 if first is None else (ctx.tx.epoch - first) / DAY
 
@@ -253,6 +262,11 @@ def _night_ratio(ctx: FeatureContext) -> float:
 def _hour_unusual(ctx: FeatureContext) -> float:
     prob = hour_probability(ctx.profile, ctx.tx.ts.hour)
     return 1.0 if prob < get_settings().unusual_hour_prob else 0.0
+
+
+@feature("is_cash_channel", "Nakit kanalı (ATM / nakit çekim)", "kanal")
+def _is_cash_channel(ctx: FeatureContext) -> float:
+    return 1.0 if ctx.tx.channel in get_settings().cash_channels else 0.0
 
 
 @feature("channel_change", "Kanal bir önceki işlemden farklı", "kanal")

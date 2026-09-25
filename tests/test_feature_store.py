@@ -234,6 +234,19 @@ async def test_typing_deviation_against_learned_rhythm():
     assert (await run([], tx(9, session={"typing_cadence_ms": 40})))["typing_deviation"] == 0.0
 
 
+async def test_missing_device_is_an_indicator_not_a_new_device():
+    f = await run([], tx(9, device_id=""))
+    assert f["device_missing"] == 1.0
+    assert f["is_new_device"] == 0.0 and f["device_age_d"] == -1.0
+    known = await run([], tx(9))
+    assert known["device_missing"] == 0.0
+
+
+async def test_cash_channel_indicator():
+    assert (await run([], tx(9, channel="atm")))["is_cash_channel"] == 1.0
+    assert (await run([], tx(9)))["is_cash_channel"] == 0.0
+
+
 # --- text / customer ------------------------------------------------------------------------------
 async def test_text_and_customer_features():
     f = await run([], tx(9, purpose="ACİL: güvenli hesaba aktar"))
