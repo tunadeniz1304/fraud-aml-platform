@@ -50,7 +50,7 @@ Bağımsız denetim bulgularını kapatan sürüm. Bulgular önce `tests/test_au
 ## [2.0.0] — 2026-09-25
 
 ### Eklendi
-- **LLM sözleşmesi:** OpenAI-uyumlu async istemci (DeepSeek V4 Flash @ Evren), CANLI / DEMO / fallback modları, pydantic şema doğrulaması + onarım denemesi, KVKK pseudonimleştirme, `GET /api/llm/status`, `scripts/llm_smoke.py`.
+- **LLM sözleşmesi:** OpenAI-uyumlu async istemci (DeepSeek V4 Flash, OpenAI-uyumlu uç nokta), CANLI / DEMO / fallback modları, pydantic şema doğrulaması + onarım denemesi, KVKK pseudonimleştirme, `GET /api/llm/status`, `scripts/llm_smoke.py`.
 - **Olay omurgası:** Redis Streams (consumer group, ack, retry, DLQ, idempotency) + bellek içi veriyolu; backpressure.
 - **Kalıcılık:** PostgreSQL + Alembic, NUMERIC para + TRY normalizasyonu, hash-zincirli audit (`/api/audit/verify`).
 - **Streaming feature store:** 46 feature, EWMA adaptif profil, Redis/bellek arka uçları.

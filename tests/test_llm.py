@@ -102,7 +102,7 @@ class Answer(BaseModel):
 
 # --- configuration -------------------------------------------------------------
 class TestSettings:
-    def test_defaults_point_to_evren_deepseek(self, clean_env):
+    def test_defaults_point_to_deepseek(self, clean_env):
         s = LLMSettings()
         assert s.base_url == DEFAULT_BASE_URL
         assert s.model == DEFAULT_MODEL == "deepseek-v4-flash"
@@ -111,8 +111,8 @@ class TestSettings:
 
     def test_key_alias_order_first_non_empty_wins(self, clean_env):
         clean_env.setenv("OPENAI_API_KEY", "k-openai-1")
-        clean_env.setenv("EVREN_API_KEY", "k-evren-1")
-        assert LLMSettings().api_key.get_secret_value() == "k-evren-1"
+        clean_env.setenv("EVREN_API_KEY", "k-legacy-1")  # undocumented pre-2.1 alias
+        assert LLMSettings().api_key.get_secret_value() == "k-legacy-1"
         clean_env.setenv("DEEPSEEK_API_KEY", "k-deep-1")
         assert LLMSettings().api_key.get_secret_value() == "k-deep-1"
         clean_env.setenv("LLM_API_KEY", "")  # empty values are ignored

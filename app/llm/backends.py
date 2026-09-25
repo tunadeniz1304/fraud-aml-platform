@@ -1,8 +1,8 @@
 """Live LLM backends.
 
 * :class:`OpenAICompatibleBackend` — the single default client: ``AsyncOpenAI``
-  against any OpenAI-compatible Chat Completions endpoint (DeepSeek V4 Flash via
-  the Evren gateway by default). Handles ``response_format`` / ``tools``
+  against any OpenAI-compatible Chat Completions endpoint (DeepSeek V4 Flash by
+  default). Handles ``response_format`` / ``tools``
   capability probing, ignores DeepSeek ``reasoning_content`` and classifies
   every failure into an :data:`~app.llm.types.ErrorKind`.
 * :class:`AnthropicBackend` — optional (``LLM_PROVIDER=anthropic``); only

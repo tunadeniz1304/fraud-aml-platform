@@ -3,9 +3,13 @@
 The **only** place the code reads LLM environment variables. Aliases are tried
 in order and the first *non-empty* one wins:
 
-* key:      ``LLM_API_KEY`` → ``DEEPSEEK_API_KEY`` → ``EVREN_API_KEY`` → ``OPENAI_API_KEY``
-* base URL: ``LLM_BASE_URL`` → ``DEEPSEEK_BASE_URL`` → ``EVREN_BASE_URL`` → ``OPENAI_BASE_URL``
+* key:      ``LLM_API_KEY`` → ``DEEPSEEK_API_KEY`` → ``OPENAI_API_KEY``
+* base URL: ``LLM_BASE_URL`` → ``DEEPSEEK_BASE_URL`` → ``OPENAI_BASE_URL``
 * model:    ``LLM_MODEL`` → ``DEEPSEEK_MODEL``
+
+One gateway-specific key/URL pair from earlier releases is still accepted
+(after the DeepSeek names) so existing ``.env`` files keep working; it is not
+documented and new setups should use the ``LLM_*`` names.
 
 ``.env`` files are loaded by :func:`app.config.load_env_files` (python-dotenv,
 ``override=False``); this module never opens them. The API key is a
@@ -24,7 +28,8 @@ import app.config  # noqa: F401  - ensures .env files are loaded first
 
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-v4-flash"
-KEY_ENV_NAMES = ("LLM_API_KEY", "DEEPSEEK_API_KEY", "EVREN_API_KEY", "OPENAI_API_KEY")
+_LEGACY_KEY, _LEGACY_URL = "EVREN_API_KEY", "EVREN_BASE_URL"  # pre-2.1 .env compatibility
+KEY_ENV_NAMES = ("LLM_API_KEY", "DEEPSEEK_API_KEY", _LEGACY_KEY, "OPENAI_API_KEY")
 
 
 class LLMConfigError(RuntimeError):
@@ -53,7 +58,7 @@ class LLMSettings(BaseSettings):
     base_url: str = Field(
         default=DEFAULT_BASE_URL,
         validation_alias=AliasChoices(
-            "LLM_BASE_URL", "DEEPSEEK_BASE_URL", "EVREN_BASE_URL", "OPENAI_BASE_URL"
+            "LLM_BASE_URL", "DEEPSEEK_BASE_URL", _LEGACY_URL, "OPENAI_BASE_URL"
         ),
     )
     model: str = Field(

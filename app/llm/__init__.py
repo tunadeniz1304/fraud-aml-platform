@@ -1,7 +1,7 @@
 """LLM integration (§3 LLM contract).
 
 Plug-and-play: with a key in ``.env`` the platform talks to DeepSeek V4 Flash
-through the OpenAI-compatible Evren gateway; without one it runs the
+(or any OpenAI-compatible endpoint); without one it runs the
 deterministic Turkish demo backend. The LLM never sits on the synchronous
 scoring path and never decides — it summarises, investigates and drafts.
 """
