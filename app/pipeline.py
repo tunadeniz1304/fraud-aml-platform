@@ -71,6 +71,7 @@ from app.scoring import rule_store
 from app.scoring.engine import ScoringEngine
 from app.scoring.policy import LEGACY, Thresholds
 from app.scoring.rules import load_rule_file
+from app.security.challenges import CHALLENGES, StepUpChallengeStore
 from app.services.accounts import AccountService
 from app.services.config_sync import ConfigSync
 
@@ -137,6 +138,9 @@ class Pipeline:
         self.llm = llm
         self.ingress = ingress
         self.redis = redis
+        # A4: step-up challenges are issued on the shared decision path; with
+        # Redis every worker (API, stream consumer) sees the same challenges
+        self.challenges = StepUpChallengeStore(redis=redis) if redis is not None else CHALLENGES
         self.vector = vector
         self.cases = cases or CaseService(
             db,
@@ -199,6 +203,9 @@ class Pipeline:
         self._drift_task: asyncio.Task[None] | None = None
         self.rings: list[dict[str, Any]] = []
         self.stream_done = asyncio.Event()
+        # A4: first, so a STEP_UP decided on any path (HTTP, stream, simulator)
+        # has its one-time challenge before anyone can observe the decision
+        bus.subscribe(ActionAgent.DECIDED, self._issue_step_up)
         bus.subscribe(ActionAgent.DECIDED, self._remember)
         # graph feedback is in-memory scoring state (like the feature-store
         # commit): it stays in decision order so the next transfer sees it
@@ -238,6 +245,23 @@ class Pipeline:
         graph.flag_customer(customer_id)
         for account in beneficiaries:
             graph.flag_account(account)
+
+    async def issue_step_up(self, event: dict[str, Any]) -> str | None:
+        """The one-time challenge id of a ``STEP_UP`` decision (idempotent: the
+        still-valid one when it was already issued). Kept out of the decision
+        event itself, which also reaches the live feed and the LLM explainer."""
+        if event.get("decision") != "STEP_UP" or not event.get("transaction_id"):
+            return None
+        challenge = await self.challenges.issue(
+            str(event["transaction_id"]), str(event.get("customer_id") or "")
+        )
+        return challenge.challenge_id if challenge is not None else None
+
+    async def _issue_step_up(self, event: dict[str, Any]) -> None:
+        try:
+            await self.issue_step_up(event)
+        except Exception:  # the channel can still get it via a replayed ingest
+            logger.exception("[StepUp] %s için doğrulama üretilemedi", event.get("transaction_id"))
 
     def _graph_feedback(self, event: dict[str, Any]) -> None:
         """A scored BLOCK marks the counterparties (payee account, device) as fraud
@@ -673,6 +697,12 @@ class Pipeline:
                 "decision_legacy",
             )
         }
+        # A4: the stream channel gets the challenge with the decision
+        try:
+            slim["step_up_challenge_id"] = await self.issue_step_up(event)
+        except Exception:  # publish the decision anyway; a replayed ingest re-issues
+            logger.exception("[StepUp] %s için doğrulama üretilemedi", event["transaction_id"])
+            slim["step_up_challenge_id"] = None
         await self.ingress.publish(ActionAgent.DECIDED, slim, key=str(event["transaction_id"]))
 
     # --- lifecycle -------------------------------------------------------------------------

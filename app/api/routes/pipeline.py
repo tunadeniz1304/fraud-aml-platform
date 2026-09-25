@@ -21,7 +21,6 @@ from app.db import repository as repo
 from app.db.audit import verify_chain
 from app.llm.redaction import Redactor
 from app.security.auth import Principal
-from app.security.challenges import CHALLENGES
 from app.security.deps import ingest_principal, require_role, service_principal
 from app.security.ratelimit import ingest_limit, limiter, principal_rate_key, step_up_limit
 
@@ -156,9 +155,8 @@ async def ingest(
         )
     out = AnalyzedTransactionOut(**result)
     if out.decision == "STEP_UP":
-        challenge = await CHALLENGES.issue(out.transaction_id, out.customer_id)
-        if challenge is not None:  # None: already issued (duplicate / replayed ingest)
-            out.step_up_challenge_id = challenge.challenge_id
+        # A3: idempotent — a replayed ingest gets the same still-valid challenge
+        out.step_up_challenge_id = await pipeline.issue_step_up(result)
     return out
 
 
@@ -186,17 +184,25 @@ async def step_up_result(
     is not challenged forever.
     """
     pipeline = require_pipeline()
-    challenge = await CHALLENGES.consume(body.challenge_id)
-    if challenge is None or challenge.transaction_id != transaction_id:
+    # A3: keyed by (transaction, challenge) — a challenge presented on another
+    # transaction is not found and therefore not burned
+    challenge = await pipeline.challenges.consume(body.challenge_id, transaction_id)
+    if challenge is None:
         raise HTTPException(status_code=http_status.HTTP_409_CONFLICT, detail=_INVALID_CHALLENGE)
     try:
-        return await pipeline.step_up_result(
+        result = await pipeline.step_up_result(
             transaction_id,
             success=body.success,
             actor=principal.username,
             expected_customer=challenge.customer_id,
         )
     except KeyError:
+        await pipeline.challenges.restore(challenge)  # not persisted yet: the channel may retry
         raise HTTPException(status_code=404, detail="İşlem bulunamadı") from None
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
+    except BaseException:
+        await pipeline.challenges.restore(challenge)  # nothing recorded (e.g. DB outage)
+        raise
+    await pipeline.challenges.mark_resolved(transaction_id)
+    return result
