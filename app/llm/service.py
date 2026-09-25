@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from collections.abc import AsyncIterator, Callable, Iterable
 from typing import Any, TypeVar
@@ -58,11 +59,19 @@ UNTRUSTED_NOTE = (
 )
 
 
+#: any spelling of the data tag a model could read as one: case-insensitive,
+#: whitespace / "_" / "-" tolerant, optional "/" and attributes
+_FORGED_TAG_RE = re.compile(r"<\s*/?\s*untrusted[\s_\-]*data\b[^<>]*>", re.IGNORECASE)
+
+
+def _defuse_tag(match: re.Match[str]) -> str:
+    return match.group(0).replace("<", "&lt;").replace(">", "&gt;")
+
+
 def untrusted_block(text: str) -> str:
-    """Wrap untrusted text in the data tags; a forged tag inside it is defused."""
-    body = text.replace(UNTRUSTED_CLOSE, "</ untrusted_data>").replace(
-        UNTRUSTED_OPEN, "< untrusted_data>"
-    )
+    """Wrap untrusted text in the data tags; a forged tag inside it (any
+    casing or spacing) is defused by escaping its angle brackets."""
+    body = _FORGED_TAG_RE.sub(_defuse_tag, text)
     return f"{UNTRUSTED_OPEN}\n{body}\n{UNTRUSTED_CLOSE}"
 
 
