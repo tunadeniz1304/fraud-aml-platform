@@ -25,6 +25,18 @@ def ingest_limit() -> str:
     return get_settings().rate_limit_ingest
 
 
+def ingest_rate_key(request: Request) -> str:
+    """Rate-limit bucket per client: service API key, bearer token, else IP.
+    Only a hash prefix is used — the credential itself never becomes a key."""
+    import hashlib
+
+    credential = request.headers.get("x-api-key") or request.headers.get("authorization") or ""
+    if credential:
+        digest = hashlib.sha256(credential.encode("utf-8")).hexdigest()[:16]
+        return f"cred:{digest}"
+    return f"ip:{get_remote_address(request)}"
+
+
 async def rate_limit_handler(request: Request, exc: Exception) -> JSONResponse:
     detail = exc.detail if isinstance(exc, RateLimitExceeded) else "limit"
     return JSONResponse(

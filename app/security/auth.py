@@ -21,7 +21,7 @@ import os
 import secrets
 import time
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 import jwt
 
@@ -107,6 +107,19 @@ class UserDirectory:
             directory.add(username, role, name, pw.get_secret_value())  # type: ignore[arg-type]
         return directory
 
+    @classmethod
+    def from_settings(cls, settings: Any = None) -> UserDirectory:
+        """Demo users only when ``seed_demo_users``; never in prod."""
+        s = settings or get_settings()
+        if not s.seed_demo_users:
+            return cls()
+        if s.environment == "prod":
+            raise RuntimeError(
+                "Prod ortamında demo kullanıcılar (varsayılan parolalı) açılamaz — "
+                "SEED_DEMO_USERS=false yapın"
+            )
+        return cls.with_demo_users()
+
     def add(self, username: str, role: Role, display_name: str, password: str) -> None:
         self.users[username] = UserRecord(username, role, display_name, hash_password(password))
 
@@ -187,8 +200,10 @@ def constant_time_equals(a: str, b: str) -> bool:
     return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
 
 
-def sign_body(secret: str, timestamp: str, body: bytes) -> str:
-    mac = hmac.new(secret.encode("utf-8"), timestamp.encode("utf-8") + b"." + body, "sha256")
+def sign_body(secret: str, timestamp: str, body: bytes, nonce: str = "") -> str:
+    """``sha256=hex(HMAC(secret, timestamp "." nonce "." body))``."""
+    message = timestamp.encode("utf-8") + b"." + nonce.encode("utf-8") + b"." + body
+    mac = hmac.new(secret.encode("utf-8"), message, "sha256")
     return "sha256=" + mac.hexdigest()
 
 
@@ -198,9 +213,12 @@ def verify_signature(
     signature: str | None,
     body: bytes,
     *,
+    nonce: str | None = None,
     now: float | None = None,
 ) -> bool:
-    if not secret or not timestamp or not signature:
+    """Signature + timestamp window check. The nonce is part of the signed
+    message; single use is enforced by :class:`NonceStore` (``X-Nonce``)."""
+    if not secret or not timestamp or not signature or not nonce:
         return False
     try:
         ts = int(timestamp)
@@ -209,4 +227,30 @@ def verify_signature(
     skew = abs((now or time.time()) - ts)
     if skew > get_settings().hmac_max_skew_seconds:
         return False
-    return constant_time_equals(sign_body(secret, timestamp, body), signature.strip())
+    expected = sign_body(secret, timestamp, body, nonce)
+    return constant_time_equals(expected, signature.strip())
+
+
+class NonceStore:
+    """Replay protection: a nonce is accepted once within the timestamp window.
+
+    Redis (``SET NX EX``) when available so every worker shares it, otherwise
+    a bounded in-process map.
+    """
+
+    def __init__(self, redis: Any = None, *, max_entries: int = 100_000) -> None:
+        self.redis = redis
+        self._seen: dict[str, float] = {}
+        self.max_entries = max_entries
+
+    async def claim(self, nonce: str) -> bool:
+        window = 2 * get_settings().hmac_max_skew_seconds
+        if self.redis is not None:
+            return bool(await self.redis.set(f"hmac:nonce:{nonce}", "1", nx=True, ex=window))
+        now = time.time()
+        if len(self._seen) >= self.max_entries:
+            self._seen = {n: t for n, t in self._seen.items() if t > now}
+        if self._seen.get(nonce, 0.0) > now:
+            return False
+        self._seen[nonce] = now + window
+        return True

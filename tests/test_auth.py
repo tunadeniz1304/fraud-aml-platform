@@ -126,18 +126,33 @@ class TestIngestCredentials:
         monkeypatch.setenv("SERVICE_HMAC_SECRET", "hmac-secret-0123456789")
         body = json.dumps({**TX, "transaction_id": "TX-HMAC"}).encode()
         ts = str(int(time.time()))
-        sig = sign_body("hmac-secret-0123456789", ts, body)
-        headers = {"Content-Type": "application/json", "X-Timestamp": ts, "X-Signature": sig}
+        sig = sign_body("hmac-secret-0123456789", ts, body, "nonce-0001")
+        headers = {
+            "Content-Type": "application/json",
+            "X-Timestamp": ts,
+            "X-Nonce": "nonce-0001",
+            "X-Signature": sig,
+        }
         with TestClient(create_app()) as c:
             assert c.post("/api/transactions", content=body, headers=headers).status_code == 200
+            # the identical signed request again: the nonce was already used (replay)
+            replay = c.post("/api/transactions", content=body, headers=headers)
+            assert replay.status_code == 401 and "nonce" in replay.json()["detail"]
             tampered = body.replace(b"1500", b"9500")
-            r = c.post("/api/transactions", content=tampered, headers=headers)
+            fresh = {**headers, "X-Nonce": "nonce-0002"}
+            r = c.post("/api/transactions", content=tampered, headers=fresh)
             assert r.status_code == 401
 
     def test_hmac_replay_window(self):
         body = b"{}"
         old = str(int(time.time()) - 3600)
-        assert not verify_signature("k" * 12, old, sign_body("k" * 12, old, body), body)
+        assert not verify_signature(
+            "k" * 12, old, sign_body("k" * 12, old, body, "n1"), body, nonce="n1"
+        )
+        now = str(int(time.time()))
+        signed = sign_body("k" * 12, now, body, "n1")
+        assert verify_signature("k" * 12, now, signed, body, nonce="n1")
+        assert not verify_signature("k" * 12, now, signed, body)  # nonce is mandatory
         assert not verify_signature("", old, "sha256=x", body)
         assert not verify_signature("k" * 12, "abc", "sha256=x", body)
 
@@ -181,6 +196,15 @@ class TestHttpHardening:
         assert r.headers["x-frame-options"] == "DENY"
         assert "access-control-allow-origin" not in r.headers
 
-    def test_metrics_endpoint_exposed(self, client):
-        r = client.get("/metrics")
-        assert r.status_code == 200 and "fraud_llm_calls_total" in r.text
+    def test_metrics_endpoint_requires_token(self, client, monkeypatch):
+        from app.config import get_settings
+
+        assert client.get("/metrics").status_code == 404  # no token configured
+        monkeypatch.setenv("METRICS_TOKEN", "metrics-token-for-tests")
+        get_settings.cache_clear()
+        try:
+            assert client.get("/metrics").status_code == 401
+            ok = client.get("/metrics", headers={"Authorization": "Bearer metrics-token-for-tests"})
+            assert ok.status_code == 200 and "fraud_llm_calls_total" in ok.text
+        finally:
+            get_settings.cache_clear()

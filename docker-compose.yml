@@ -16,6 +16,9 @@ x-app: &app
     DATABASE_URL: postgresql+asyncpg://fraud:fraud@postgres:5432/fraud
     REDIS_URL: redis://redis:6379/0
     EVENT_BUS: redis
+    # /metrics requires "Authorization: Bearer $METRICS_TOKEN"; Prometheus reads
+    # the same value from ops/prometheus/metrics_token (git-ignored, see README)
+    METRICS_TOKEN: ${METRICS_TOKEN:-}
     FEATURE_STORE: redis
     DB_AUTO_CREATE: "false"
     LOG_JSON: "true"
@@ -117,6 +120,7 @@ services:
     volumes:
       - ./ops/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./ops/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ./ops/prometheus/metrics_token:/etc/prometheus/metrics_token:ro
     ports:
       - "${PROMETHEUS_PORT:-9090}:9090"
     depends_on:

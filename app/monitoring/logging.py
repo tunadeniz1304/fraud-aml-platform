@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -60,6 +61,21 @@ class SecretScrubFilter(logging.Filter):
         return True
 
 
+_CREDENTIAL_PARAM_RE = re.compile(r"([?&](?:access_token|ticket|token|api_key)=)[^&\s\"']+")
+
+
+class QueryStringMaskFilter(logging.Filter):
+    """Mask credential-like query parameters (``?ticket=…``) in any log line,
+    including uvicorn's access log."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        masked = _CREDENTIAL_PARAM_RE.sub(r"\1***", message)
+        if masked != message:
+            record.msg, record.args = masked, ()
+        return True
+
+
 def configure_logging(settings: Settings, *, log_file: Path | None = None) -> None:
     """Idempotently configure root logging for the process."""
     global _CONFIGURED
@@ -95,9 +111,11 @@ def configure_logging(settings: Settings, *, log_file: Path | None = None) -> No
     for handler in handlers:
         handler.setFormatter(formatter)
         handler.addFilter(scrub)
+        handler.addFilter(QueryStringMaskFilter())
         handler._anil3 = True  # type: ignore[attr-defined]
         root.addHandler(handler)
     root.setLevel(getattr(logging, settings.log_level.upper(), logging.INFO))
+    logging.getLogger("uvicorn.access").addFilter(QueryStringMaskFilter())
     for noisy in ("httpx", "httpcore", "chromadb", "urllib3", "openai._base_client"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     structlog.configure(

@@ -52,9 +52,17 @@ export async function api<T = unknown>(path: string, init: RequestInit & { json?
   return (type.includes("json") ? res.json() : res.text()) as Promise<T>;
 }
 
-export function sse(path: string, onEvent: (type: string, data: unknown) => void): () => void {
+/** Single-use, 60 s SSE ticket: EventSource cannot send the bearer header and a
+ * JWT in the URL would leak into access logs. */
+export async function streamUrl(path: string): Promise<string> {
+  const { ticket } = await api<{ ticket: string }>("/api/stream/ticket", { method: "POST" });
   const sep = path.includes("?") ? "&" : "?";
-  const source = new EventSource(`${path}${sep}access_token=${encodeURIComponent(auth.token() ?? "")}`);
+  return `${path}${sep}ticket=${encodeURIComponent(ticket)}`;
+}
+
+export function sse(path: string, onEvent: (type: string, data: unknown) => void): () => void {
+  let source: EventSource | null = null;
+  let closed = false;
   const handler = (type: string) => (e: MessageEvent) => {
     try {
       onEvent(type, JSON.parse(e.data));
@@ -62,10 +70,19 @@ export function sse(path: string, onEvent: (type: string, data: unknown) => void
       onEvent(type, e.data);
     }
   };
-  source.addEventListener("decision", handler("decision"));
-  source.addEventListener("ready", handler("ready"));
-  source.onmessage = handler("message");
-  return () => source.close();
+  streamUrl(path)
+    .then((url) => {
+      if (closed) return;
+      source = new EventSource(url);
+      source.addEventListener("decision", handler("decision"));
+      source.addEventListener("ready", handler("ready"));
+      source.onmessage = handler("message");
+    })
+    .catch(() => onEvent("error", null));
+  return () => {
+    closed = true;
+    source?.close();
+  };
 }
 
 export const tl = (v: number | null | undefined) =>

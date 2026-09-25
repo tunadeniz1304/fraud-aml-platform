@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app.api.state import state
+from app.config import get_settings
 from app.monitoring.metrics import REGISTRY
+from app.security.auth import constant_time_equals
 
 router = APIRouter(tags=["system"])
 
@@ -52,5 +54,16 @@ async def ready() -> JSONResponse:
 
 
 @router.get("/metrics", include_in_schema=False)
-async def metrics() -> Response:
+async def metrics(request: Request) -> Response:
+    """Prometheus scrape endpoint: public only with ``METRICS_PUBLIC=true``;
+    otherwise ``Authorization: Bearer <METRICS_TOKEN>`` (404 when no token is
+    configured, so the endpoint is not even discoverable)."""
+    settings = get_settings()
+    if not settings.metrics_public:
+        expected = settings.metrics_token.get_secret_value()
+        if not expected:
+            raise HTTPException(status_code=404)
+        given = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+        if not constant_time_equals(given, expected):
+            raise HTTPException(status_code=401, detail="Metrik token'ı gerekli")
     return Response(generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)

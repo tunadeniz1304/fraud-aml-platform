@@ -16,7 +16,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Repository root (app/config.py -> project root).
@@ -258,18 +258,29 @@ class Settings(BaseSettings):
 
     # --- Security ----------------------------------------------------------
     jwt_secret: SecretStr = SecretStr("")
+    # SSE tickets: short-lived, single-use (EventSource cannot send headers)
+    sse_ticket_ttl_s: int = 60
+    # /metrics: public only if METRICS_PUBLIC=true; otherwise a bearer token
+    # (METRICS_TOKEN) is required, or the endpoint answers 404 when none is set
+    metrics_public: bool = False
+    metrics_token: SecretStr = SecretStr("")
     jwt_ttl_minutes: int = 480
     admin_token: SecretStr = SecretStr("")
     service_api_key: SecretStr = SecretStr("")
     service_hmac_secret: SecretStr = SecretStr("")
     hmac_max_skew_seconds: int = 300
+    # Demo users (analist/kidemli_analist/admin with the passwords below) are
+    # seeded only when SEED_DEMO_USERS is true; unset → true outside prod, false
+    # in prod. A prod process asked to seed them refuses to start.
+    seed_demo_users: bool | None = None
     demo_pw_analist: SecretStr = SecretStr("analist123")
     demo_pw_kidemli: SecretStr = SecretStr("kidemli123")
     demo_pw_admin: SecretStr = SecretStr("admin123")
     cors_origins: list[str] = Field(default_factory=list)
     rate_limit_default: str = "1200/minute"
     rate_limit_login: str = "10/minute"
-    rate_limit_ingest: str = "200000/minute"
+    # per client (API key / token / IP — see ingest_rate_key), not global
+    rate_limit_ingest: str = "6000/minute"
 
     # --- Convenience -------------------------------------------------------
     @property
@@ -315,6 +326,12 @@ class Settings(BaseSettings):
     @property
     def resolved_transactions_path(self) -> Path:
         return self.transactions_path or self.data_dir / "transactions.json"
+
+    @model_validator(mode="after")
+    def _default_demo_users(self) -> Settings:
+        if self.seed_demo_users is None:
+            self.seed_demo_users = self.environment != "prod"
+        return self
 
     @property
     def drift_population_reference(self) -> bool:

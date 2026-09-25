@@ -178,6 +178,11 @@ class TestAgent:
         assert check({"x": [{"citations": ["A", "Z"]}]}) == ["vakada olmayan kanıt kimliği: Z"]
 
 
+def ticket(client) -> str:
+    """Single-use SSE ticket (EventSource cannot send the bearer header)."""
+    return client.post("/api/stream/ticket", headers=ANALYST).json()["ticket"]
+
+
 class TestApi:
     def test_copilot_endpoints_sib_export_chat_and_models(self, demo_env):
         with TestClient(create_app()) as client:
@@ -195,9 +200,8 @@ class TestApi:
             assert pdf.headers["content-type"] == "application/pdf" and pdf.content[:4] == b"%PDF"
             js = client.get(f"/api/cases/{cid}/sib.json", headers=ANALYST).json()
             assert js["tipping_off_uyarisi"]
-            token = ANALYST["Authorization"].split()[1]
             with client.stream(
-                "GET", f"/api/cases/{cid}/chat?q=Bu hesap neden riskli?&access_token={token}"
+                "GET", f"/api/cases/{cid}/chat?q=Bu hesap neden riskli?&ticket={ticket(client)}"
             ) as resp:
                 lines = [ln for ln in resp.iter_lines() if ln.startswith("data:")]
             events = [json.loads(ln[5:]) for ln in lines]
@@ -210,7 +214,8 @@ class TestApi:
             ):
                 assert client.post(bad, headers=ANALYST).status_code == 404
             assert client.get("/api/cases/99999/sib.pdf", headers=ANALYST).status_code == 404
-            assert client.get(f"/api/cases/99999/chat?q=xx&access_token={token}").status_code == 404
+            missing = client.get(f"/api/cases/99999/chat?q=xx&ticket={ticket(client)}")
+            assert missing.status_code == 404
 
             compare = client.get("/api/models/compare", headers=ANALYST).json()
             assert compare["champion"] == "fraud_gbm_v1" and compare["challenger"] == "fraud_gbm_v2"

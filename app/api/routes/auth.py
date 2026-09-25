@@ -7,13 +7,16 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.api.schemas import LoginIn, TokenOut
+from app.config import get_settings
 from app.security.auth import AuthError, Principal, issue_token
 from app.security.deps import current_principal
 from app.security.ratelimit import limiter, login_limit
+from app.security.tickets import TICKETS
 
 logger = logging.getLogger("fraud.auth")
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+stream_router = APIRouter(prefix="/api/stream", tags=["auth"])
 
 
 @router.post("/login", response_model=TokenOut)
@@ -46,3 +49,18 @@ async def me(principal: Principal = Depends(current_principal)) -> dict[str, str
         "display_name": principal.display_name,
         "via": principal.via,
     }
+
+
+@router.get("/config")
+async def auth_config(request: Request) -> dict[str, bool]:
+    """Public: whether demo users exist (the login page shows their hints only then)."""
+    return {
+        "demo_users": bool(request.app.state.users.users) and bool(get_settings().seed_demo_users)
+    }
+
+
+@stream_router.post("/ticket")
+async def stream_ticket(principal: Principal = Depends(current_principal)) -> dict[str, object]:
+    """Single-use, short-lived ticket for one SSE connection (``?ticket=``)."""
+    ticket, ttl = TICKETS.issue(principal)
+    return {"ticket": ticket, "expires_in": ttl}

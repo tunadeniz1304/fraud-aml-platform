@@ -39,6 +39,13 @@ function Login({ onDone }: { onDone: () => void }) {
   const [username, setUsername] = useState("analist");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [demo, setDemo] = useState(false);
+  useEffect(() => {
+    // demo credentials are shown only when the server really seeded demo users
+    api<{ demo_users: boolean }>("/api/auth/config")
+      .then((c) => setDemo(c.demo_users))
+      .catch(() => setDemo(false));
+  }, []);
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -57,7 +64,7 @@ function Login({ onDone }: { onDone: () => void }) {
     <main className="flex min-h-screen items-center justify-center p-4">
       <form onSubmit={submit} className="w-full max-w-sm space-y-3 rounded-2xl border border-slate-200 bg-white p-6 shadow dark:border-slate-800 dark:bg-slate-900">
         <h1 className="text-xl font-semibold">Anil3 · Fraud & AML Konsolu</h1>
-        <p className="text-sm text-slate-500">Demo kullanıcılar: analist / analist123 · kidemli_analist / kidemli123 · admin / admin123</p>
+        {demo && <p className="text-sm text-slate-500">Demo kullanıcılar: analist / analist123 · kidemli_analist / kidemli123 · admin / admin123</p>}
         <label className="block text-sm">Kullanıcı adı
           <input className="mt-1 w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 dark:border-slate-700" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" />
         </label>

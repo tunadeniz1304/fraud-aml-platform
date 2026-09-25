@@ -24,8 +24,12 @@ RISKY = {
 }
 
 
+METRICS_AUTH = {"Authorization": "Bearer observability-test-token"}
+
+
 @pytest.fixture()
-def client(app_env):
+def client(app_env, monkeypatch):
+    monkeypatch.setenv("METRICS_TOKEN", METRICS_AUTH["Authorization"].split()[1])
     with TestClient(create_app()) as c:
         yield c
 
@@ -34,7 +38,7 @@ class TestObservability:
     def test_metrics_and_readiness(self, client):
         assert client.post("/api/transactions", json=RISKY, headers=ANALYST).status_code == 200
         client.get("/api/cases/stats", headers=ANALYST)
-        text = client.get("/metrics").text
+        text = client.get("/metrics", headers=METRICS_AUTH).text
         for name in (
             "fraud_transactions_total",
             "fraud_scoring_latency_seconds_bucket",

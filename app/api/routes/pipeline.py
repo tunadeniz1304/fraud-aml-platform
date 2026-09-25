@@ -21,7 +21,7 @@ from app.db import repository as repo
 from app.db.audit import verify_chain
 from app.security.auth import Principal
 from app.security.deps import ingest_principal, require_role
-from app.security.ratelimit import ingest_limit, limiter
+from app.security.ratelimit import ingest_limit, ingest_rate_key, limiter
 
 router = APIRouter(prefix="/api", tags=["pipeline"])
 analyst_only = Depends(require_role("analist"))
@@ -100,7 +100,7 @@ async def dead_letters(limit: int = Query(50, ge=1, le=500)) -> dict[str, Any]:
 
 
 @router.post("/transactions", response_model=AnalyzedTransactionOut)
-@limiter.limit(ingest_limit)
+@limiter.limit(ingest_limit, key_func=ingest_rate_key)
 async def ingest(
     request: Request,
     tx: TransactionIn,

@@ -78,10 +78,11 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> FastAPI:
         redoc_url=None,
     )
     app.state.pipeline_factory = pipeline_factory
-    app.state.users = UserDirectory.with_demo_users()
+    app.state.users = UserDirectory.from_settings(settings)
     install_security(app)
     app.include_router(health.router)
     app.include_router(auth.router)
+    app.include_router(auth.stream_router)
     app.include_router(pipeline.router)
     app.include_router(llm.router)
     app.include_router(rules.router)

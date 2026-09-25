@@ -9,6 +9,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.security.auth import (
     AuthError,
+    NonceStore,
     Principal,
     Role,
     admin_token,
@@ -18,8 +19,19 @@ from app.security.auth import (
     service_hmac_secret,
     verify_signature,
 )
+from app.security.tickets import TICKETS
 
 _bearer = HTTPBearer(auto_error=False)
+
+
+def nonce_store(request: Request) -> NonceStore:
+    store = getattr(request.app.state, "nonces", None)
+    if store is None:
+        from app.api.state import state
+
+        redis = getattr(state.pipeline, "redis", None) if state.pipeline else None
+        store = request.app.state.nonces = NonceStore(redis)
+    return store
 
 
 def _unauthorized(detail: str = "Kimlik doğrulama gerekli") -> HTTPException:
@@ -52,13 +64,16 @@ async def stream_principal(
     request: Request,
     creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
 ) -> Principal:
-    """Like :func:`current_principal`, but also accepts ``?access_token=`` (SSE)."""
+    """Bearer header, or a single-use SSE ticket (``?ticket=``) from
+    ``POST /api/stream/ticket``. JWTs in the query string (``?access_token=``)
+    are refused: they end up in access logs and browser history."""
     if creds is not None and creds.credentials:
         return principal_from_token(creds.credentials)
-    token = request.query_params.get("access_token")
-    if not token:
-        raise _unauthorized()
-    return principal_from_token(token)
+    ticket = request.query_params.get("ticket")
+    principal = TICKETS.redeem(ticket) if ticket else None
+    if principal is None:
+        raise _unauthorized("Geçerli bir SSE bileti gerekli (POST /api/stream/ticket)")
+    return principal
 
 
 def require_role(minimum: Role) -> Callable[..., Awaitable[Principal]]:
@@ -89,10 +104,13 @@ async def ingest_principal(
     signature = request.headers.get("x-signature")
     if signature:
         body = await request.body()
+        nonce = request.headers.get("x-nonce")
         if verify_signature(
-            service_hmac_secret(), request.headers.get("x-timestamp"), signature, body
+            service_hmac_secret(), request.headers.get("x-timestamp"), signature, body, nonce=nonce
         ):
-            return Principal("ingest-service", "service", "Servis", via="hmac")
+            if nonce and await nonce_store(request).claim(nonce):
+                return Principal("ingest-service", "service", "Servis", via="hmac")
+            raise _unauthorized("HMAC nonce daha önce kullanıldı (tekrar saldırısı)")
         raise _unauthorized("Geçersiz HMAC imzası")
     if creds is not None and creds.credentials:
         return principal_from_token(creds.credentials)

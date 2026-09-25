@@ -482,7 +482,6 @@ def test_b15_single_token_alias_and_secondary_keys(tmp_path: Path) -> None:
 
 
 # --- C16: demo users only in dev --------------------------------------------------------------
-@open_finding("C16")
 def test_c16_prod_refuses_demo_users(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.security.auth import UserDirectory
 
@@ -500,7 +499,6 @@ def test_c16_prod_refuses_demo_users(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # --- C17: SSE tickets instead of ?access_token= -----------------------------------------------
-@open_finding("C17")
 def test_c17_sse_uses_single_use_ticket(demo_env: Path, analyst_headers: dict[str, str]) -> None:
     from fastapi import HTTPException
     from fastapi.testclient import TestClient
@@ -521,7 +519,6 @@ def test_c17_sse_uses_single_use_ticket(demo_env: Path, analyst_headers: dict[st
 
 
 # --- C18: /metrics protected ------------------------------------------------------------------
-@open_finding("C18")
 def test_c18_metrics_not_public_by_default(demo_env: Path) -> None:
     from fastapi.testclient import TestClient
 
@@ -532,7 +529,6 @@ def test_c18_metrics_not_public_by_default(demo_env: Path) -> None:
 
 
 # --- C19: sane ingest limit + HMAC nonce ------------------------------------------------------
-@open_finding("C19")
 def test_c19_ingest_limit_is_per_client_and_hmac_nonce_blocks_replay() -> None:
     from app.security.auth import verify_signature
 
@@ -580,3 +576,47 @@ def test_c21_llm_status_hides_host_from_non_admins(
         admin = client.get("/api/llm/status", headers=admin_headers).json()
     assert analyst["base_url_host"] is None
     assert admin["base_url_host"]
+
+
+def test_c17_credentials_in_query_strings_are_masked_in_logs() -> None:
+    import logging
+
+    from app.monitoring.logging import QueryStringMaskFilter
+
+    record = logging.LogRecord(
+        "uvicorn.access", logging.INFO, "", 0, '"GET /api/live/stream?ticket=abc123&x=1"', (), None
+    )
+    QueryStringMaskFilter().filter(record)
+    assert "abc123" not in record.getMessage() and "ticket=***" in record.getMessage()
+
+
+def test_c19_rate_limit_bucket_is_per_client() -> None:
+    from starlette.requests import Request
+
+    from app.security.ratelimit import ingest_rate_key
+
+    def req(headers: dict[str, str]) -> Request:
+        raw = [(k.lower().encode(), v.encode()) for k, v in headers.items()]
+        return Request({"type": "http", "headers": raw, "client": ("10.0.0.1", 1)})
+
+    a, b = req({"X-API-Key": "key-a"}), req({"X-API-Key": "key-b"})
+    assert ingest_rate_key(a) != ingest_rate_key(b)
+    assert "key-a" not in ingest_rate_key(a)  # only a hash prefix
+    assert ingest_rate_key(req({})) == "ip:10.0.0.1"
+
+
+def test_c16_login_page_hides_demo_passwords_without_demo_users(
+    demo_env: Path, monkeypatch
+) -> None:
+    from fastapi.testclient import TestClient
+
+    from app.api.dashboard import create_app
+
+    with TestClient(create_app()) as client:
+        assert client.get("/api/auth/config").json() == {"demo_users": True}
+    monkeypatch.setenv("SEED_DEMO_USERS", "false")
+    get_settings.cache_clear()
+    with TestClient(create_app()) as client:
+        assert client.get("/api/auth/config").json() == {"demo_users": False}
+        bad = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+        assert bad.status_code == 401
