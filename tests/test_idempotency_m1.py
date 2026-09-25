@@ -28,6 +28,8 @@ from app.idempotency import (
     IdempotencyConflict,
     IdempotencyIndex,
     IngestInProgress,
+    check_digest,
+    legacy_payload_digest,
     payload_digest,
 )
 from app.pipeline import build_pipeline
@@ -66,6 +68,21 @@ async def workers(app_env, monkeypatch):
 
 
 # --- digest -----------------------------------------------------------------
+def test_l9_digest_normalises_ts_to_utc() -> None:
+    """The same instant sent with another UTC offset is not a 409 conflict."""
+    local = {**TX, "ts": "2026-09-26T12:00:00+03:00"}
+    assert payload_digest(local) == payload_digest({**TX, "ts": "2026-09-26T09:00:00+00:00"})
+    assert payload_digest(local) == payload_digest({**TX, "ts": "2026-09-26T09:00:00Z"})
+    assert payload_digest(local) != payload_digest({**TX, "ts": "2026-09-26T12:00:00+00:00"})
+    # a naive ts keeps its old digest; a row stored before L9 still matches
+    naive = {**TX, "ts": "2026-09-26T09:00:00"}
+    assert payload_digest(naive) == legacy_payload_digest(naive)
+    old_row = {"payload_hash": legacy_payload_digest(local)}
+    check_digest("M1-1", old_row, payload_digest(local), legacy=legacy_payload_digest(local))
+    with pytest.raises(IdempotencyConflict):
+        check_digest("M1-1", old_row, payload_digest({**local, "amount": 1}))
+
+
 def test_payload_digest_ignores_sender_and_key_order() -> None:
     reordered = dict(reversed(list(TX.items())))
     assert payload_digest(TX) == payload_digest(reordered)

@@ -60,6 +60,7 @@ from app.idempotency import (
     IdempotencyIndex,
     IngestInProgress,
     check_digest,
+    legacy_payload_digest,
     payload_digest,
 )
 from app.llm.config import LLMSettings
@@ -981,7 +982,7 @@ class Pipeline:
         if durable or self.idempotency.maybe_persisted(tx_id):
             try:
                 stored = await self.stored_result(tx_id)
-                check_digest(tx_id, stored, digest)
+                check_digest(tx_id, stored, digest, legacy=legacy_payload_digest(tx))
             except BaseException:
                 await self.idempotency.release(tx_id)
                 raise

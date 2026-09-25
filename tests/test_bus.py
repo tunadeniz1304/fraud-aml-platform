@@ -189,3 +189,36 @@ async def test_redis_two_groups_each_get_every_message(redis_bus):
         await redis_bus.publish("t", {"i": i}, key=str(i))
     await redis_bus.drain(10)
     assert len(a) == len(b) == 10
+
+
+async def test_l9_reused_key_with_another_payload_is_dead_lettered(redis_bus):
+    """A processed key redelivered with a *different* payload is flagged in the
+    DLQ (IdempotencyConflict), never silently acked as a duplicate."""
+    seen = []
+    redis_bus.subscribe("t", seen.append, group="g")
+    await redis_bus.start()
+    tx = {"transaction_id": "K-1", "amount": 10, "ts": "2026-09-26T12:00:00+03:00"}
+    await redis_bus.publish("t", tx, key="K-1")
+    await redis_bus.drain(10)
+    # the same instant in another offset is the same payload -> plain duplicate
+    await redis_bus.publish("t", {**tx, "ts": "2026-09-26T09:00:00Z"}, key="K-1")
+    await redis_bus.drain(10)
+    assert redis_bus.duplicates == 1 and await redis_bus.dlq_size() == 0
+    await redis_bus.publish("t", {**tx, "amount": 99}, key="K-1")
+    await redis_bus.drain(10)
+    assert seen == [tx] and redis_bus.conflicts == 1
+    entry = (await redis_bus.dlq_entries())[0]
+    assert entry["key"] == "K-1" and "IdempotencyConflict" in entry["error"]
+    assert entry["payload"]["amount"] == 99
+    assert await redis_bus.pending() == 0
+
+
+async def test_l9_legacy_done_marker_still_acks_duplicates(redis_bus):
+    """Markers written before L9 hold ``"1"``: treated as a plain duplicate."""
+    seen = []
+    redis_bus.subscribe("t", seen.append, group="g")
+    await redis_bus.redis.set(redis_bus._done_key("g", "OLD-1"), "1")
+    await redis_bus.start()
+    await redis_bus.publish("t", {"v": 2}, key="OLD-1")
+    await redis_bus.drain(10)
+    assert seen == [] and redis_bus.duplicates == 1 and await redis_bus.dlq_size() == 0

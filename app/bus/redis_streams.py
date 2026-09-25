@@ -15,13 +15,17 @@
   them pending, so they are redelivered (at-least-once); the writes are
   idempotent (``ON CONFLICT DO NOTHING`` on the transaction id);
 * a handler raising :class:`~app.bus.base.RetryLater` leaves its message
-  pending without counting a failed delivery.
+  pending without counting a failed delivery;
+* L9: the done marker stores the payload digest, so a *different* payload
+  reusing a processed ``key`` is dead-lettered (``IdempotencyConflict``)
+  instead of being acknowledged as a harmless duplicate.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import socket
@@ -34,6 +38,19 @@ from app.bus.base import Handler, RetryLater, Topic, handler_name, invoke
 from app.monitoring import metrics
 
 logger = logging.getLogger("fraud.eventbus.redis")
+
+
+def _payload_digest(raw: str) -> str:
+    """Canonical digest of a stream payload (same rules as the HTTP path)."""
+    from app.idempotency import payload_digest  # lazy: app.idempotency imports app.bus
+
+    try:
+        doc = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        doc = None
+    if isinstance(doc, dict):
+        return payload_digest(doc)
+    return hashlib.sha256((raw or "").encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -76,6 +93,7 @@ class RedisStreamsBus:
         self.processed = 0
         self.duplicates = 0
         self.deferred = 0
+        self.conflicts = 0
 
     # --- naming -----------------------------------------------------------------------
     def stream(self, topic: Topic) -> str:
@@ -159,10 +177,12 @@ class RedisStreamsBus:
         self, sub: _Subscription, stream: str, messages: list[tuple[str, dict[str, str]]]
     ) -> None:
         """Handle a read batch, then acknowledge the successes after the commit."""
-        done: list[tuple[str, str]] = []
+        done: list[tuple[str, str, str]] = []
         for msg_id, fields in messages:
             if await self._handle(sub, stream, msg_id, fields):
-                done.append((msg_id, fields.get("key") or ""))
+                key = fields.get("key") or ""
+                digest = _payload_digest(fields.get("payload") or "") if key else ""
+                done.append((msg_id, key, digest))
         if not done:
             return
         if self.commit_barrier is not None:
@@ -170,9 +190,9 @@ class RedisStreamsBus:
             # committed (or dead-lettered) before a single message is acked
             await self.commit_barrier()
         pipe = self.redis.pipeline()
-        for msg_id, key in done:
+        for msg_id, key, digest in done:
             if key:
-                pipe.set(self._done_key(sub.group, key), "1", ex=self.idempotency_ttl)
+                pipe.set(self._done_key(sub.group, key), digest or "1", ex=self.idempotency_ttl)
                 pipe.delete(self._lease_key(sub.group, key))
             pipe.xack(stream, sub.group, msg_id)
             pipe.hdel(self._attempts_key(sub.group), msg_id)
@@ -197,7 +217,32 @@ class RedisStreamsBus:
     ) -> bool:
         """Run the handler; True when the message must be acked after the commit."""
         key = fields.get("key") or ""
-        if key and await self.redis.exists(self._done_key(sub.group, key)):
+        marker = await self.redis.get(self._done_key(sub.group, key)) if key else None
+        if isinstance(marker, bytes):
+            marker = marker.decode("utf-8", "replace")
+        if marker is not None and marker not in ("1", _payload_digest(fields.get("payload") or "")):
+            # L9: the key was processed with another payload: never ack it silently
+            await self.redis.xadd(
+                self.dlq_stream,
+                {
+                    "topic": sub.topic,
+                    "group": sub.group,
+                    "key": key,
+                    "error": "IdempotencyConflict: key already processed with another payload",
+                    "attempts": "1",
+                    "payload": fields.get("payload", ""),
+                    "message_id": msg_id,
+                },
+                maxlen=self.maxlen,
+                approximate=True,
+            )
+            await self.redis.xack(stream, sub.group, msg_id)
+            self.conflicts += 1
+            metrics.BUS_EVENTS.labels(topic=sub.topic, outcome="conflict").inc()
+            metrics.DLQ_SIZE.set(await self.dlq_size())
+            logger.error("[RedisBus] %s anahtarı farklı içerikle yeniden kullanıldı — DLQ", key)
+            return False
+        if marker is not None:
             self.duplicates += 1
             metrics.BUS_EVENTS.labels(topic=sub.topic, outcome="duplicate").inc()
             await self.redis.xack(stream, sub.group, msg_id)

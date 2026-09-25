@@ -45,6 +45,7 @@ import json
 import logging
 import math
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, select
@@ -92,17 +93,53 @@ class IngestInProgress(RetryLater):
         self.retry_after_s = retry_after_s
 
 
+def _canonical_ts(value: Any) -> Any:
+    """L9: one instant, one digest -- an offset-aware ``ts`` is rendered in UTC
+    (``...+03:00`` and the same instant in ``+00:00`` hash alike). A naive
+    or unparsable value is kept as sent (stored digests stay valid)."""
+    parsed: datetime | None = None
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return value
+    if parsed is None or parsed.tzinfo is None:
+        return value if not isinstance(value, datetime) else value.isoformat()
+    return parsed.astimezone(UTC).isoformat()
+
+
 def payload_digest(tx: dict[str, Any]) -> str:
-    """SHA-256 of the canonical request (sorted keys, sender fields excluded)."""
+    """SHA-256 of the canonical request (sorted keys, sender fields excluded,
+    an offset-aware ``ts`` normalised to UTC)."""
     doc = {k: v for k, v in tx.items() if k not in _VOLATILE and v is not None}
+    if "ts" in doc:
+        doc["ts"] = _canonical_ts(doc["ts"])
+    return _sha(doc)
+
+
+def legacy_payload_digest(tx: dict[str, Any]) -> str:
+    """Digest as computed before L9 (``ts`` as sent); matches the
+    ``payload_hash`` of rows persisted before the UTC normalisation."""
+    return _sha({k: v for k, v in tx.items() if k not in _VOLATILE and v is not None})
+
+
+def _sha(doc: dict[str, Any]) -> str:
     raw = json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def check_digest(tx_id: str, result: dict[str, Any] | None, digest: str) -> None:
-    """Raise :class:`IdempotencyConflict` when ``result`` belongs to another payload."""
+def check_digest(
+    tx_id: str, result: dict[str, Any] | None, digest: str, *, legacy: str = ""
+) -> None:
+    """Raise :class:`IdempotencyConflict` when ``result`` belongs to another payload.
+
+    ``legacy`` (the pre-L9 digest of the same request) is also accepted, so a
+    replay of a row stored before the ``ts`` normalisation is not a 409.
+    """
     stored = (result or {}).get("payload_hash")
-    if stored and digest and stored != digest:
+    if stored and digest and stored != digest and stored != legacy:
         raise IdempotencyConflict(tx_id)
 
 
