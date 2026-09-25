@@ -166,6 +166,43 @@ def _require_senior(role: str | None, action: str) -> None:
         raise MakerCheckerError(f"{action} en az kıdemli analist yetkisi gerektirir")
 
 
+def _is_senior(role: str | None) -> bool:
+    return role is None or ROLE_RANK.get(role, -1) >= ROLE_RANK["kidemli_analist"]
+
+
+def _check_clean_closure(case: Case, actor: str, role: str | None) -> None:
+    """A7: who may close a case as TEMIZ (and so release its held payments).
+
+    The assignee or a senior analyst; above ``case_clean_release_senior_try``
+    only a senior (the assignee investigated, a second person releases).
+    ``role=None`` is an internal caller.
+    """
+    if _is_senior(role):
+        return
+    if not case.assigned_to or case.assigned_to != actor:
+        raise MakerCheckerError(
+            "vakayı TEMIZ olarak kapatmak için vakanın atanmış analisti "
+            "ya da kıdemli analist olmalısınız"
+        )
+    limit = get_settings().case_clean_release_senior_try
+    if float(case.total_amount_try or 0) > limit:
+        raise MakerCheckerError(
+            f"{limit:,.0f} TRY üzerindeki bekleyen ödemeleri serbest bırakan TEMIZ "
+            "kararı kıdemli analist onayı gerektirir"
+        )
+
+
+def _clean_is_corroborated(assignee: str | None, actor: str, role: str | None) -> bool:
+    """A7: a "clean" label teaches the customer profile only when two people
+    stand behind it -- a senior closing a case another analyst investigated
+    (or an internal caller). A single analyst's TEMIZ is still a label, but
+    not trusted profile feedback (a colluding or tricked analyst cannot
+    whitelist a fraudster's device / payee on their own)."""
+    if role is None:
+        return True
+    return _is_senior(role) and bool(assignee) and assignee != actor
+
+
 def alert_type(event: dict[str, Any]) -> str:
     if event.get("sanctions_hit"):
         return "YAPTIRIM"
@@ -733,6 +770,11 @@ class CaseService:
         A FRAUD closure blocks payments, feeds the model labels and opens the
         ŞİB path, so it needs at least ``kidemli_analist`` (``role`` is the
         caller's role; internal callers pass ``None``).
+
+        A7: a TEMIZ closure releases held payments, so it needs the assignee
+        or a senior (a senior above ``case_clean_release_senior_try``); its
+        "clean" label is trusted profile feedback only when corroborated by a
+        second person (see :func:`_clean_is_corroborated`).
         """
         if outcome not in OUTCOMES:
             raise CaseError("karar FRAUD veya TEMIZ olmalı")
@@ -744,6 +786,9 @@ class CaseService:
             case = await self._case(session, case_id)
             if case.status in CLOSED_STATUSES:
                 raise CaseError("vaka zaten kapalı")
+            assignee = case.assigned_to
+            if outcome == "TEMIZ":
+                _check_clean_closure(case, actor, role)
             tx_ids = list(
                 (
                     await session.execute(
@@ -796,7 +841,14 @@ class CaseService:
             self.on_fraud_confirmed(customer, sorted(set(beneficiaries)))
         await self._settle_account(customer, outcome, actor, case_id)
         if self.on_labelled is not None:
-            await self.on_labelled(list(tx_ids), "fraud" if label else "clean")
+            if label:
+                await self.on_labelled(list(tx_ids), "fraud")
+            elif _clean_is_corroborated(assignee, actor, role):
+                await self.on_labelled(list(tx_ids), "clean")
+            else:
+                logger.info(
+                    "[Cases] #%s TEMIZ tek kişi kararı — profil öğrenmesine verilmedi", case_id
+                )
         if outcome == "FRAUD" and self.on_fraud_case is not None:
             try:
                 self.on_fraud_case(await self.get_case(case_id))

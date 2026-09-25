@@ -288,6 +288,54 @@ class TestAnalystActions:
         assert label == 0 and status == "SERBEST"
         assert store.get_status("CUST-0002") == "AKTIF"
 
+    async def test_a7_clean_closure_needs_the_assignee_or_a_senior(self, service, store):
+        case_id = await service.on_decision(event("A7-1"))
+        await add_decision(store, "A7-1")
+        await service.assign(case_id, "analist_b", "analist_b")
+        with pytest.raises(MakerCheckerError, match="atanmış"):
+            await service.decide(case_id, "TEMIZ", "analist_a", role="analist")
+        async with store.db.session() as session:
+            status = (await session.execute(select(Decision.status))).scalar_one()
+        assert status == "BEKLEMEDE"  # nothing released
+        closed = await service.decide(case_id, "TEMIZ", "analist_b", role="analist")
+        assert closed["status"] == "KAPANDI_TEMIZ"
+
+    async def test_a7_large_clean_release_needs_a_senior(self, service, store, monkeypatch):
+        from app.config import get_settings
+
+        monkeypatch.setattr(get_settings(), "case_clean_release_senior_try", 5_000.0)
+        case_id = await service.on_decision(event("A7-2"))  # 10 000 TRY held
+        await service.assign(case_id, "analist_b", "analist_b")
+        with pytest.raises(MakerCheckerError, match="kıdemli"):
+            await service.decide(case_id, "TEMIZ", "analist_b", role="analist")
+        closed = await service.decide(case_id, "TEMIZ", "kidemli", role="kidemli_analist")
+        assert closed["status"] == "KAPANDI_TEMIZ"
+
+    async def test_a7_single_person_clean_label_is_not_profile_feedback(self, store):
+        fed: list[tuple[list[str], str]] = []
+
+        async def on_labelled(tx_ids, feedback):
+            fed.append((tx_ids, feedback))
+
+        service = CaseService(
+            store.db, accounts=store.accounts, writer=store.writer, on_labelled=on_labelled
+        )
+        solo = await service.on_decision(event("A7-3"))
+        await service.assign(solo, "analist_b", "analist_b")
+        await service.decide(solo, "TEMIZ", "analist_b", role="analist")
+        own = await service.on_decision(event("A7-4", customer="CUST-0002"))
+        await service.assign(own, "kidemli", "kidemli")
+        await service.decide(own, "TEMIZ", "kidemli", role="kidemli_analist")
+        assert fed == []  # a label is written, but the profile does not learn
+        async with store.db.session() as session:
+            labels = set((await session.execute(select(Label.transaction_id))).scalars())
+        assert labels == {"A7-3", "A7-4"}
+        # a senior closing a case another analyst investigated: two people agree
+        pair = await service.on_decision(event("A7-5", customer="CUST-0003"))
+        await service.assign(pair, "analist_b", "analist_b")
+        await service.decide(pair, "TEMIZ", "kidemli", role="kidemli_analist")
+        assert fed == [(["A7-5"], "clean")]
+
 
 class TestMakerChecker:
     async def test_unblock_requires_a_different_approver(self, service, store):

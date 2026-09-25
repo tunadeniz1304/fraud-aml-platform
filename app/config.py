@@ -263,6 +263,9 @@ class Settings(BaseSettings):
 
     # --- Case management (P0.6) ----------------------------------------------
     case_group_window_hours: int = 24
+    #: A7: a TEMIZ closure releasing more than this (case total, TRY) needs a
+    #: senior analyst even when the assignee closes it
+    case_clean_release_senior_try: float = 50_000.0
     internal_sla_hours: int = 4
     masak_business_days: int = 10
     masak_warning_business_days: int = 2
