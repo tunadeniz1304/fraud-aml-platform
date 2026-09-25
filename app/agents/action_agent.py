@@ -93,6 +93,8 @@ class ActionAgent:
             extras.append("yaptırım/PEP listesi eşleşmesi (zorunlu inceleme)")
         if tx.get("unknown_customer"):
             extras.append("bilinmeyen müşteri")
+        if tx.get("lock_timeout"):
+            extras.append("özellik kilidi alınamadı (güvenli tarafta bekletme)")
         top = [
             str(r.get("text")) for r in tx.get("reason_codes") or [] if r.get("source") != "policy"
         ]
