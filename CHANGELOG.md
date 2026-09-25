@@ -2,7 +2,7 @@
 
 Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/) · sürümleme: [SemVer](https://semver.org/lang/tr/).
 
-## [2.1.0] — 2026-09-25
+## [2.1.0] — 2026-09-26
 
 Bağımsız denetim bulgularını kapatan sürüm. Bulgular önce `tests/test_audit_v2.py` içinde `xfail(strict=True)` testleriyle kayda geçirildi (`docs/PLAN_v2.md`). Bu bölüm performans sayısı içermez; ölçümler `docs/PERFORMANCE.md` içindedir.
 
@@ -48,6 +48,16 @@ Bağımsız denetim bulgularını kapatan sürüm. Bulgular önce `tests/test_au
 - **Audit:** isteğe bağlı HMAC anahtarlı audit zinciri ve doğrulama hatası metriği.
 - **Uyum:** süresi geçmiş MASAK vakaları ayrı sayılıyor (`fraud_cases_masak_overdue`, `MASAKSuresiGecti` alarmı).
 - **LLM:** ağ geçidi markası dokümanlardan ve varsayılanlardan kaldırıldı; eski ortam değişkeni adı geriye uyumluluk için kabul ediliyor.
+
+### Bağımsız denetim turu 2 düzeltmeleri
+- **Dağıtım:** docker compose ve imaj varsayılan olarak prod modunda çalışıyor; `JWT_SECRET`, `AUDIT_HMAC_KEY` ve `CONSORTIUM_SALT` zorunlu. Prod açılış politikası worker'da da uygulanıyor.
+- **Yazıcı:** geçici DB hataları tür ve SQLSTATE ile sınıflandırılıyor, yeniden deneme sayısı sınırlı; kalıcı hata bir partiyi ve alımı kilitlemiyor.
+- **Step-up:** challenge ortak karar yolunda veriliyor, işleme bağlı ve idempotent. Tekrarlanan ingest aynı challenge'ı döndürüyor, yanlış işleme sunulan challenge yakılmıyor.
+- **Maker-checker:** onay etkisi, konfigürasyon yayını ve audit tek transaction'da. Break-glass token talep oluşturamıyor. Onay beklerken ŞİB taslağı donduruluyor ve hash'i sabitleniyor. Migration 0005 eski yinelenen bekleyen onayları kapattıktan sonra tekil indeksi kuruyor.
+- **Vakalar:** işlem başına tek alarm, vaka süresi karar anından başlıyor. TEMIZ kapanışı atanan analisti veya kıdemli analisti istiyor, tek temiz etiket öğrenilmiyor. APP onayları müşteri adına giren analist adına kaydediliyor.
+- **Güvenlik:** JWT'de `aud` zorunlu, SSE biletinde iptal yeniden kontrol ediliyor, 401 kısıtlaması geçerli oturumları kilitlemiyor. LLM maskeleme noktalı kart/IBAN biçimlerini ve üç parçalı adları kapsıyor; güvenilmeyen veri etiketleri büyük/küçük harf ve boşluk farkından bağımsız etkisizleştiriliyor. Worker'ın audit zinciri doğrulaması metrikle izleniyor ve alarm üretiyor.
+- **Dayanıklılık:** karar tamamlanana kadar stream mesajı bekleyen durumda kalıyor. Idempotency özeti aynı anı farklı UTC ofsetlerinde aynı hash'liyor. Redis müşteri kilidi tutulduğu sürece yenileniyor ve commit kilit token'ıyla korunuyor (fencing). Backtest satırları parçalar hâlinde okunuyor ve zaman bütçesi aşılınca duruyor.
+- **Model ve senaryolar:** GBM çıktısı kalibre edilmemiş, politika eşikleri elle ayarlanmış olarak belgelendi. Kart testi senaryosu HOLD olarak beyan edildi ve her senaryonun beyan edilen sonucu test ediliyor. Popülasyon örneği olmayan seride drift referansı korunuyor. Sürüm dizeleri 2.1.0.
 
 ### Arayüz
 - Doğrulama görünümü, sunucu taraflı sayfalı ve filtreli vaka kuyruğu, erişilebilirlik iyileştirmeleri, arayüz testleri.
