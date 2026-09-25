@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.deps import require_pipeline
+from app.api.downloads import content_disposition
 from app.cases.service import (
     STATUSES,
     CaseError,
@@ -214,7 +215,9 @@ async def download_evidence(case_id: int, evidence_id: int) -> Response:
         content=base64.b64decode(payload.get("content_b64") or ""),
         media_type="application/octet-stream",
         headers={
-            "Content-Disposition": f'attachment; filename="{payload.get("filename", "kanit")}"',
+            "Content-Disposition": content_disposition(
+                str(payload.get("filename") or ""), fallback="kanit"
+            ),
             "X-Content-SHA256": str(payload.get("sha256", "")),
         },
     )

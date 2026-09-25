@@ -39,6 +39,9 @@ class TestObservability:
         assert client.post("/api/transactions", json=RISKY, headers=ANALYST).status_code == 200
         client.get("/api/cases/stats", headers=ANALYST)
         text = client.get("/metrics", headers=METRICS_AUTH).text
+        # L4: the auth scheme is case-insensitive (RFC 7235)
+        lower = {"Authorization": METRICS_AUTH["Authorization"].replace("Bearer", "bearer")}
+        assert client.get("/metrics", headers=lower).status_code == 200
         for name in (
             "fraud_transactions_total",
             "fraud_scoring_latency_seconds_bucket",
@@ -50,7 +53,9 @@ class TestObservability:
         ):
             assert name in text, name
         assert 'route="/api/cases/stats"' in text
-        ready = client.get("/api/health/ready").json()
+        anonymous = client.get("/api/health/ready").json()
+        assert anonymous["status"] == "ready" and anonymous["info"] == {}  # L4: no versions
+        ready = client.get("/api/health/ready", headers=ANALYST).json()
         assert ready["status"] == "ready"
         assert ready["info"]["model"] == "fraud_gbm_v3" and ready["info"]["model_loaded"] is True
         assert client.get("/api/health/live").json() == {"status": "live"}

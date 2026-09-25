@@ -1,6 +1,6 @@
 import cytoscape from "cytoscape";
 import { useEffect, useRef, useState } from "react";
-import { api, auth, canSenior, streamUrl, tl, when } from "../api";
+import { api, auth, canSenior, postSse, tl, when } from "../api";
 import { Badge, Button, Card, DecisionBadge, Empty, ErrorNote, RiskBar } from "../components/ui";
 
 type Reason = { code: string; text: string; source: string; weight: number };
@@ -204,15 +204,11 @@ function Copilot({ c, reload }: { c: CaseDetail; reload: () => void }) {
   };
   const ask = () => {
     setAnswer("");
-    streamUrl(`/api/cases/${c.id}/chat?q=${encodeURIComponent(question)}`).then((url) => {
-      const src = new EventSource(url);
-      src.onmessage = (e) => {
-        const ev = JSON.parse(e.data);
-        if (ev.type === "delta") setAnswer((a) => a + ev.text);
-        if (ev.type === "done") src.close();
-      };
-      src.onerror = () => src.close();
-    });
+    setError(null);
+    postSse(`/api/cases/${c.id}/chat`, { question }, (data) => {
+      const ev = data as { type?: string; text?: string };
+      if (ev.type === "delta") setAnswer((a) => a + (ev.text ?? ""));
+    }).catch((e) => setError((e as Error).message));
   };
   return (
     <Card title="Copilot (öneri — karar analistindir)">

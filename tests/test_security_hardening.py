@@ -210,3 +210,39 @@ def test_hsts_only_in_prod(demo_env: Path, monkeypatch: pytest.MonkeyPatch) -> N
     get_settings.cache_clear()
     r = TestClient(create_app()).get("/api/health")
     assert r.headers["strict-transport-security"].startswith("max-age=")
+
+
+# --- L3 / L8: export hygiene -------------------------------------------------------------
+def test_l3_audit_csv_escapes_formula_cells() -> None:
+    from app.api.admin import audit_csv
+
+    text = audit_csv(
+        [
+            {"id": 1, "transaction_id": '=HYPERLINK("http://x")', "decision": "+cmd"},
+            {"id": 2, "transaction_id": "@SUM(A1)", "decision": "\tBLOKE", "risk_score": -0.5},
+        ]
+    )
+    assert '"\'=HYPERLINK(""http://x"")"' in text and '"\'+cmd"' in text
+    assert '"\'@SUM(A1)"' in text and '"\'\tBLOKE"' in text
+    assert '"-0.5"' in text  # numbers are not formulas
+
+
+def test_l8_content_disposition_rfc5987() -> None:
+    from app.api.downloads import content_disposition
+
+    header = content_disposition('dekont "şüpheli".pdf')
+    assert header.startswith('attachment; filename="dekont _supheli_.pdf"')
+    assert "filename*=UTF-8''dekont%20%22%C5%9F%C3%BCpheli%22.pdf" in header
+    header.encode("latin-1")  # always encodable as an HTTP header
+    assert content_disposition("ığ").startswith('attachment; filename="g"')
+
+
+def test_m7_copilot_is_rate_limited(app_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RATE_LIMIT_COPILOT", "2/minute")
+    get_settings.cache_clear()
+    h = _bearer("analist", "analist")
+    with TestClient(create_app()) as c:
+        codes = [
+            c.post("/api/cases/99999/copilot/summary", headers=h).status_code for _ in range(3)
+        ]
+        assert codes == [404, 404, 429]

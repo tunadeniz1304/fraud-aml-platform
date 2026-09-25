@@ -201,7 +201,10 @@ class TestApi:
             js = client.get(f"/api/cases/{cid}/sib.json", headers=ANALYST).json()
             assert js["tipping_off_uyarisi"]
             with client.stream(
-                "GET", f"/api/cases/{cid}/chat?q=Bu hesap neden riskli?&ticket={ticket(client)}"
+                "POST",
+                f"/api/cases/{cid}/chat",
+                json={"question": "Bu hesap neden riskli?"},
+                headers=ANALYST,
             ) as resp:
                 lines = [ln for ln in resp.iter_lines() if ln.startswith("data:")]
             events = [json.loads(ln[5:]) for ln in lines]
@@ -214,8 +217,11 @@ class TestApi:
             ):
                 assert client.post(bad, headers=ANALYST).status_code == 404
             assert client.get("/api/cases/99999/sib.pdf", headers=ANALYST).status_code == 404
-            missing = client.get(f"/api/cases/99999/chat?q=xx&ticket={ticket(client)}")
+            missing = client.post("/api/cases/99999/chat", json={"question": "xx"}, headers=ANALYST)
             assert missing.status_code == 404
+            # L7: the question never travels in the URL
+            legacy = client.get(f"/api/cases/{cid}/chat?q=xx&ticket={ticket(client)}")
+            assert legacy.status_code == 405
 
             compare = client.get("/api/models/compare", headers=ANALYST).json()
             assert compare["champion"] == "fraud_gbm_v3" and compare["challenger"] == "fraud_gbm_v4"

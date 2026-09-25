@@ -109,13 +109,25 @@ async def audit(limit: int = Query(50, ge=1, le=1000)) -> list[AuditRowOut]:
         return [AuditRowOut(**r) for r in await repo.list_audit(session, limit)]
 
 
+_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def csv_cell(value: object) -> object:
+    """Neutralise spreadsheet formulas (CSV injection): a text cell starting
+    with ``= + - @``, TAB or CR gets a leading ``'`` so Excel/LibreOffice show
+    it as text. Numbers are left alone (a negative score is not a formula)."""
+    if isinstance(value, str) and value.startswith(_FORMULA_PREFIXES):
+        return "'" + value
+    return value
+
+
 def audit_csv(rows: list[dict[str, object]]) -> str:
-    """RFC-4180 CSV (all fields quoted)."""
+    """RFC-4180 CSV (all fields quoted, formula cells escaped)."""
     buffer = io.StringIO()
     writer = csv.writer(buffer, quoting=csv.QUOTE_ALL, lineterminator="\n")
     writer.writerow(AUDIT_COLS)
     for r in rows:
-        writer.writerow([r.get(k, "") for k in AUDIT_COLS])
+        writer.writerow([csv_cell(r.get(k, "")) for k in AUDIT_COLS])
     return buffer.getvalue()
 
 
