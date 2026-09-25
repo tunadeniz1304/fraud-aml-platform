@@ -202,6 +202,45 @@ async def test_durable_ingress_does_not_accept_an_uncommitted_decision(workers) 
     assert served is not None and served["decision"] == "ALLOW"
 
 
+async def test_l1_durable_ingress_does_not_ack_a_decision_still_pending(
+    workers, monkeypatch
+) -> None:
+    """L1: the Redis ingress must not acknowledge a message whose decision did
+    not arrive within the wait; it stays pending (RetryLater) and the claim
+    is left to lapse instead of being released for an immediate re-score."""
+    from app.agents.transaction_monitor import TransactionMonitor
+
+    a, _, redis = workers
+    # the partitioned bus (decisions arrive asynchronously through a waiter)
+    monkeypatch.setattr(type(a.bus), "running", property(lambda _self: True))
+    real_publish = a.bus.publish
+
+    async def lose_created(topic, payload, *args, **kwargs):
+        if topic == TransactionMonitor.CREATED:
+            return None  # the decision never comes back in time
+        return await real_publish(topic, payload, *args, **kwargs)
+
+    monkeypatch.setattr(a.bus, "publish", lose_created)
+    real_await = a._await_decision
+
+    async def short_wait(tx_id, waiter, *, durable=False, timeout_s=30.0):
+        return await real_await(tx_id, waiter, durable=durable, timeout_s=0.05)
+
+    monkeypatch.setattr(a, "_await_decision", short_wait)
+    with pytest.raises(RetryLater):
+        await a.ingest(dict(TX), durable=True)
+    raw = await redis.get("idem:M1-1")
+    assert raw is not None and raw.startswith(PENDING)  # claim kept ...
+    assert "M1-1" not in a.idempotency._owned  # ... but no longer refreshed
+    assert "M1-1" not in a._waiters
+
+    # the HTTP path keeps its behaviour: no decision -> None, claim released
+    await redis.delete("idem:M1-1")
+    tx2 = {**TX, "transaction_id": "M1-L1-HTTP"}
+    assert await a.ingest(tx2) is None
+    assert await redis.get("idem:M1-L1-HTTP") is None
+
+
 async def test_conflict_is_detected_against_the_database_after_a_restart(
     app_env, monkeypatch
 ) -> None:

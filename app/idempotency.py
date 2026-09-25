@@ -280,6 +280,15 @@ class IdempotencyIndex:
         committed = json.dumps(doc, default=str)
         await self.redis.set(self._key(tx_id), committed, ex=self.ttl_s)
 
+    def disown(self, tx_id: str) -> None:
+        """Stop refreshing the claim of ``tx_id`` without deleting it (L1).
+
+        The decision may still land in this process; the lease lapses after
+        ``pending_ttl_s`` and a redelivery then takes the id over and checks
+        the database before scoring it again.
+        """
+        self._owned.pop(tx_id, None)
+
     async def release(self, tx_id: str) -> None:
         """Give up a claim that produced no decision (so a retry may score it).
 

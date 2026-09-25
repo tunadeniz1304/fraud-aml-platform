@@ -990,7 +990,11 @@ class Pipeline:
                 return stored
         self._inflight[tx_id] = digest
         try:
-            result = await self._decide(tx_id, tx)
+            result = await self._decide(tx_id, tx, durable=durable)
+        except IngestInProgress:
+            # L1: still being decided; keep the claim until its lease lapses
+            self.idempotency.disown(tx_id)
+            raise
         except BaseException:
             await self.idempotency.release(tx_id)
             raise
@@ -1009,7 +1013,9 @@ class Pipeline:
         await self.writer.barrier()
         await self.idempotency.commit(tx_id)
 
-    async def _decide(self, tx_id: str, tx: dict[str, Any]) -> dict[str, Any] | None:
+    async def _decide(
+        self, tx_id: str, tx: dict[str, Any], *, durable: bool = False
+    ) -> dict[str, Any] | None:
         if not self.bus.running:  # direct dispatch: handlers run inline
             await self.bus.publish(TransactionMonitor.CREATED, tx, key=tx_id)
             return self.results.get(tx_id)
@@ -1019,16 +1025,33 @@ class Pipeline:
             waiter = asyncio.get_running_loop().create_future()
             self._waiters[tx_id] = waiter
             await self.bus.publish(TransactionMonitor.CREATED, tx, key=tx_id)
-        return await self._await_decision(tx_id, waiter)
+        return await self._await_decision(tx_id, waiter, durable=durable)
 
     async def _await_decision(
-        self, tx_id: str, waiter: asyncio.Future[dict[str, Any]]
+        self,
+        tx_id: str,
+        waiter: asyncio.Future[dict[str, Any]],
+        *,
+        durable: bool = False,
+        timeout_s: float = 30.0,
     ) -> dict[str, Any] | None:
+        """Wait for the decision of ``tx_id``.
+
+        L1: on the durable (Redis ingress) path a decision that is still
+        pending after ``timeout_s`` raises :class:`IngestInProgress` so the
+        stream message stays pending instead of being acknowledged unscored.
+        """
         try:
-            return await asyncio.wait_for(asyncio.shield(waiter), timeout=30)
+            return await asyncio.wait_for(asyncio.shield(waiter), timeout=timeout_s)
         except TimeoutError:
             self._waiters.pop(tx_id, None)
-            return self.results.get(tx_id)
+            result = self.results.get(tx_id)
+            if result is None and durable:
+                logger.warning(
+                    "[Pipeline] %s kararı %.0fs içinde gelmedi — ack yok", tx_id, timeout_s
+                )
+                raise IngestInProgress(tx_id, self.idempotency.retry_after_s) from None
+            return result
 
 
 def build_feature_store(settings: Settings, redis: Any) -> FeatureStateStore:
