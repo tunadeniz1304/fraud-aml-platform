@@ -348,6 +348,10 @@ class Settings(BaseSettings):
         return high_risk_codes()
 
     @property
+    def resolved_validation_dir(self) -> Path:
+        return self.validation_dir or BASE_DIR / "artifacts" / "validation"
+
+    @property
     def resolved_jurisdictions_path(self) -> Path:
         return self.jurisdictions_path or BASE_DIR / "data" / "jurisdictions" / "fatf_2026-06.json"
 
