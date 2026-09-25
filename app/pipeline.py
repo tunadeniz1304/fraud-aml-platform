@@ -38,6 +38,8 @@ from app.bus.redis_streams import RedisStreamsBus
 from app.cases.service import OPEN_STATUSES, CaseService
 from app.config import Settings, get_settings
 from app.copilot.agent import CopilotAgent
+from app.copilot.schemas import SibDraft
+from app.copilot.templates import minimal_sib_draft
 from app.copilot.tools import CopilotTools
 from app.core.behavior_store import BehaviorStore
 from app.core.stream_simulator import TransactionStreamSimulator
@@ -49,8 +51,9 @@ from app.features.extractor import CustomerDirectory, FeatureExtractor
 from app.features.store import FeatureStateStore, MemoryFeatureStore, RedisFeatureStore
 from app.graph.entity_graph import EntityGraph
 from app.llm.config import LLMSettings
-from app.llm.service import LLMService
+from app.llm.service import LLMService, OutputRejected
 from app.ml.registry import ModelRegistry
+from app.monitoring import metrics
 from app.scenarios import ScenarioFactory
 from app.scoring import rule_store
 from app.scoring.engine import ScoringEngine
@@ -385,8 +388,15 @@ class Pipeline:
             await asyncio.gather(*list(self._background), return_exceptions=True)
 
     async def _enrich_case(self, case_id: int, event: dict[str, Any]) -> None:
-        """Async, off the scoring path: APP text triage + automatic ŞİB draft."""
+        """Async, off the scoring path: APP text triage + automatic ŞİB draft.
+
+        The write-behind writer is flushed first so the dossier sees the
+        transaction row. A rejected ŞİB draft is retried once, then replaced by
+        a deterministic minimal draft; the failure is recorded on the case
+        (``COPILOT_ERROR``) and counted — never silently dropped.
+        """
         try:
+            await self.writer.flush()
             case = await self.cases.get_case(case_id)
             if case["case_type"] == "APP" and event.get("purpose"):
                 triage = await self.copilot.triage_text(str(event["purpose"]))
@@ -398,15 +408,34 @@ class Pipeline:
                     "copilot",
                 )
             if case["case_type"] in self.settings.auto_sib_case_types and not case["sib_draft"]:
-                result, _ = await self.copilot.sib_draft(case_id)
-                await self.cases.save_sib_draft(
-                    case_id, result.output.model_dump(mode="json"), "copilot"
-                )
-                logger.info(
-                    "[Copilot] vaka #%s için ŞİB taslağı hazırlandı (%s)", case_id, result.llm_mode
-                )
-        except Exception:  # enrichment is best-effort
+                await self._auto_sib(case)
+        except Exception:  # enrichment is best-effort, but never silent
             logger.exception("[Copilot] vaka #%s zenginleştirilemedi", case_id)
+            metrics.COPILOT_ERRORS.labels(task="enrich").inc()
+
+    async def _auto_sib(self, case: dict[str, Any]) -> None:
+        case_id = int(case["id"])
+        errors: list[str] = []
+        for _ in range(2):  # first attempt + one retry
+            try:
+                result, _ = await self.copilot.sib_draft(case_id)
+            except OutputRejected as exc:
+                errors.append(f"{exc.kind}: {exc}")
+                continue
+            await self.cases.save_sib_draft(
+                case_id, result.output.model_dump(mode="json"), "copilot"
+            )
+            logger.info(
+                "[Copilot] vaka #%s için ŞİB taslağı hazırlandı (%s)", case_id, result.llm_mode
+            )
+            return
+        draft = SibDraft.model_validate(minimal_sib_draft(case))
+        await self.cases.save_sib_draft(case_id, draft.model_dump(mode="json"), "copilot")
+        await self.cases.record_event(
+            case_id, "COPILOT_ERROR", "copilot", task="sib_draft", errors=errors[-2:]
+        )
+        metrics.COPILOT_ERRORS.labels(task="sib_draft").inc()
+        logger.error("[Copilot] vaka #%s ŞİB çıktısı reddedildi — minimal taslak", case_id)
 
     def _profile_summary(self, customer_id: str) -> dict[str, Any] | None:
         store = self.extractor.store

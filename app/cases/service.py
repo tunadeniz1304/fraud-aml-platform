@@ -507,6 +507,12 @@ class CaseService:
             note = {"id": event.id, "text": text, "actor": actor, "created_at": event.created_at}
         return note
 
+    async def record_event(self, case_id: int, kind: str, actor: str, **payload: Any) -> None:
+        """Append a system event (e.g. ``COPILOT_ERROR``) to the case timeline."""
+        async with self.db.transaction() as session:
+            await self._case(session, case_id)
+            session.add(self._event(case_id, kind, actor, **payload))
+
     async def add_evidence(
         self,
         case_id: int,

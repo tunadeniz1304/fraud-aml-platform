@@ -17,8 +17,10 @@ SIB_TYPES = {
     "APP": "Nitelikli dolandırıcılık — yetkili itme ödemesi (APP) yoluyla",
     "ATO": "Bilişim sistemleri aracılığıyla dolandırıcılık — hesap ele geçirme",
     "YAPTIRIM": "Yaptırım listesi / terörün finansmanı şüphesi",
-    "KART_TESTI": "Kart bilgilerinin izinsiz kullanımı (kart testi)",
+    "CARD_TESTING": "Kart bilgilerinin izinsiz kullanımı (kart testi)",
 }
+#: Placeholder for dossier fields not yet persisted (write-behind writer still pending).
+UNKNOWN_DATE = "tarih kaydı henüz yazılmadı"
 TIPPING_OFF = (
     "5549 sayılı Kanun md. 4/2 uyarınca şüpheli işlem bildiriminde bulunulduğu bilgisi, işlem "
     "tarafları dahil hiç kimseye açıklanamaz (tipping-off yasağı). Müşteriyle yapılan "
@@ -180,8 +182,15 @@ def _sib(ctx: dict[str, Any]) -> dict[str, Any]:
     reasons = sorted(
         {r.get("text", "") for a in alerts for r in a.get("reason_codes") or []} - {""}
     )
-    first = min((a.get("ts") or "" for a in alerts), default="")
-    last = max((a.get("ts") or "" for a in alerts), default="")
+    joined = "; ".join(reasons[:6])
+    why = (
+        joined
+        if len(joined) >= 10
+        else "Olağandışı işlem örüntüsü" + (f": {joined}" if joined else "")
+    )
+    stamps = [str(a.get("ts")) for a in alerts if a.get("ts")]
+    first = min(stamps, default="") or str(case.get("suspicion_at") or "")
+    last = max(stamps, default="") or first
     return {
         "supheli_islem_tipi": SIB_TYPES.get(kind, "Olağandışı ve ekonomik amacı belirsiz işlem"),
         "supheli": {
@@ -190,17 +199,18 @@ def _sib(ctx: dict[str, Any]) -> dict[str, Any]:
             "hesap": "",
             "dogum_yili": profile.get("birth_year"),
         },
-        "kim": f"{case.get('customer_id')} numaralı müşteri ({profile.get('segment', 'bireysel')})",
+        "kim": f"{case.get('customer_id') or 'bilinmeyen'} numaralı müşteri "
+        f"({profile.get('segment') or 'bireysel'})",
         "ne": f"{len(alerts)} adet transfer, toplam {fmt_try(total)}; alıcılar: "
         + (", ".join(beneficiaries[:5]) or "—"),
-        "ne_zaman": f"{first} – {last}",
+        "ne_zaman": (f"{first} – {last}" if first != last else first) if first else UNKNOWN_DATE,
         "nerede": "Mobil/internet bankacılığı kanalları, "
         + ", ".join(sorted({str(a.get("channel") or "?") for a in alerts})),
-        "neden": "; ".join(reasons[:6]) or "Olağandışı işlem örüntüsü",
+        "neden": why,
         "islemler": [
             {
                 "transaction_id": a["transaction_id"],
-                "tarih": a.get("ts") or "",
+                "tarih": str(a.get("ts") or UNKNOWN_DATE),
                 "tutar": float(a.get("amount_try") or 0),
                 "para_birimi": "TRY",
                 "tutar_try": float(a.get("amount_try") or 0),
@@ -230,3 +240,40 @@ def _triage(ctx: dict[str, Any]) -> dict[str, Any]:
         if any(w in text for w in words):
             return {"label": label, "confidence": 0.8}
     return {"label": "yok" if not text.strip() else "diger", "confidence": 0.5}
+
+
+def minimal_sib_draft(case: dict[str, Any]) -> dict[str, Any]:
+    """Deterministic, schema-safe ŞİB draft built from the case record only.
+
+    Used when both the model output and its repair attempt were rejected: the
+    analyst still gets a draft to complete instead of a silently missing one.
+    """
+    alerts = case.get("alerts") or []
+    kind = str(case.get("case_type") or "")
+    total = sum(float(a.get("amount_try") or 0) for a in alerts)
+    when = str(case.get("suspicion_at") or "") or UNKNOWN_DATE
+    return {
+        "supheli_islem_tipi": SIB_TYPES.get(kind, "Olağandışı ve ekonomik amacı belirsiz işlem"),
+        "supheli": {"musteri_no": str(case.get("customer_id") or ""), "ad_soyad": ""},
+        "kim": f"{case.get('customer_id') or 'bilinmeyen'} numaralı müşteri",
+        "ne": f"{len(alerts)} adet işlem, toplam {fmt_try(total)}",
+        "ne_zaman": when if len(when) >= 5 else UNKNOWN_DATE,
+        "nerede": "Dijital bankacılık kanalları",
+        "neden": "Otomatik taslak üretilemedi; analist gerekçeyi vaka kanıtlarından doldurmalı.",
+        "islemler": [
+            {
+                "transaction_id": str(a.get("transaction_id")),
+                "tarih": str(a.get("created_at") or UNKNOWN_DATE),
+                "tutar": float(a.get("amount_try") or 0),
+                "tutar_try": float(a.get("amount_try") or 0),
+            }
+            for a in alerts
+        ]
+        or [{"transaction_id": "-", "tarih": UNKNOWN_DATE, "tutar": 0.0, "tutar_try": 0.0}],
+        "toplam_tutar_try": round(total, 2),
+        "supheye_ilk_ulasilma": str(case.get("suspicion_at") or ""),
+        "bildirim_son_tarihi": str(case.get("masak_deadline") or ""),
+        "tipping_off_uyarisi": TIPPING_OFF,
+        "citations": [f"CASE-{case.get('id')}"],
+        "hazirlayan": "Anil3 (minimal deterministik taslak — analist tamamlamalı)",
+    }

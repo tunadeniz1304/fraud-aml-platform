@@ -110,7 +110,6 @@ CASE_TYPES = ["ATO", "APP", "MULE", "AML", "CARD_TESTING", "YAPTIRIM"]
 
 
 # --- A1: demo / fallback output must satisfy its own schema -----------------------------------
-@open_finding("A1")
 @pytest.mark.parametrize("case_type", CASE_TYPES)
 async def test_a1_demo_sib_and_summary_valid_without_persisted_tx(case_type: str) -> None:
     from app.copilot import templates  # noqa: F401
@@ -131,7 +130,6 @@ async def test_a1_demo_sib_and_summary_valid_without_persisted_tx(case_type: str
     assert len(summary.output.bullets) >= 3
 
 
-@open_finding("A1")
 async def test_a1_rejected_copilot_output_is_recorded_not_silent(pipeline: Any) -> None:
     from app.llm.service import OutputRejected
 

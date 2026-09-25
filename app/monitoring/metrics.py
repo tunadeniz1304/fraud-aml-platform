@@ -83,6 +83,12 @@ LLM_LATENCY = Histogram(
     registry=REGISTRY,
 )
 LLM_USAGE = Counter("fraud_llm_tokens_total", "LLM token kullanımı", ["type"], registry=REGISTRY)
+COPILOT_ERRORS = Counter(
+    "fraud_copilot_errors_total",
+    "Şemayı geçemeyen copilot çıktıları (deterministik minimal taslağa düşülen)",
+    ["task"],
+    registry=REGISTRY,
+)
 
 # --- persistence / bus -------------------------------------------------------
 DB_WRITE_ERRORS = Counter(
