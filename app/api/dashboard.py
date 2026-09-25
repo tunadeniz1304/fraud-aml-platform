@@ -103,7 +103,7 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> FastAPI:
 
     app = FastAPI(
         title="Anil3 — Fraud & AML Platformu",
-        version="2.0.0",
+        version="2.1.0",
         description="Gerçek zamanlı hibrit fraud skorlama, vaka yönetimi ve LLM copilot API'si.",
         lifespan=lifespan,
         docs_url="/docs" if settings.api_docs else None,
