@@ -218,9 +218,10 @@ class TestApi:
             assert missing.status_code == 404
 
             compare = client.get("/api/models/compare", headers=ANALYST).json()
-            assert compare["champion"] == "fraud_gbm_v1" and compare["challenger"] == "fraud_gbm_v2"
+            assert compare["champion"] == "fraud_gbm_v3" and compare["challenger"] == "fraud_gbm_v4"
             assert compare["online"]["shadow_decisions"] > 0 and "agreement" in compare["online"]
-            assert compare["offline"]["challenger"]["pr_auc"] > 0.6
+            # de-fingerprinted synthetic data: honest PR-AUC ~0.56 (was 0.97 with leaks)
+            assert compare["offline"]["challenger"]["pr_auc"] > 0.4
             drift = client.get("/api/models/drift", headers=ANALYST).json()
             assert "psi" in drift and drift["thresholds"]["alert"] == 0.25
             assert isinstance(
@@ -228,7 +229,7 @@ class TestApi:
             )
             assert client.post("/api/models/nope/promote", headers=ADMIN).status_code == 404
             assert (
-                client.post("/api/models/fraud_gbm_v2/promote", headers=ANALYST).status_code == 403
+                client.post("/api/models/fraud_gbm_v4/promote", headers=ANALYST).status_code == 403
             )
 
     def test_promotion_is_maker_checker(self, demo_env, tmp_path, monkeypatch):
@@ -239,20 +240,20 @@ class TestApi:
         monkeypatch.setenv("MODELS_DIR", str(models))
         get_settings.cache_clear()
         with TestClient(create_app()) as client:
-            req = client.post("/api/models/fraud_gbm_v2/promote", headers=ADMIN)
+            req = client.post("/api/models/fraud_gbm_v4/promote", headers=ADMIN)
             assert req.status_code == 202 and req.json()["kind"] == "MODEL_PROMOTE"
             assert (
                 client.post(f"/api/approvals/{req.json()['id']}/approve", headers=ADMIN).status_code
                 == 403
             )
             ok = client.post(f"/api/approvals/{req.json()['id']}/approve", headers=SENIOR)
-            assert ok.status_code == 200 and ok.json()["result"]["champion"] == "fraud_gbm_v2"
+            assert ok.status_code == 200 and ok.json()["result"]["champion"] == "fraud_gbm_v4"
             ready = client.get("/api/health/ready").json()
-            assert ready["info"]["model"] == "fraud_gbm_v2"
-            back = client.put("/api/models/fraud_gbm_v1/challenger", headers=ADMIN)
-            assert back.status_code == 200 and back.json()["challenger"] == "fraud_gbm_v1"
+            assert ready["info"]["model"] == "fraud_gbm_v4"
+            back = client.put("/api/models/fraud_gbm_v3/challenger", headers=ADMIN)
+            assert back.status_code == 200 and back.json()["challenger"] == "fraud_gbm_v3"
             assert (
-                client.put("/api/models/fraud_gbm_v2/challenger", headers=ADMIN).status_code == 409
+                client.put("/api/models/fraud_gbm_v4/challenger", headers=ADMIN).status_code == 409
             )
 
 

@@ -300,6 +300,8 @@ async def test_b8_concurrent_same_customer_velocity_is_exact(demo_env: Path, mon
     fake = fakeredis.aioredis.FakeRedis(decode_responses=True)
     p = await build_pipeline(get_settings(), redis=fake)
     await p.start()
+    # keep the account scorable even if the model blocks the burst (counts are the point)
+    p.analyst.account_status = lambda _cid: "AKTIF"
     try:
         c = _customers()[7]
         now = datetime.now()

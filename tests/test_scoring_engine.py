@@ -50,7 +50,7 @@ class TestHybridScoring:
         assert result.decision == "ALLOW" and result.scored
         comps = result.components()
         assert set(comps) >= {"rule", "ml", "anomaly", "stacked", "burst"}
-        assert result.model_version == "fraud_gbm_v1"
+        assert result.model_version == "fraud_gbm_v3"
         assert result.rule_version.startswith("rs-")
         fields = result.event_fields()
         assert fields["decision_legacy"] == "GECTI" and fields["latency_ms"] > 0
@@ -116,7 +116,7 @@ class TestHybridScoring:
         assert again.decision == "BLOCK" and again.rule_version == custom.version
 
     async def test_challenger_shadow_scoring(self, tmp_path):
-        src = BASE_DIR / "models" / "fraud_gbm_v1"
+        src = BASE_DIR / "models" / "fraud_gbm_v3"
         for version in ("champ", "chall"):
             shutil.copytree(src, tmp_path / version)
         registry = ModelRegistry(tmp_path)

@@ -95,7 +95,8 @@ class TestRuleCrud:
             "transaction_id": "TX-RULE-1",
             "ts": "2026-09-22T14:00:00",
             "customer_id": active,
-            "amount": 1000,
+            # above rule_floor_hold_min_amount_try: the rule's HOLD floor is not softened
+            "amount": 30000,
             "currency": "TRY",
             "device_id": "DEV-9F2A-11",
             "location": "İstanbul",
@@ -173,7 +174,7 @@ class TestPolicyApi:
     def test_get_and_set_thresholds(self, client):
         policy = client.get("/api/policy", headers=ANALYST).json()
         assert policy["thresholds"] == {"step_up": 0.35, "hold": 0.6, "block": 0.85}
-        assert policy["model_version"] == "fraud_gbm_v1" and policy["stacker"]["coef"]
+        assert policy["model_version"] == "fraud_gbm_v3" and policy["stacker"]["coef"]
         new = {"step_up": 0.3, "hold": 0.5, "block": 0.8}
         r = client.put("/api/policy/thresholds", json=new, headers=ADMIN)
         assert r.status_code == 200 and r.json()["thresholds"] == new
@@ -188,5 +189,5 @@ class TestPolicyApi:
 
     def test_models_listing(self, client):
         body = client.get("/api/models", headers=ANALYST).json()
-        assert body["champion"] == "fraud_gbm_v1"
+        assert body["champion"] == "fraud_gbm_v3"
         assert body["models"][0]["metrics"]["pr_auc"] > 0.6

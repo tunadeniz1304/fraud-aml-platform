@@ -52,7 +52,7 @@ class TestObservability:
         assert 'route="/api/cases/stats"' in text
         ready = client.get("/api/health/ready").json()
         assert ready["status"] == "ready"
-        assert ready["info"]["model"] == "fraud_gbm_v1" and ready["info"]["model_loaded"] is True
+        assert ready["info"]["model"] == "fraud_gbm_v3" and ready["info"]["model_loaded"] is True
         assert client.get("/api/health/live").json() == {"status": "live"}
 
 
