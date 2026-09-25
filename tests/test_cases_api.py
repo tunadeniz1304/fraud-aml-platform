@@ -181,3 +181,28 @@ class TestRbacAndValidation:
                 client.get(f"/api/cases?order={order}&status=OPEN", headers=ANALYST).status_code
                 == 200
             )
+
+
+class TestPagination:
+    def test_page_returns_total_and_disjoint_slices(self, client):
+        open_case(client)
+        other = {**ATO_TX, "transaction_id": "TX-API-ATO-2", "customer_id": "CUST-0005"}
+        assert client.post("/api/transactions", json=other, headers=ANALYST).status_code == 200
+        full = client.get("/api/cases/page?limit=200", headers=ANALYST).json()
+        assert full["total"] == len(full["items"]) >= 2
+        first = client.get("/api/cases/page?limit=1&offset=0", headers=ANALYST).json()
+        second = client.get("/api/cases/page?limit=1&offset=1", headers=ANALYST).json()
+        assert first["total"] == second["total"] == full["total"]
+        assert first["items"][0]["id"] != second["items"][0]["id"]
+        assert [first["items"][0]["id"], second["items"][0]["id"]] == [
+            c["id"] for c in full["items"][:2]
+        ]
+
+    def test_page_filters_and_validates(self, client):
+        open_case(client)
+        page = client.get("/api/cases/page?customer_id=CUST-0004", headers=ANALYST).json()
+        assert page["total"] >= 1
+        assert {c["customer_id"] for c in page["items"]} == {"CUST-0004"}
+        assert client.get("/api/cases/page?status=NOPE", headers=ANALYST).status_code == 422
+        assert client.get("/api/cases/page?limit=500", headers=ANALYST).status_code == 422
+        assert client.get("/api/cases/page").status_code == 401
