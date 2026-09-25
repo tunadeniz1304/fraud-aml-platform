@@ -38,6 +38,7 @@ dependencies = [
     "prometheus-client>=0.20",
     "structlog>=24.1",
     "reportlab>=4.2",
+    "holidays>=0.57",
     "chromadb>=0.5",
 ]
 

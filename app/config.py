@@ -225,25 +225,12 @@ class Settings(BaseSettings):
     masak_business_days: int = 10
     masak_warning_business_days: int = 2
     evidence_max_bytes: int = 1_000_000
-    # Resmi tatiller (MASAK iş günü hesabı): 2026 için sabit + dini bayram günleri.
-    tr_holidays: list[str] = Field(
-        default_factory=lambda: [
-            "2026-01-01",
-            "2026-03-20",
-            "2026-03-21",
-            "2026-03-22",
-            "2026-04-23",
-            "2026-05-01",
-            "2026-05-19",
-            "2026-05-26",
-            "2026-05-27",
-            "2026-05-28",
-            "2026-05-29",
-            "2026-07-15",
-            "2026-08-30",
-            "2026-10-29",
-        ]
-    )
+    # Resmî tatiller `holidays.Turkey` ile her yıl için dinamik hesaplanır (dini
+    # bayramlar dahil). Arife yarım günleri: "business_day" (sabah çalışılır; MASAK
+    # süresi yasal sınırı aşmaz) ya da "holiday". `tr_holidays`: ek kapanışlar
+    # (idari izin vb.), ISO tarih listesi.
+    tr_half_day_policy: Literal["business_day", "holiday"] = "business_day"
+    tr_holidays: list[str] = Field(default_factory=list)
 
     high_risk_countries: str = "NG,AE,RU,UA,KP,IR,SY,CU"
     fx_rates_try: dict[str, float] = Field(default_factory=_default_fx)

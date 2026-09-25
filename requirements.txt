@@ -28,3 +28,4 @@ prometheus-client>=0.20
 structlog>=24.1
 reportlab>=4.2
 chromadb>=0.5
+holidays>=0.57

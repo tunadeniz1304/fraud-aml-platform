@@ -303,9 +303,7 @@ async def test_b8_concurrent_same_customer_velocity_is_exact(demo_env: Path, mon
     try:
         c = _customers()[7]
         now = datetime.now()
-        txs = [
-            _transfer(c, f"TX-CC-{i:04d}", now, 50, beneficiary_id="TR-SAME") for i in range(50)
-        ]
+        txs = [_transfer(c, f"TX-CC-{i:04d}", now, 50, beneficiary_id="TR-SAME") for i in range(50)]
         results = await asyncio.gather(*(p.ingest(t) for t in txs))
         counts = sorted(r["features"]["cnt_1h"] for r in results)
         assert counts == [float(i) for i in range(50)]
@@ -411,7 +409,6 @@ async def test_b10_stream_message_in_progress_is_not_processed_twice() -> None:
 
 
 # --- B13: dynamic holiday calendar ------------------------------------------------------------
-@open_finding("B13")
 def test_b13_masak_deadline_skips_2027_and_2028_religious_holidays() -> None:
     from app.cases import sla
 
@@ -419,6 +416,20 @@ def test_b13_masak_deadline_skips_2027_and_2028_religious_holidays() -> None:
     assert sla.masak_deadline(datetime(2027, 3, 5, 10)).date().isoformat() == "2027-03-24"
     # Kurban Bayramı 2028: 5-8 May, then 19 May
     assert sla.masak_deadline(datetime(2028, 5, 3, 10)).date().isoformat() == "2028-05-22"
+
+
+def test_b13_arife_half_day_policy_is_configurable(monkeypatch) -> None:
+    from app.cases import sla
+
+    start = datetime(2027, 3, 5, 10)  # Friday; arife = Monday 8 March 2027 (13:00)
+    assert sla.is_business_day(datetime(2027, 3, 8).date())  # default: morning worked
+    monkeypatch.setenv("TR_HALF_DAY_POLICY", "holiday")
+    get_settings.cache_clear()
+    try:
+        assert not sla.is_business_day(datetime(2027, 3, 8).date())
+        assert sla.masak_deadline(start).date().isoformat() == "2027-03-25"
+    finally:
+        get_settings.cache_clear()
 
 
 # --- B14: FATF-sourced high-risk list ---------------------------------------------------------
