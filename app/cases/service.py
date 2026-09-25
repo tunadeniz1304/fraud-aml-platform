@@ -319,8 +319,44 @@ class CaseService:
         ring_id: str | None = None,
         order: str = "priority",
         limit: int = 100,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
-        query = select(Case)
+        query = self._filtered(
+            select(Case),
+            status=status,
+            assigned_to=assigned_to,
+            customer_id=customer_id,
+            case_type=case_type,
+            ring_id=ring_id,
+        )
+        ordering: tuple[Any, ...] = {
+            "priority": (Case.priority.desc(), Case.id.desc()),
+            "sla": (Case.internal_sla_due.asc(), Case.id.asc()),
+            "masak": (Case.masak_deadline.asc(), Case.id.asc()),
+            "recent": (Case.updated_at.desc(), Case.id.desc()),
+        }.get(order, (Case.priority.desc(), Case.id.desc()))
+        async with self.db.session() as session:
+            rows = (
+                await session.execute(query.order_by(*ordering).offset(offset).limit(limit))
+            ).scalars()
+            now = utcnow()
+            return [self._summary(c, now) for c in rows]
+
+    async def count_cases(self, **filters: str | None) -> int:
+        query = self._filtered(select(func.count(Case.id)), **filters)
+        async with self.db.session() as session:
+            return int((await session.execute(query)).scalar_one())
+
+    @staticmethod
+    def _filtered(
+        query: Any,
+        *,
+        status: str | None = None,
+        assigned_to: str | None = None,
+        customer_id: str | None = None,
+        case_type: str | None = None,
+        ring_id: str | None = None,
+    ) -> Any:
         if status == "OPEN":
             query = query.where(Case.status.in_(OPEN_STATUSES))
         elif status:
@@ -333,16 +369,7 @@ class CaseService:
             query = query.where(Case.case_type == case_type)
         if ring_id:
             query = query.where(Case.ring_id == ring_id)
-        ordering: tuple[Any, ...] = {
-            "priority": (Case.priority.desc(), Case.id.desc()),
-            "sla": (Case.internal_sla_due.asc(), Case.id.asc()),
-            "masak": (Case.masak_deadline.asc(), Case.id.asc()),
-            "recent": (Case.updated_at.desc(), Case.id.desc()),
-        }.get(order, (Case.priority.desc(), Case.id.desc()))
-        async with self.db.session() as session:
-            rows = (await session.execute(query.order_by(*ordering).limit(limit))).scalars()
-            now = utcnow()
-            return [self._summary(c, now) for c in rows]
+        return query
 
     async def get_case(self, case_id: int) -> dict[str, Any]:
         async with self.db.session() as session:

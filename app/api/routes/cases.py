@@ -119,6 +119,35 @@ async def list_cases(
     )
 
 
+@router.get("/cases/page", dependencies=[Depends(analyst)])
+async def page_cases(
+    status: str | None = Query(None, description="YENI…, veya OPEN"),
+    assigned_to: str | None = None,
+    customer_id: str | None = None,
+    case_type: str | None = None,
+    order: Literal["priority", "sla", "masak", "recent"] = "priority",
+    limit: int = Query(25, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> dict[str, Any]:
+    """Server-side paginated + filtered case queue (``total`` for the pager)."""
+    if status and status != "OPEN" and status not in STATUSES:
+        raise HTTPException(status_code=422, detail="Geçersiz vaka durumu")
+    service = cases_service()
+    filters = {
+        "status": status,
+        "assigned_to": assigned_to,
+        "customer_id": customer_id,
+        "case_type": case_type,
+    }
+    items = await service.list_cases(**filters, order=order, limit=limit, offset=offset)
+    return {
+        "items": items,
+        "total": await service.count_cases(**filters),
+        "limit": limit,
+        "offset": offset,
+    }
+
+
 @router.get("/cases/stats", dependencies=[Depends(analyst)])
 async def case_stats() -> dict[str, Any]:
     service = cases_service()
