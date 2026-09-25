@@ -1,7 +1,7 @@
 """Hash-chained, tamper-evident audit log.
 
 Each row stores ``prev_hash`` and ``hash = SHA-256(prev_hash || canonical(row))``
-where ``canonical`` is a sorted, compact JSON rendering of every business
+(HMAC-SHA256 keyed with ``AUDIT_HMAC_KEY`` when that is set) where ``canonical`` is a sorted, compact JSON rendering of every business
 field. Changing, deleting or reordering any historical row breaks the chain
 from that point on, which :func:`verify_chain` reports.
 
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -21,8 +22,10 @@ from typing import Any
 from sqlalchemy import insert, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.db.base import utcnow
 from app.db.models import AuditLog
+from app.monitoring.metrics import AUDIT_VERIFY_FAILURES
 
 GENESIS = "0" * 64
 _ADVISORY_KEY = 7_240_531  # arbitrary, stable
@@ -65,7 +68,11 @@ def canonical(entry: AuditEntry | AuditLog) -> str:
 
 
 def chain_hash(prev_hash: str, entry: AuditEntry | AuditLog) -> str:
-    return hashlib.sha256((prev_hash + canonical(entry)).encode("utf-8")).hexdigest()
+    message = (prev_hash + canonical(entry)).encode("utf-8")
+    key = get_settings().audit_hmac_key.get_secret_value()
+    if key:
+        return hmac.new(key.encode("utf-8"), message, hashlib.sha256).hexdigest()
+    return hashlib.sha256(message).hexdigest()
 
 
 class AuditChain:
@@ -159,8 +166,10 @@ async def verify_chain(session: AsyncSession, *, batch: int = 2000) -> VerifyRes
             break
         for row in rows:
             if row.prev_hash != prev:
+                AUDIT_VERIFY_FAILURES.inc()
                 return VerifyResult(False, checked, row.id, "prev_hash zinciri kopuk", prev)
-            if chain_hash(prev, row) != row.hash:
+            if not hmac.compare_digest(chain_hash(prev, row), row.hash):
+                AUDIT_VERIFY_FAILURES.inc()
                 return VerifyResult(False, checked, row.id, "satır içeriği değiştirilmiş", prev)
             prev = row.hash
             checked += 1

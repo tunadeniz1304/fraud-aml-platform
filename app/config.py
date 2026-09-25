@@ -244,6 +244,10 @@ class Settings(BaseSettings):
     masak_business_days: int = 10
     masak_warning_business_days: int = 2
     evidence_max_bytes: int = 1_000_000
+    # Audit chain key (audit M9): when set, row hashes are HMAC-SHA256 so a DB
+    # writer without the key cannot rebuild a consistent chain. Set it before the
+    # first audit row is written; changing it invalidates the existing chain.
+    audit_hmac_key: SecretStr = SecretStr("")
     # Resmî tatiller `holidays.Turkey` ile her yıl için dinamik hesaplanır (dini
     # bayramlar dahil). Arife yarım günleri: "business_day" (sabah çalışılır; MASAK
     # süresi yasal sınırı aşmaz) ya da "holiday". `tr_holidays`: ek kapanışlar

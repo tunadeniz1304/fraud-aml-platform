@@ -26,6 +26,11 @@ SCORE_LATENCY = Histogram(
 )
 DECISIONS = Counter("fraud_decisions_total", "Karar dağılımı", ["decision"], registry=REGISTRY)
 ALERTS = Counter("fraud_alerts_total", "Üretilen alert sayısı", ["alert_type"], registry=REGISTRY)
+AUDIT_VERIFY_FAILURES = Counter(
+    "fraud_audit_chain_verify_failures_total",
+    "Audit zinciri doğrulama hataları (alarm: > 0)",
+    registry=REGISTRY,
+)
 RISK_SCORE = Histogram(
     "fraud_risk_score",
     "Politika risk skoru dağılımı",
