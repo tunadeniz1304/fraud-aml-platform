@@ -332,7 +332,7 @@ class TestApprovals:
     async def test_m2_decision_is_claimed_once_and_reverted_on_handler_failure(
         self, service: CaseService
     ) -> None:
-        async def boom(_approval: dict[str, Any], _actor: str) -> dict[str, Any]:
+        async def boom(_approval: dict[str, Any], _actor: str, _tx: Any) -> dict[str, Any]:
             raise RuntimeError("handler failed")
 
         service.handlers["MODEL_PROMOTE"] = boom
@@ -344,7 +344,7 @@ class TestApprovals:
 
         calls: list[str] = []
 
-        async def ok(_approval: dict[str, Any], actor: str) -> dict[str, Any]:
+        async def ok(_approval: dict[str, Any], actor: str, _tx: Any) -> dict[str, Any]:
             calls.append(actor)
             return {"done": True}
 

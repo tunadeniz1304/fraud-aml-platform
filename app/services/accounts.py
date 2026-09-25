@@ -213,37 +213,50 @@ class AccountService:
         self, customer_id: str, target: str, *, actor: str, reason: str
     ) -> tuple[str, str]:
         """Human decision (maker-checker is enforced by the caller)."""
-        new = normalise(target)
         if customer_id not in self._status:
             raise AccountNotFoundError(customer_id)
         await self.writer.flush()  # keep chain order with queued system writes
         async with self.writer.chain.lock, self.db.transaction() as session:
-            result = await repo.transition_account_status(
-                session,
-                customer_id,
-                new,
-                kind="analyst",
-                reason=reason,
-                actor=actor,
-                expected=(self._status[customer_id], self._version.get(customer_id, 1)),
+            result, audit = await self.transition_in(
+                session, customer_id, target, actor=actor, reason=reason
             )
-            if result is None:
-                raise AccountNotFoundError(customer_id)
-            await self.writer.chain.append_many(
-                session,
-                [
-                    AuditEntry(
-                        event_type="ACCOUNT_STATUS",
-                        actor=actor,
-                        entity_type="account",
-                        entity_id=customer_id,
-                        customer_id=customer_id,
-                        decision=f"{result.previous}->{result.new}",
-                        reason=reason,
-                    )
-                ],
-            )
-        # cache only after the commit; the analyst decision supersedes a pending one
-        self._pending.pop(customer_id, None)
-        self._remember(customer_id, result.new, result.version)
+            await self.writer.chain.append_many(session, [audit])
+        self.committed(result)
         return result.previous, result.new
+
+    async def transition_in(
+        self, session: Any, customer_id: str, target: str, *, actor: str, reason: str
+    ) -> tuple[repo.StatusResult, AuditEntry]:
+        """Analyst transition inside the caller's transaction (A5: a maker-checker
+        approval commits it atomically with the approval). The caller appends
+        the returned audit entry and calls :meth:`committed` after the commit."""
+        new = normalise(target)
+        if customer_id not in self._status:
+            raise AccountNotFoundError(customer_id)
+        result = await repo.transition_account_status(
+            session,
+            customer_id,
+            new,
+            kind="analyst",
+            reason=reason,
+            actor=actor,
+            expected=(self._status[customer_id], self._version.get(customer_id, 1)),
+        )
+        if result is None:
+            raise AccountNotFoundError(customer_id)
+        audit = AuditEntry(
+            event_type="ACCOUNT_STATUS",
+            actor=actor,
+            entity_type="account",
+            entity_id=customer_id,
+            customer_id=customer_id,
+            decision=f"{result.previous}->{result.new}",
+            reason=reason,
+        )
+        return result, audit
+
+    def committed(self, result: repo.StatusResult) -> None:
+        """Cache an analyst transition only after its commit; the analyst
+        decision supersedes a pending system escalation."""
+        self._pending.pop(result.customer_id, None)
+        self._remember(result.customer_id, result.new, result.version)

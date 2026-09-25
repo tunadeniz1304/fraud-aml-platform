@@ -217,6 +217,12 @@ class ModelRegistry:
             self._write(data)
             return data
 
+    def restore(self, data: dict[str, Any]) -> None:
+        """Write back a snapshot taken with :meth:`read` (undoes a promotion
+        whose approval transaction did not commit, A5)."""
+        with self._lock:
+            self._write(data)
+
     def promote(self, version: str) -> dict[str, Any]:
         return self.set_status(version, "champion")
 

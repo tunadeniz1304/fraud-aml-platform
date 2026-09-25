@@ -20,16 +20,18 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import logging
 import secrets
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import func, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.cases import sla
@@ -42,7 +44,8 @@ from app.db.models import Alert, Approval, Case, CaseEvent, Decision, Label, Tra
 from app.db.writer import PersistenceWriter
 from app.monitoring import metrics
 from app.security.auth import ROLE_RANK
-from app.services.accounts import AccountService
+from app.services.accounts import AccountNotFoundError, AccountService
+from app.services.config_sync import ConfigConflict
 
 logger = logging.getLogger("fraud.cases")
 
@@ -106,7 +109,42 @@ class MakerCheckerError(PermissionError):
     """The approver is the requester (four-eyes principle)."""
 
 
-ApprovalHandler = Callable[[dict[str, Any], str], Awaitable[dict[str, Any]]]
+class ApprovalUnavailableError(RuntimeError):
+    """The approval could not be applied for an infrastructure reason (the
+    database is unavailable); nothing was applied and it can be retried (503)."""
+
+
+AfterCommit = Callable[[], Awaitable[None] | None]
+
+
+@dataclass
+class ApprovalTx:
+    """The unit of work of one maker-checker decision (A5).
+
+    A handler performs its database writes (rule row, ``runtime_config``
+    publish, account status, ŞİB state) in :attr:`session` — the same
+    transaction that flips the approval status — collects its audit entries
+    in :attr:`audits` (appended to the hash chain in that transaction) and
+    registers in-memory effects (engine swap, caches) with :meth:`on_commit`;
+    they run only after the commit. :meth:`on_rollback` undoes a
+    non-transactional side effect (the model registry file) if the
+    transaction does not commit. Either everything is applied or nothing is,
+    and a failed approval stays ``BEKLIYOR`` for a retry.
+    """
+
+    session: AsyncSession
+    audits: list[AuditEntry] = field(default_factory=list)
+    after_commit: list[AfterCommit] = field(default_factory=list)
+    after_rollback: list[Callable[[], None]] = field(default_factory=list)
+
+    def on_commit(self, fn: AfterCommit) -> None:
+        self.after_commit.append(fn)
+
+    def on_rollback(self, fn: Callable[[], None]) -> None:
+        self.after_rollback.append(fn)
+
+
+ApprovalHandler = Callable[[dict[str, Any], str, ApprovalTx], Awaitable[dict[str, Any]]]
 
 
 def _require_senior(role: str | None, action: str) -> None:
@@ -870,113 +908,163 @@ class CaseService:
         passes them): the break-glass admin token never decides, and each kind
         has a minimum approver role. The status flip is a conditional UPDATE
         (``WHERE status='BEKLIYOR'``) so two concurrent approvers cannot both
-        win; if the approval handler fails, the request is put back to
-        ``BEKLIYOR`` and the error is re-raised.
+        win.
+
+        A5: the status flip, the handler's writes (rule / ``runtime_config``
+        publish / account status / ŞİB), and every audit entry are one
+        transaction; in-memory effects run only after the commit. A failing
+        handler therefore leaves no partial effect and the request stays
+        ``BEKLIYOR`` (retryable, or rejectable to free the pending slot).
+        A concurrent config change maps to :class:`CaseError` (409), a
+        database outage to :class:`ApprovalUnavailableError` (503).
         """
         if via == "admin_token":
             raise MakerCheckerError(
                 "break-glass yönetici token'ı onay veremez — kişisel hesapla giriş yapın"
             )
-        async with self.db.transaction() as session:
-            approval = await session.get(Approval, approval_id)
-            if approval is None:
-                raise CaseNotFoundError(approval_id)
-            if approval.status != "BEKLIYOR":
-                raise CaseError("onay talebi zaten sonuçlandı")
-            if approval.requested_by.casefold() == actor.casefold():
-                raise MakerCheckerError("dört göz ilkesi: talebi açan kişi onaylayamaz")
-            minimum = APPROVAL_MIN_ROLE.get(approval.kind, "admin")
-            if role is not None and ROLE_RANK.get(role, -1) < ROLE_RANK[minimum]:
-                raise MakerCheckerError(
-                    f"{approval.kind} onayı için en az '{minimum}' rolü gerekir"
+        if self.writer is not None:
+            await self.writer.flush()  # keep chain order with queued writes
+        tx: ApprovalTx | None = None
+        try:
+            async with contextlib.AsyncExitStack() as stack:
+                if self.writer is not None:
+                    await stack.enter_async_context(self.writer.chain.lock)
+                session = await stack.enter_async_context(self.db.transaction())
+                tx = ApprovalTx(session)
+                snapshot, outcome = await self._decide_in(
+                    tx, approval_id, approve=approve, actor=actor, note=note, role=role
                 )
-            decided_at = utcnow()
-            merged_note = (approval.note + "\n" + note).strip() if note else approval.note
-            claimed = await session.execute(
-                update(Approval)
-                .where(Approval.id == approval_id, Approval.status == "BEKLIYOR")
-                .values(
-                    status="ONAYLANDI" if approve else "REDDEDILDI",
-                    decided_by=actor,
-                    decided_at=decided_at,
-                    note=merged_note,
-                )
-                .execution_options(synchronize_session=False)
+                if self.writer is not None:
+                    await self.writer.chain.append_many(session, tx.audits)
+        except BaseException as exc:
+            for undo in reversed(tx.after_rollback if tx is not None else []):
+                try:
+                    undo()
+                except Exception:
+                    logger.exception("[Cases] onay #%s geri alma adımı başarısız", approval_id)
+            if isinstance(exc, ConfigConflict):
+                raise CaseError(
+                    "yapılandırma eşzamanlı değişti — onay uygulanmadı, tekrar deneyin"
+                ) from None
+            if isinstance(exc, IntegrityError):
+                raise CaseError("onay uygulanamadı: veri çakışması — tekrar deneyin") from None
+            if isinstance(exc, SQLAlchemyError | ConnectionError | TimeoutError):
+                logger.warning("[Cases] onay #%s uygulanamadı: %s", approval_id, type(exc).__name__)
+                raise ApprovalUnavailableError(
+                    "veritabanı şu an kullanılamıyor — onay uygulanmadı, tekrar deneyin"
+                ) from exc
+            raise
+        for effect in tx.after_commit:
+            try:
+                pending = effect()
+                if pending is not None:
+                    await pending
+            except Exception:  # committed + published: the config poller converges
+                logger.exception("[Cases] onay #%s sonrası yerel uygulama başarısız", approval_id)
+        return {**snapshot, "result": outcome}
+
+    async def _decide_in(
+        self,
+        tx: ApprovalTx,
+        approval_id: int,
+        *,
+        approve: bool,
+        actor: str,
+        note: str,
+        role: str | None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        session = tx.session
+        approval = await session.get(Approval, approval_id)
+        if approval is None:
+            raise CaseNotFoundError(approval_id)
+        if approval.status != "BEKLIYOR":
+            raise CaseError("onay talebi zaten sonuçlandı")
+        if approval.requested_by.casefold() == actor.casefold():
+            raise MakerCheckerError("dört göz ilkesi: talebi açan kişi onaylayamaz")
+        minimum = APPROVAL_MIN_ROLE.get(approval.kind, "admin")
+        if role is not None and ROLE_RANK.get(role, -1) < ROLE_RANK[minimum]:
+            raise MakerCheckerError(f"{approval.kind} onayı için en az '{minimum}' rolü gerekir")
+        decided_at = utcnow()
+        merged_note = (approval.note + "\n" + note).strip() if note else approval.note
+        snapshot = {
+            **_approval_dict(approval),
+            "status": "ONAYLANDI" if approve else "REDDEDILDI",
+            "decided_by": actor,
+            "decided_at": decided_at,
+            "note": merged_note,
+        }
+        claimed = await session.execute(
+            update(Approval)
+            .where(Approval.id == approval_id, Approval.status == "BEKLIYOR")
+            .values(
+                status=snapshot["status"],
+                decided_by=actor,
+                decided_at=decided_at,
+                note=merged_note,
             )
-            if getattr(claimed, "rowcount", 0) != 1:
-                raise CaseError("onay talebi zaten sonuçlandı")
-            if approval.kind == "SIB" and not approve:
-                case = await self._case(session, int(approval.target_id))
-                case.sib_status = "SIB_TASLAK"
-                session.add(self._event(case.id, "SIB_REJECTED", actor, note=note))
-            snapshot = {
-                **_approval_dict(approval),
-                "status": "ONAYLANDI" if approve else "REDDEDILDI",
-                "decided_by": actor,
-                "decided_at": decided_at,
-                "note": merged_note,
-            }
+            .execution_options(synchronize_session=False)
+        )
+        if getattr(claimed, "rowcount", 0) != 1:
+            raise CaseError("onay talebi zaten sonuçlandı")
         outcome: dict[str, Any] = {}
+        if not approve and approval.kind == "SIB":
+            case = await self._case(session, int(approval.target_id))
+            case.sib_status = "SIB_TASLAK"
+            session.add(self._event(case.id, "SIB_REJECTED", actor, note=note))
         if approve:
             handler = self.handlers.get(snapshot["kind"])
             if handler is not None:
-                try:
-                    outcome = await handler(snapshot, actor)
-                except BaseException:
-                    await self._reopen_approval(approval_id)
-                    raise
-        await self._audit(
-            "APPROVAL_DECIDED",
-            str(approval_id),
-            actor,
-            f"Onay {'verildi' if approve else 'reddedildi'}: {snapshot['kind']} → "
-            f"{snapshot['target_id']}",
-            kind=snapshot["kind"],
-            approved=approve,
+                outcome = await handler(snapshot, actor, tx)
+        tx.audits.append(
+            AuditEntry(
+                event_type="APPROVAL_DECIDED",
+                entity_type="approval",
+                entity_id=str(approval_id),
+                actor=actor,
+                reason=f"Onay {'verildi' if approve else 'reddedildi'}: {snapshot['kind']} → "
+                f"{snapshot['target_id']}",
+                payload={"kind": snapshot["kind"], "approved": approve},
+            )
         )
-        return {**snapshot, "result": outcome}
+        return snapshot, outcome
 
-    async def _reopen_approval(self, approval_id: int) -> None:
-        """The approval handler failed: the request goes back to ``BEKLIYOR``
-        (no half-applied "ONAYLANDI" without its effect)."""
-        try:
-            async with self.db.transaction() as session:
-                await session.execute(
-                    update(Approval)
-                    .where(Approval.id == approval_id, Approval.status == "ONAYLANDI")
-                    .values(status="BEKLIYOR", decided_by=None, decided_at=None)
-                    .execution_options(synchronize_session=False)
-                )
-        except Exception:
-            logger.exception("[Cases] onay #%s geri alınamadı", approval_id)
-
-    async def _approve_unblock(self, approval: dict[str, Any], actor: str) -> dict[str, Any]:
+    async def _approve_unblock(
+        self, approval: dict[str, Any], actor: str, tx: ApprovalTx
+    ) -> dict[str, Any]:
         if self.accounts is None:
             raise CaseError("hesap servisi yok")
+        accounts = self.accounts
         target = str(approval["payload"].get("to_status") or "AKTIF")
         customer_id = approval["target_id"]
-        await self.accounts.set_by_analyst(
-            customer_id,
-            target,
-            actor=actor,
-            reason=f"Maker-checker onayı #{approval['id']} (talep: {approval['requested_by']})",
-        )
+        try:
+            result, audit = await accounts.transition_in(
+                tx.session,
+                customer_id,
+                target,
+                actor=actor,
+                reason=f"Maker-checker onayı #{approval['id']} (talep: {approval['requested_by']})",
+            )
+        except AccountNotFoundError:
+            raise CaseError("müşteri hesabı bulunamadı ya da eşzamanlı değişti") from None
+        tx.audits.append(audit)
+        tx.on_commit(lambda: accounts.committed(result))
         return {"customer_id": customer_id, "hesap_durumu": target}
 
-    async def _approve_sib(self, approval: dict[str, Any], actor: str) -> dict[str, Any]:
+    async def _approve_sib(
+        self, approval: dict[str, Any], actor: str, tx: ApprovalTx
+    ) -> dict[str, Any]:
         case_id = int(approval["target_id"])
         reference = f"SIB-{utcnow():%Y%m%d}-{secrets.token_hex(3).upper()}"
-        async with self.db.transaction() as session:
-            case = await self._case(session, case_id)
-            case.sib_status = "SIB_ONAYLANDI"
-            case.status = "SIB_GONDERILDI"
-            case.updated_at = utcnow()
-            draft = dict(case.sib_draft or {})
-            draft["masak_reference"] = reference
-            draft["submitted_at"] = utcnow().isoformat()
-            case.sib_draft = draft
-            session.add(self._event(case_id, "SIB_SUBMITTED", actor, reference=reference))
-        metrics.SIB_SUBMITTED.inc()
+        case = await self._case(tx.session, case_id)
+        case.sib_status = "SIB_ONAYLANDI"
+        case.status = "SIB_GONDERILDI"
+        case.updated_at = utcnow()
+        draft = dict(case.sib_draft or {})
+        draft["masak_reference"] = reference
+        draft["submitted_at"] = utcnow().isoformat()
+        case.sib_draft = draft
+        tx.session.add(self._event(case_id, "SIB_SUBMITTED", actor, reference=reference))
+        tx.on_commit(metrics.SIB_SUBMITTED.inc)
         return {"case_id": case_id, "masak_reference": reference}
 
     # --- SLA monitor (worker job) --------------------------------------------------------------

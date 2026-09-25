@@ -39,7 +39,7 @@ from app.bus.redis_streams import RedisStreamsBus
 from app.bus.writebehind import WriteBehindQueue
 from app.cases.governance import DecisionLogicGovernance
 from app.cases.outbox import CaseOutboxReplayer, needs_outbox
-from app.cases.service import OPEN_STATUSES, CaseService
+from app.cases.service import OPEN_STATUSES, ApprovalTx, CaseError, CaseService
 from app.config import Settings, get_settings
 from app.copilot.agent import CopilotAgent
 from app.copilot.schemas import SibDraft
@@ -64,7 +64,7 @@ from app.idempotency import (
 )
 from app.llm.config import LLMSettings
 from app.llm.service import LLMService, OutputRejected
-from app.ml.registry import ModelRegistry
+from app.ml.registry import ModelRegistry, RegistryError
 from app.monitoring import metrics
 from app.scenarios import ScenarioFactory
 from app.scoring import rule_store
@@ -173,18 +173,13 @@ class Pipeline:
         self.effects = WriteBehindQueue(queue_size=settings.write_behind_queue_size)
         self._live: set[asyncio.Queue[dict[str, Any]]] = set()
         self.recent_live: deque[dict[str, Any]] = deque(maxlen=2000)
-        self.cases.handlers["MODEL_PROMOTE"] = self._approve_promotion
-        self.governance = DecisionLogicGovernance(
-            db,
-            analyst.engine,
-            writer,
-            reload_rules=self.reload_rules,
-            set_thresholds=self.set_thresholds,
-        )
-        self.cases.handlers["RULE_CHANGE"] = self.governance.apply_rule_change
-        self.cases.handlers["POLICY_THRESHOLDS"] = self.governance.apply_thresholds
         # H3: thresholds / rules / champion model are shared through the DB
         self.config = ConfigSync(db)
+        self.cases.handlers["MODEL_PROMOTE"] = self._approve_promotion
+        # A5: approval handlers publish inside the approval transaction
+        self.governance = DecisionLogicGovernance(db, analyst.engine, writer, config=self.config)
+        self.cases.handlers["RULE_CHANGE"] = self.governance.apply_rule_change
+        self.cases.handlers["POLICY_THRESHOLDS"] = self.governance.apply_thresholds
         self.config.register("thresholds", self._apply_thresholds, restore=True)
         self.config.register("rules", self._apply_rules)
         self.config.register("models", self._apply_models)
@@ -447,18 +442,19 @@ class Pipeline:
     async def set_thresholds(
         self, step_up: float, hold: float, block: float, *, actor: str = "system"
     ) -> Thresholds:
-        """Change the policy thresholds here and publish them to every worker."""
-        new = self.engine.policy.set_thresholds(step_up, hold, block)  # validates
+        """Publish new policy thresholds to every worker, then apply them here
+        (A5: a failed publish leaves this worker unchanged, not diverged)."""
+        new = Thresholds(step_up, hold, block)  # validates
         await self.config.publish("thresholds", new.as_dict(), actor=actor)
-        return new
+        return self.engine.policy.set_thresholds(new.step_up, new.hold, new.block)
 
     async def reload_rules(self, *, publish: bool = True, actor: str = "system") -> str:
         """Rebuild the rule set from the rule table (and tell the other workers)."""
         async with self.db.session() as session:
             ruleset = rule_store.build_ruleset(await rule_store.load_rules(session))
-        self.engine.set_ruleset(ruleset)
-        if publish:
+        if publish:  # A5: publish first, so a failure leaves no local divergence
             await self.config.publish("rules", {"version": ruleset.version}, actor=actor)
+        self.engine.set_ruleset(ruleset)
         return ruleset.version
 
     async def _apply_thresholds(self, value: dict[str, Any]) -> None:
@@ -488,12 +484,33 @@ class Pipeline:
             await self.config.publish("models", dict(loaded))
         return loaded
 
-    async def _approve_promotion(self, approval: dict[str, Any], actor: str) -> dict[str, Any]:
+    async def _approve_promotion(
+        self, approval: dict[str, Any], actor: str, tx: ApprovalTx
+    ) -> dict[str, Any]:
+        """A5: the ``models`` publish commits with the approval; the registry
+        file is switched last (restored if the transaction does not commit)
+        and the engine reloads only after the commit."""
         version = str(approval["target_id"])
-        ModelRegistry(self.settings.resolved_models_dir).promote(version)
-        loaded = await self.reload_models()
-        logger.warning("[Models] %s champion yapıldı (onaylayan %s)", version, actor)
-        return loaded
+        registry = ModelRegistry(self.settings.resolved_models_dir)
+        before = registry.read()
+        if version not in before.get("models", {}):
+            raise CaseError(f"model bulunamadı: {version}")
+        published = await self.config.publish_in(
+            tx.session, "models", {"champion": version}, actor=str(approval["requested_by"])
+        )
+        try:
+            registry.promote(version)
+        except RegistryError as exc:
+            raise CaseError(f"model terfi edilemedi: {exc}") from None
+        tx.on_rollback(lambda: registry.restore(before))
+
+        async def _reload() -> None:
+            await self.reload_models(publish=False)
+            self.config.mark_seen("models", published)
+            logger.warning("[Models] %s champion yapıldı (onaylayan %s)", version, actor)
+
+        tx.on_commit(_reload)
+        return {"champion": version, "previous_champion": before.get("champion")}
 
     # --- live dashboard feed ----------------------------------------------------------
     def subscribe_live(self) -> asyncio.Queue[dict[str, Any]]:

@@ -28,6 +28,7 @@ from typing import Any
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import utcnow
 from app.db.database import Database
@@ -73,42 +74,46 @@ class ConfigSync:
         for _ in range(max(1, attempts)):
             try:
                 async with self.db.transaction() as session:
-                    current = (
-                        await session.execute(
-                            select(RuntimeConfig.version).where(RuntimeConfig.key == key)
-                        )
-                    ).scalar_one_or_none()
-                    if current is None:
-                        session.add(
-                            RuntimeConfig(
-                                key=key,
-                                value=value,
-                                version=1,
-                                updated_by=actor,
-                                updated_at=utcnow(),
-                            )
-                        )
-                        version = 1
-                    else:
-                        result = await session.execute(
-                            update(RuntimeConfig)
-                            .where(RuntimeConfig.key == key, RuntimeConfig.version == current)
-                            .values(
-                                value=value,
-                                version=current + 1,
-                                updated_by=actor,
-                                updated_at=utcnow(),
-                            )
-                        )
-                        if (result.rowcount or 0) != 1:  # type: ignore[attr-defined]
-                            continue  # another worker published in between
-                        version = int(current) + 1
+                    version = await self.publish_in(session, key, value, actor=actor)
+            except ConfigConflict:
+                continue  # another worker published in between
             except IntegrityError:  # two first publishes raced on the insert
                 continue
-            self.seen[key] = max(self.seen.get(key, 0), version)
+            self.mark_seen(key, version)
             logger.info("[Config] %s v%d yayınlandı (%s)", key, version, actor)
             return version
         raise ConfigConflict(key)
+
+    async def publish_in(
+        self, session: AsyncSession, key: str, value: dict[str, Any], *, actor: str = "system"
+    ) -> int:
+        """Compare-and-set ``key`` to its next version inside the caller's
+        transaction (A5: a maker-checker approval publishes atomically with its
+        own writes). Raises :class:`ConfigConflict` if a concurrent publisher
+        won; the caller calls :meth:`mark_seen` after the commit."""
+        current = (
+            await session.execute(select(RuntimeConfig.version).where(RuntimeConfig.key == key))
+        ).scalar_one_or_none()
+        if current is None:
+            session.add(
+                RuntimeConfig(
+                    key=key, value=value, version=1, updated_by=actor, updated_at=utcnow()
+                )
+            )
+            await session.flush()
+            return 1
+        result = await session.execute(
+            update(RuntimeConfig)
+            .where(RuntimeConfig.key == key, RuntimeConfig.version == current)
+            .values(value=value, version=current + 1, updated_by=actor, updated_at=utcnow())
+        )
+        if (result.rowcount or 0) != 1:  # type: ignore[attr-defined]
+            raise ConfigConflict(key)
+        return int(current) + 1
+
+    def mark_seen(self, key: str, version: int) -> None:
+        """This worker applied (or published) ``version`` of ``key``."""
+        self.seen[key] = max(self.seen.get(key, 0), version)
 
     async def load(self) -> int:
         """Start-up: restore persisted keys (thresholds), mark the rest as seen."""
