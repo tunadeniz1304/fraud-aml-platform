@@ -11,7 +11,10 @@ positive loop). Both paths now call :func:`should_learn`.
 
 from __future__ import annotations
 
-from typing import Literal
+import hashlib
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from typing import Any, Literal
 
 Feedback = Literal["step_up_passed", "step_up_failed", "clean", "fraud"]
 
@@ -36,13 +39,63 @@ def should_learn(decision: str, feedback: Feedback | None = None) -> bool:
     return decision == "ALLOW"
 
 
-def simulated_feedback(decision: str, label: int) -> Feedback | None:
-    """Feedback the backfill assumes for a historical event.
+#: step-up (OTP) pass rate of a fraudulent payment by typology. In an APP scam
+#: the *victim* authorises the payment and passes the OTP; mules and smurfs
+#: operate their own accounts. Only account takeovers / card testing face a
+#: challenge they mostly fail (SIM swap and OTP phishing still get through).
+DEFAULT_FRAUD_PASS_RATES: dict[str, float] = {"app": 0.9, "mule": 1.0, "structuring": 1.0}
 
-    Mirrors what production receives right after scoring: a ``STEP_UP``
-    challenge is passed by the genuine customer and failed by a fraudster.
-    Held / blocked events wait for an analyst and teach nothing in replay.
+
+@dataclass(frozen=True)
+class StepUpOutcomeModel:
+    """Non-oracle step-up (OTP) outcome for offline replays.
+
+    Before v3 the backfill and the evaluation replays read the step-up result
+    off the label (genuine → passed, fraud → failed): a perfect oracle that
+    taught every legitimate new device and never a fraudulent one, which
+    inflated replay metrics. The outcome is now drawn from a fixed model that
+    does not look at any classifier output:
+
+    * a genuine customer fails / abandons the challenge with probability
+      ``genuine_fail_rate`` (no SMS, lost phone, gives up);
+    * a fraudulent payment passes with ``fraud_pass_rate`` (per-typology
+      overrides in ``typology_pass_rates``).
+
+    The draw is a hash of ``(seed, transaction_id)``, so backfill, parity
+    replay and evaluation replays see the same outcome for the same event.
+    The ground truth is the generator's truth (a noisy label is undone with the
+    ``label_noise`` flag): the OTP is passed by whoever is actually paying,
+    not by whatever the chargeback label later says.
     """
-    if decision == "STEP_UP":
-        return "step_up_passed" if label == 0 else "step_up_failed"
-    return None
+
+    fraud_pass_rate: float = 0.30
+    genuine_fail_rate: float = 0.05
+    typology_pass_rates: Mapping[str, float] = field(
+        default_factory=lambda: dict(DEFAULT_FRAUD_PASS_RATES)
+    )
+    seed: int = 0
+
+    def _uniform(self, key: str) -> float:
+        digest = hashlib.blake2b(f"otp:{self.seed}:{key}".encode(), digest_size=8).digest()
+        return int.from_bytes(digest, "big") / 2**64
+
+    def feedback(self, decision: str, tx: Mapping[str, Any]) -> Feedback | None:
+        """Outcome of the challenge a ``STEP_UP`` decision triggers.
+
+        Held / blocked events wait for an analyst and teach nothing in replay.
+        """
+        if decision != "STEP_UP":
+            return None
+        fraud = int(tx.get("label", 0)) ^ int(bool(tx.get("label_noise")))
+        u = self._uniform(str(tx.get("transaction_id", "")))
+        if fraud:
+            typology = str(tx.get("typology") or "")
+            passed = u < self.typology_pass_rates.get(typology, self.fraud_pass_rate)
+        else:
+            passed = u >= self.genuine_fail_rate
+        return "step_up_passed" if passed else "step_up_failed"
+
+
+#: the outcome model every offline replay uses (training backfill, parity
+#: check, public-data and synthetic evaluation replays)
+DEFAULT_STEP_UP_MODEL = StepUpOutcomeModel()

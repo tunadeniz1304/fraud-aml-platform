@@ -37,7 +37,7 @@ import numpy as np
 
 from app.features.definitions import FEATURES, describe
 from app.features.extractor import CustomerDirectory, FeatureExtractor
-from app.features.learning import simulated_feedback
+from app.features.learning import DEFAULT_STEP_UP_MODEL
 from app.features.store import MemoryFeatureStore
 from app.ml import metrics as M
 from app.ml.anomaly import ECODScorer, FastIsolationForest, QuantileCalibrator
@@ -100,15 +100,44 @@ def model_feature_names() -> list[str]:
     return list(FEATURES)
 
 
-def replay_engine(customers: Sequence[dict[str, Any]], ruleset: RuleSet) -> Any:
-    """Model-free engine used by the backfill and the parity check."""
+def replay_engine(
+    customers: Sequence[dict[str, Any]],
+    ruleset: RuleSet,
+    *,
+    accounts_are_customer_ids: bool = False,
+) -> Any:
+    """Model-free engine shared by the backfill, the parity check and the replays.
+
+    Same rules, policy thresholds and the burst + entity-graph signals as the
+    serving engine (:func:`app.scoring.engine.build_signals`), so the step-up
+    decisions that drive profile learning match production (M15). Not
+    included, by necessity: the model being trained (chicken-and-egg), the
+    APP/CoP signal (its payee registry is not part of the training input) and
+    the stateful online-anomaly / consortium signals.
+
+    ``accounts_are_customer_ids`` links a beneficiary id to the customer with
+    the same id (PaySim's ``nameDest`` reuses ``C…`` customer ids).
+    """
     from app.core.sanctions import SanctionScreener
+    from app.graph.entity_graph import EntityGraph
+    from app.graph.signal import GraphSignal
     from app.scoring.engine import ScoringEngine
     from app.scoring.policy import PolicyEngine
+    from app.scoring.signals import BurstSignal
 
+    graph = EntityGraph()
+    for record in customers:
+        cid = str(record["customer_id"])
+        iban = cid if accounts_are_customer_ids else str(record.get("iban") or "")
+        graph.register_customer(cid, str(record.get("name", "")), iban)
     extractor = FeatureExtractor(MemoryFeatureStore(), CustomerDirectory(customers))
     return ScoringEngine(
-        extractor, ruleset=ruleset, policy=PolicyEngine(None), sanctions=SanctionScreener()
+        extractor,
+        ruleset=ruleset,
+        policy=PolicyEngine(None),
+        sanctions=SanctionScreener(),
+        signals=[BurstSignal(), GraphSignal(graph)],
+        graph=graph,
     )
 
 
@@ -141,7 +170,7 @@ async def backfill(
                 rule_score=result.rules.score if result.rules else ruleset.score_only(feats),
             )
         )
-        await engine.commit(result, feedback=simulated_feedback(result.decision, label))
+        await engine.commit(result, feedback=DEFAULT_STEP_UP_MODEL.feedback(result.decision, tx))
     return rows
 
 
@@ -163,7 +192,7 @@ async def live_replay_features(
         result = await engine.score(tx)
         out.append([result.extraction.features[n] for n in names])
         await engine.commit(result)
-        feedback = simulated_feedback(result.decision, int(tx.get("label", 0)))
+        feedback = DEFAULT_STEP_UP_MODEL.feedback(result.decision, tx)
         if feedback is not None:
             await engine.apply_feedback(result.transaction_id, feedback)
     return out

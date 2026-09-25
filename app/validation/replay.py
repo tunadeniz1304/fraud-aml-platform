@@ -6,11 +6,14 @@ and the policy layer — without touching any account ("gölge replay"). The
 per-event outputs are kept in compact numpy arrays so the 6.3 M-row PaySim file
 can be replayed in chunks.
 
-Profile learning follows :func:`app.features.learning.should_learn` with the
-step-up outcome simulated from the label (identical to the training backfill),
-so the features are the ones the live engine would compute (online/offline
-parity). Analyst fraud labels are **not** fed back into the graph during the
-replay: that would leak the test labels.
+Profile learning follows :func:`app.features.learning.should_learn`. The
+step-up outcome comes from the non-oracle
+:data:`app.features.learning.DEFAULT_STEP_UP_MODEL` (fraudsters sometimes pass
+the OTP, genuine customers sometimes fail it; the draw never looks at a
+classifier score) — identical to the training backfill, so the features are
+the ones the live engine would compute (online/offline parity). Analyst fraud
+labels are **not** fed back into the graph during the replay: that would leak
+the test labels.
 """
 
 from __future__ import annotations
@@ -24,17 +27,10 @@ from typing import Any
 
 import numpy as np
 
-from app.core.sanctions import SanctionScreener
-from app.features.extractor import CustomerDirectory, FeatureExtractor
-from app.features.learning import simulated_feedback
-from app.features.store import MemoryFeatureStore
-from app.graph.entity_graph import EntityGraph
-from app.graph.signal import GraphSignal
-from app.ml.training import model_feature_names
+from app.features.learning import DEFAULT_STEP_UP_MODEL, StepUpOutcomeModel
+from app.ml.training import model_feature_names, replay_engine
 from app.scoring.engine import ScoringEngine
-from app.scoring.policy import PolicyEngine
 from app.scoring.rules import ACTIONS, RuleSet
-from app.scoring.signals import BurstSignal
 
 SIGNALS = ("graph", "burst")
 
@@ -117,27 +113,16 @@ def build_replay_engine(
     *,
     accounts_are_customer_ids: bool = False,
 ) -> ScoringEngine:
-    """Model-free engine with burst + entity-graph signals.
+    """Model-free engine with burst + entity-graph signals (same as the backfill).
 
     ``accounts_are_customer_ids`` links a beneficiary id to the customer with
     the same id (PaySim's ``nameDest`` reuses ``C…`` customer ids), so money
     received by a customer and sent on is visible as pass-through.
     """
-    directory = CustomerDirectory(customers)
-    graph = EntityGraph()
-    for record in customers:
-        cid = str(record["customer_id"])
-        iban = cid if accounts_are_customer_ids else str(record.get("iban") or "")
-        graph.register_customer(cid, str(record.get("name", "")), iban)
-    extractor = FeatureExtractor(MemoryFeatureStore(), directory)
-    return ScoringEngine(
-        extractor,
-        ruleset=ruleset,
-        policy=PolicyEngine(None),
-        sanctions=SanctionScreener(),
-        signals=[BurstSignal(), GraphSignal(graph)],
-        graph=graph,
+    engine: ScoringEngine = replay_engine(
+        customers, ruleset, accounts_are_customer_ids=accounts_are_customer_ids
     )
+    return engine
 
 
 def _epoch(ts: Any) -> float:
@@ -150,6 +135,7 @@ async def replay(
     *,
     expected: int | None = None,
     progress_every: int = 0,
+    step_up: StepUpOutcomeModel = DEFAULT_STEP_UP_MODEL,
 ) -> ReplayResult:
     """Score + commit every event in order and collect the layer inputs."""
     names = model_feature_names()
@@ -180,7 +166,7 @@ async def replay(
             sr = result.signals.get(name)
             sig[name].append(sr.score if sr is not None else 0.0)
         kinds.append(str(tx.get("typology") or ""))
-        await engine.commit(result, feedback=simulated_feedback(result.decision, label))
+        await engine.commit(result, feedback=step_up.feedback(result.decision, tx))
         if progress_every and (i + 1) % progress_every == 0:
             rate = (i + 1) / (time.perf_counter() - started)
             total = f"/{expected}" if expected else ""
