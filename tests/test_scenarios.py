@@ -22,6 +22,7 @@ from app.scenarios import SCENARIOS, ScenarioError, ScenarioFactory
 from app.security.auth import Principal, issue_token
 
 DEMO = BASE_DIR / "data" / "demo"
+LEGACY_CUSTOMERS = BASE_DIR / "data" / "customers.json"
 
 
 @pytest.fixture()
@@ -111,7 +112,7 @@ class TestScenarioFactory:
         assert chosen.customers == ["CUST-S0001"]
 
     def test_mule_ring_needs_ibans(self):
-        directory = CustomerDirectory.from_file(get_settings().resolved_customers_path)
+        directory = CustomerDirectory.from_file(LEGACY_CUSTOMERS)  # no IBANs
         with pytest.raises(ScenarioError, match="IBAN"):
             ScenarioFactory(directory, seed=1).build("mule_ring")
 
@@ -164,6 +165,7 @@ class TestNetworkApi:
 
     def test_scenario_conflict_without_population(self, app_env, monkeypatch):
         monkeypatch.setenv("STREAM_MODE", "off")
+        monkeypatch.setenv("FRAUD_CUSTOMERS_PATH", str(LEGACY_CUSTOMERS))
         get_settings.cache_clear()
         token, _ = issue_token(Principal("analist", "analist", "analist"))
         with TestClient(create_app()) as client:
@@ -180,3 +182,23 @@ async def test_worker_ring_detection_from_db(pipeline):
     await pipeline.writer.flush()
     result = await detect_and_store(pipeline.db)
     assert result["rings"] >= 1 and result["top"].startswith("RING-")
+
+
+def test_random_pick_skips_blocked_accounts():
+    directory = CustomerDirectory.from_file(DEMO / "customers.json")
+    ids = [r["customer_id"] for r in directory.records()]
+    allowed = ids[0]
+    status = {cid: "BLOKE" for cid in ids[1:]}
+    factory = ScenarioFactory(directory, seed=3, account_status=status.get)
+    assert all(factory._pick()["customer_id"] == allowed for _ in range(10))
+    assert factory._chosen(ids[1])["customer_id"] == ids[1]
+
+
+def test_default_dataset_is_the_demo_population(monkeypatch):
+    from app.config import Settings
+
+    for var in ("FRAUD_CUSTOMERS_PATH", "FRAUD_PAYEES_PATH", "FRAUD_TRANSACTIONS_PATH"):
+        monkeypatch.delenv(var, raising=False)
+    s = Settings(_env_file=None)
+    assert s.resolved_customers_path.parent.name == "demo"
+    assert s.resolved_customers_path.exists() and s.resolved_payees_path.exists()

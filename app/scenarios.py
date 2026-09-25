@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import random
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
@@ -74,8 +75,16 @@ class ScenarioFactory:
         *,
         seed: int | None = None,
         now: datetime | None = None,
+        account_status: Callable[[str], str | None] | None = None,
     ) -> None:
-        self.records = customers.records()
+        # Only AKTIF (or unknown) accounts can originate a fresh scenario: a BLOKE
+        # account is stopped before scoring and would not show the expected decision.
+        self._all = customers.records()
+        self.records = [
+            r
+            for r in self._all
+            if account_status is None or (account_status(r["customer_id"]) or "AKTIF") == "AKTIF"
+        ]
         self.rng = random.Random(seed)
         self.now = (now or datetime.now()).replace(microsecond=0)
         self.run = uuid.uuid4().hex[:6].upper() if seed is None else f"S{seed}"
@@ -163,7 +172,7 @@ class ScenarioFactory:
 
     def _chosen(self, customer_id: str | None, **kw: Any) -> dict[str, Any]:
         if customer_id:
-            for r in self.records:
+            for r in self._all:  # an explicit choice is honoured whatever the status
                 if r["customer_id"] == customer_id:
                     return r
             raise ScenarioError(f"müşteri bulunamadı: {customer_id}")

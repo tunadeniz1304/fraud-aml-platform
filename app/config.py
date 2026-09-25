@@ -326,15 +326,15 @@ class Settings(BaseSettings):
 
     @property
     def resolved_payees_path(self) -> Path:
-        return self.payees_path or self.data_dir / "payees.json"
+        return self.payees_path or self.data_dir / "demo" / "payees.json"
 
     @property
     def resolved_customers_path(self) -> Path:
-        return self.customers_path or self.data_dir / "customers.json"
+        return self.customers_path or self.data_dir / "demo" / "customers.json"
 
     @property
     def resolved_transactions_path(self) -> Path:
-        return self.transactions_path or self.data_dir / "transactions.json"
+        return self.transactions_path or self.data_dir / "demo" / "transactions.json"
 
     @model_validator(mode="after")
     def _default_demo_users(self) -> Settings:

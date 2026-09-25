@@ -322,7 +322,7 @@ class Pipeline:
 
     async def run_scenario(self, name: str, customer_id: str | None = None) -> dict[str, Any]:
         """Inject an attack scenario and report the decisions of its key transfers."""
-        factory = ScenarioFactory(self.customers)
+        factory = ScenarioFactory(self.customers, account_status=self.accounts.get_status)
         scenario = factory.build(name, customer_id)
         results: dict[str, dict[str, Any]] = {}
         for tx in scenario.transactions:

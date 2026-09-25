@@ -14,6 +14,12 @@ os.environ["ENVIRONMENT"] = "test"
 os.environ["LLM_MODE"] = "demo"
 os.environ["VECTOR_STORE"] = "off"
 os.environ["STREAM_MODE"] = "off"
+# Unit tests use the small hand-written population (CUST-0001..5); the app
+# itself defaults to data/demo.
+_DATA = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+os.environ["FRAUD_CUSTOMERS_PATH"] = os.path.join(_DATA, "customers.json")
+os.environ["FRAUD_TRANSACTIONS_PATH"] = os.path.join(_DATA, "transactions.json")
+os.environ["FRAUD_PAYEES_PATH"] = os.path.join(_DATA, "payees.json")  # absent: no payees
 for _name in (
     "LLM_API_KEY",
     "DEEPSEEK_API_KEY",
