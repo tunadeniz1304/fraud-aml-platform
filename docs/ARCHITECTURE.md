@@ -16,7 +16,7 @@
 |---|---|---|
 | Feature store | `app/features/` | 48 feature, online = offline (eğitimde aynı fonksiyonlar), Redis veya bellek. `customer_lock` aynı müşterinin işlemlerini sıralar; Redis commit'i `transaction_id`'ye göre idempotent tek bir Lua betiğidir (tekrar teslimde sayaçlar iki kez artmaz) |
 | Kural DSL | `app/scoring/rules.py`, `rules/core.yaml` | AST whitelist, `eval` yok; noisy-OR; action floor; DB'de versiyonlu |
-| ML | `app/ml/` | Champion `fraud_gbm_v3`, challenger `fraud_gbm_v4` (gölge); parmak izinden arındırılmış sentetik üreticiyle eğitildi. LightGBM + TreeSHAP; IForest (dizi tabanlı, sklearn ile birebir); ECOD; lojistik stacker |
+| ML | `app/ml/` | Champion `fraud_gbm_v5`, challenger `fraud_gbm_v6` (gölge); parmak izinden arındırılmış, asimetrik etiket gürültülü sentetik üreticiyle eğitildi. LightGBM + TreeSHAP; IForest (dizi tabanlı, sklearn ile birebir); ECOD; negatif olmayan, kalibre edilmiş lojistik stacker |
 | Graf | `app/graph/` | pass-through, döngü, fraud yakınlığı, union-find halka, Louvain + PageRank |
 | APP / CoP | `app/app_scam/` | alıcı doğrulama, sosyal mühendislik sinyalleri, dinamik uyarı |
 | Online profil | `app/profile/online.py` | river Half-Space Trees, yüzdelik kalibrasyon |

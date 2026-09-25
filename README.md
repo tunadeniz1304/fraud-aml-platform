@@ -62,7 +62,7 @@ Ayrıntı: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · kararlar: [`docs/ad
 | Vaka yönetimi | Alert→vaka gruplama (müşteri/halka), iç SLA 4 saat, MASAK 10 iş günü (`holidays.Turkey`), kanıt ekleri, maker-checker, sunucu taraflı sayfalı ve filtreli kuyruk |
 | Açıklanabilirlik | Türkçe reason code (kural/ML/sinyal/politika), TreeSHAP şelalesi |
 | Copilot | 7 araçlı tool-use döngüsü, atıf doğrulamalı özet, karar önerisi, ŞİB taslağı (PDF/JSON), SSE sohbet |
-| Model yönetişimi | Champion `fraud_gbm_v3` / challenger `fraud_gbm_v4` gölge skorlama, çevrimiçi/çevrimdışı karşılaştırma, PSI drift, maker-checker terfi, aktif öğrenme kuyruğu |
+| Model yönetişimi | Champion `fraud_gbm_v5` / challenger `fraud_gbm_v6` gölge skorlama, çevrimiçi/çevrimdışı karşılaştırma, PSI drift, maker-checker terfi, aktif öğrenme kuyruğu |
 | Uyum desteği | ŞİB taslağı + SLA sayacı, KVKK maskeleme, hash-zincirli audit (`GET /api/audit/verify`). Kapsam ve sınırlar: [`docs/COMPLIANCE.md`](docs/COMPLIANCE.md) |
 
 **Gecikme.** "p99 < 50 ms" hedefi yalnızca **motor (skor motoru, süreç içi)** içindir: `scripts/load_test.py --mode engine` ile ölçülür, HTTP ve ağ katmanı dahil değildir. HTTP üzerinden tek istemcili ve eşzamanlı ölçümler [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) içinde ayrı tablolarda verilir. Bütün ölçümler tek düğümde yapıldı.
@@ -78,10 +78,10 @@ Aşağıdaki desenler kamuya açık ürün anlatımlarından esinlenmiştir. Ani
 ## Sınırlamalar
 
 - **Gerçek banka verisi yok.** Modeller seed'li sentetik veriyle eğitildi. Doğrulama halka açık verilerle yapıldı ([`docs/VALIDATION_REPORT.md`](docs/VALIDATION_REPORT.md), [`docs/DATA.md`](docs/DATA.md)):
-  - **PaySim** (sentetik, ancak gerçek mobil para kayıtlarına göre kalibre edilmiş bir simülasyon), %10 alıcı örneği, test dönemi: tek başına GBM PR-AUC **0.4661**, tam hat (`full`) PR-AUC **0.4968**. %1 alarm bütçesinde recall 0.5342, precision 0.4164. Test dönemindeki 219 fraud işleminin 147'si ALLOW aldı.
-  - **Sentetik veri:** eski üretici etiketi cihaz kimliğine sızdırıyordu; eski 0.971 PR-AUC bu sızıntıdan geliyordu. Parmak izleri temizlendikten sonra tam hat PR-AUC **0.6121**. Champion `fraud_gbm_v3`'ün hibrit holdout PR-AUC'si 0.558.
-  - **Elliptic** (graf modülü): LightGBM `all` illicit F1 **0.8149**. Yalnız yapısal graf özellikleriyle F1 **0.1158**, `all+graph` 0.7903; graf özellikleri katkı sağlamadı.
-  - **ULB** kredi kartı: GBM PR-AUC 0.7969, anomali eklenen hibrit 0.7704.
+  - **PaySim** (sentetik, ancak gerçek mobil para kayıtlarına göre kalibre edilmiş bir simülasyon), %10 alıcı örneği, test dönemi: tek başına GBM PR-AUC **0.3732**, tam hat (`full`) PR-AUC **0.3919** [0.3463, 0.4417]. %1 alarm bütçesinde recall 0.5471 [0.5026, 0.5975], precision 0.2186. Test dönemindeki 382 fraud işleminin 280'i ALLOW aldı (eşikler PaySim'e göre ayarlanmadı).
+  - **Sentetik veri:** eski üretici etiketi cihaz kimliğine sızdırıyordu; eski 0.971 PR-AUC bu sızıntıdan geliyordu. Parmak izleri temizlendikten ve asimetrik etiket gürültüsü eklendikten sonra tek başına GBM PR-AUC **0.8423**, tam hat **0.8295**. Champion `fraud_gbm_v5`'in hibrit test PR-AUC'si 0.8355 (Brier 0.00662, ECE 0.00378). Sentetik sonuçlar üreticinin öğrenilebilirliğini gösterir, gerçek performansı değil.
+  - **Elliptic** (graf modülü): LightGBM `all` illicit F1 **0.7984** [0.7798, 0.817]. Yalnız yapısal graf özellikleriyle F1 **0.1177**, `all+graph` 0.7891; graf özellikleri katkı sağlamadı.
+  - **ULB** kredi kartı: GBM PR-AUC 0.7335 [0.6092, 0.8451], anomali eklenen hibrit 0.7091; fark anlamlı değil.
 - **Davranışsal biyometri simüle ediliyor.** Yazma ritmi, yapıştırma, oturum süresi gibi sinyaller simülatörden gelir, gerçek bir istemci SDK'sından gelmez.
 - **Konsorsiyum bir demodur:** tuzlu SHA-256 hash ile paylaşılan kara liste ve numpy FedAvg. Gerçek kurumlar arası paylaşım yok.
 - **GNN yok.** Graf modülü kural ve istatistik tabanlıdır (networkx). GraphSAGE denemesi yapılmadı.
