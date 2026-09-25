@@ -65,7 +65,12 @@ async def _session_principal(request: Request, token: str) -> Principal:
     already issued, not only after they expire. The break-glass ADMIN_TOKEN
     has no directory entry and is not checked there.
     """
-    principal = principal_from_token(token)
+    return await _revalidate(request, principal_from_token(token))
+
+
+async def _revalidate(request: Request, principal: Principal) -> Principal:
+    """Revocation + user-directory check for a JWT-derived principal (also
+    applied to a principal redeemed from an SSE ticket)."""
     if principal.via != "jwt":
         return principal
     if await REVOKED.is_revoked(principal.token_id):
@@ -108,7 +113,9 @@ async def stream_principal(
     principal = await TICKETS.redeem(ticket) if ticket else None
     if principal is None:
         raise _unauthorized("Geçerli bir SSE bileti gerekli (POST /api/stream/ticket)")
-    return _bind(request, principal)
+    # the ticket carries the issuing token's jti: a logout (revocation) or a
+    # removed / demoted user between issue and redeem is honoured here too
+    return _bind(request, await _revalidate(request, principal))
 
 
 def require_role(minimum: Role) -> Callable[..., Awaitable[Principal]]:

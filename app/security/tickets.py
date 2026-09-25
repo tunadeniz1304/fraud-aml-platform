@@ -53,6 +53,10 @@ class TicketStore:
                     "role": principal.role,
                     "display_name": principal.display_name,
                     "via": principal.via,
+                    # kept so a redeemed ticket can be checked against the
+                    # jti denylist (logout revokes the SSE ticket too)
+                    "token_id": principal.token_id,
+                    "expires_at": principal.expires_at,
                 }
             )
             await redis.set(_PREFIX + ticket, body, ex=ttl)
@@ -72,7 +76,12 @@ class TicketStore:
                 return None
             data = json.loads(raw)
             return Principal(
-                data["username"], data["role"], data.get("display_name", ""), data.get("via", "jwt")
+                data["username"],
+                data["role"],
+                data.get("display_name", ""),
+                data.get("via", "jwt"),
+                token_id=str(data.get("token_id", "")),
+                expires_at=int(data.get("expires_at", 0)),
             )
         with self._lock:
             entry = self._tickets.pop(ticket, None)  # single use
