@@ -31,6 +31,8 @@ class FeatureStateStore(Protocol):
 
     async def commit(self, tx: TxView, profile: ProfileState) -> None: ...
 
+    async def put_profile(self, customer_id: str, profile: ProfileState) -> None: ...
+
     async def close(self) -> None: ...
 
 
@@ -126,6 +128,9 @@ class MemoryFeatureStore:
             )
         self.profiles.touch(tx.customer_id, profile)
 
+    async def put_profile(self, customer_id: str, profile: ProfileState) -> None:
+        self.profiles.touch(customer_id, profile)
+
     async def close(self) -> None:
         return None
 
@@ -201,6 +206,11 @@ class RedisFeatureStore:
             pipe.expire(dc, int(WEEK + DAY))
         pipe.set(self._k("prof", tx.customer_id), json.dumps(profile.to_dict()), ex=PROFILE_TTL_S)
         await pipe.execute()
+
+    async def put_profile(self, customer_id: str, profile: ProfileState) -> None:
+        await self.redis.set(
+            self._k("prof", customer_id), json.dumps(profile.to_dict()), ex=PROFILE_TTL_S
+        )
 
     async def close(self) -> None:
         return None

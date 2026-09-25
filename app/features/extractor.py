@@ -105,3 +105,12 @@ class FeatureExtractor:
             profile = learn(profile, extraction.tx, alpha_min=get_settings().profile_alpha)
         await self.store.commit(extraction.tx, profile)
         return profile
+
+    async def learn_event(self, tx: TxView) -> ProfileState:
+        """Late learning from an already committed event (step-up / analyst feedback)."""
+        state = await self.store.snapshot(tx)
+        customer = self.customers.get(tx.customer_id) or CustomerStatic(tx.customer_id)
+        profile = state.profile or self._initial_profile(customer)
+        profile = learn(profile, tx, alpha_min=get_settings().profile_alpha)
+        await self.store.put_profile(tx.customer_id, profile)
+        return profile

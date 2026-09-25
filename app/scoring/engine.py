@@ -13,14 +13,17 @@
       → top reason codes
     [+ shadow scoring with the challenger model, never affecting the decision]
 
-``commit(result)`` records the event in the feature windows and lets the
-adaptive profile learn **only** from ALLOW decisions (poisoning protection).
+``commit(result)`` records the event in the feature windows; whether the
+adaptive profile learns is decided by :func:`app.features.learning.should_learn`
+(ALLOW, a passed step-up or an analyst's clean label — poisoning protection).
+Events that are not learned at once wait (bounded) for that late feedback.
 """
 
 from __future__ import annotations
 
 import logging
 import time
+from collections import OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -28,6 +31,8 @@ from typing import TYPE_CHECKING, Any
 from app.config import get_settings
 from app.core.sanctions import SanctionScreener
 from app.features.extractor import CustomerDirectory, Extraction, FeatureExtractor
+from app.features.learning import Feedback, should_learn
+from app.features.types import TxView
 from app.ml.monitoring import DriftMonitor
 from app.ml.registry import ModelBundle, ModelRegistry, ModelScore
 from app.monitoring import metrics
@@ -193,6 +198,8 @@ class ScoringEngine:
         self.model = model
         self.challenger = challenger
         self.signals: list[ExternalSignal] = list(signals)
+        #: events not learned at commit time, waiting for step-up / analyst feedback
+        self.awaiting_feedback: OrderedDict[str, TxView] = OrderedDict()
 
     # --- construction ---------------------------------------------------------------
     @classmethod
@@ -408,14 +415,35 @@ class ScoringEngine:
             policy, rule_reasons, ml, anomaly, signal_reasons, k=settings.reason_top_k
         )
 
-    async def commit(self, result: ScoreResult) -> None:
-        """Record the event; the profile learns only from ALLOW decisions."""
+    async def commit(self, result: ScoreResult, feedback: Feedback | None = None) -> None:
+        """Record the event; learn it now only if :func:`should_learn` allows."""
         if result.extraction is None or not result.scored:
             return
-        trusted = result.decision == "ALLOW"
+        trusted = should_learn(result.decision, feedback)
         await self.extractor.commit(result.extraction, learn_profile=trusted)
         if trusted:
-            for signal in self.signals:
-                learn = getattr(signal, "learn", None)
-                if learn is not None:
-                    learn(result.transaction_id)
+            self._learn_signals(result.transaction_id)
+        elif feedback is None:
+            self.awaiting_feedback[result.transaction_id] = result.extraction.tx
+            limit = get_settings().feedback_pending_max
+            while len(self.awaiting_feedback) > limit:
+                self.awaiting_feedback.popitem(last=False)
+
+    async def apply_feedback(self, transaction_id: str, feedback: Feedback) -> bool:
+        """Late feedback (OTP result, analyst label) for a committed event.
+
+        Returns ``True`` when the profile learned the event (e.g. the new
+        device and payee of a passed step-up are now verified).
+        """
+        tx = self.awaiting_feedback.pop(transaction_id, None)
+        if tx is None or not should_learn("", feedback):
+            return False
+        await self.extractor.learn_event(tx)
+        self._learn_signals(transaction_id)
+        return True
+
+    def _learn_signals(self, transaction_id: str) -> None:
+        for signal in self.signals:
+            learn = getattr(signal, "learn", None)
+            if learn is not None:
+                learn(transaction_id)

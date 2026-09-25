@@ -146,7 +146,6 @@ async def test_a1_rejected_copilot_output_is_recorded_not_silent(pipeline: Any) 
 
 
 # --- A2: STEP_UP false-positive loop ----------------------------------------------------------
-@open_finding("A2")
 async def test_a2_passed_step_up_teaches_the_new_device(pipeline: Any) -> None:
     c = _customers()[5]
     now = datetime.now()
@@ -164,7 +163,6 @@ async def test_a2_passed_step_up_teaches_the_new_device(pipeline: Any) -> None:
 
 
 # --- A3: training / serving parity ------------------------------------------------------------
-@open_finding("A3")
 async def test_a3_backfill_and_live_replay_produce_identical_features() -> None:
     from app.features.learning import should_learn  # single learning rule
 
@@ -173,7 +171,21 @@ async def test_a3_backfill_and_live_replay_produce_identical_features() -> None:
     from app.scoring.rules import load_ruleset
     from app.synthetic.generator import SyntheticConfig, generate
 
-    data = generate(SyntheticConfig(seed=7, customers=40, days=6))
+    data = generate(
+        SyntheticConfig(
+            seed=7,
+            customers=80,
+            days=10,
+            ato_attacks=8,
+            app_scams=8,
+            mule_rings=1,
+            ring_size=4,
+            card_testing=4,
+            structuring=4,
+            sanctions_hits=2,
+        )
+    )
+    assert any(t.get("label") for t in data.transactions)
     ruleset = load_ruleset()
     rows = await backfill(data.customers, data.transactions, ruleset)
     live = await live_replay_features(data.customers, data.transactions, ruleset)

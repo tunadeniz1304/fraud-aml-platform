@@ -186,6 +186,8 @@ class Settings(BaseSettings):
     frontend_dist: Path | None = Field(default=None, validation_alias="FRONTEND_DIST")
     fp_cost_try: float = 50.0  # operasyonel maliyet: bir yanlış alarmın inceleme maliyeti
     retrain_min_new_labels: int = 50
+    #: scored-but-unlearned events kept for late step-up / analyst feedback
+    feedback_pending_max: int = 50_000
     auto_sib_case_types: list[str] = Field(default_factory=lambda: ["AML", "MULE", "YAPTIRIM"])
     online_anomaly_reason_min: float = 0.9
 

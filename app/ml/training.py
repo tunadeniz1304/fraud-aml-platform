@@ -1,9 +1,13 @@
 """Offline training pipeline (P0.7): backfill → split → train → evaluate → register.
 
 1. **Backfill** — the labelled stream is replayed chronologically through the
-   *same* :class:`FeatureExtractor` the online scorer uses (in-memory store),
-   so training features equal serving features (no skew). The adaptive profile
-   only learns from clean events (poisoning protection mirrors production).
+   *same* :class:`~app.scoring.engine.ScoringEngine` (feature store → rules →
+   policy) the online scorer uses. The profile learns through the shared
+   :func:`~app.features.learning.should_learn` rule with the step-up outcome
+   simulated from the label, exactly like production learns from the
+   ``step-up-result`` feedback — see :func:`live_replay_features` and the
+   parity test. The replay has no champion model yet (rules + policy decide),
+   so events a later model would move across ALLOW are the residual skew.
 2. **Time-based split** 70 / 15 / 15 — the model is always evaluated on the
    future, never on shuffled rows.
 3. **Models** — LightGBM (≤300 trees, early stopping), IsolationForest on clean
@@ -33,6 +37,7 @@ import numpy as np
 
 from app.features.definitions import FEATURES, describe
 from app.features.extractor import CustomerDirectory, FeatureExtractor
+from app.features.learning import simulated_feedback
 from app.features.store import MemoryFeatureStore
 from app.ml import metrics as M
 from app.ml.anomaly import ECODScorer, FastIsolationForest, QuantileCalibrator
@@ -94,33 +99,73 @@ def model_feature_names() -> list[str]:
     return list(FEATURES)
 
 
+def replay_engine(customers: Sequence[dict[str, Any]], ruleset: RuleSet) -> Any:
+    """Model-free engine used by the backfill and the parity check."""
+    from app.core.sanctions import SanctionScreener
+    from app.scoring.engine import ScoringEngine
+    from app.scoring.policy import PolicyEngine
+
+    extractor = FeatureExtractor(MemoryFeatureStore(), CustomerDirectory(customers))
+    return ScoringEngine(
+        extractor, ruleset=ruleset, policy=PolicyEngine(None), sanctions=SanctionScreener()
+    )
+
+
+def _ordered(transactions: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(transactions, key=lambda t: (t["ts"], t["transaction_id"]))
+
+
 async def backfill(
     customers: Sequence[dict[str, Any]],
     transactions: Sequence[dict[str, Any]],
     ruleset: RuleSet,
 ) -> list[BackfillRow]:
     names = model_feature_names()
-    extractor = FeatureExtractor(MemoryFeatureStore(), CustomerDirectory(customers))
+    engine = replay_engine(customers, ruleset)
     rows: list[BackfillRow] = []
-    for tx in sorted(transactions, key=lambda t: (t["ts"], t["transaction_id"])):
-        extraction = await extractor.extract(tx)
-        feats = extraction.features
+    for tx in _ordered(transactions):
+        result = await engine.score(tx)
+        feats = result.extraction.features
         label = int(tx.get("label", 0))
         rows.append(
             BackfillRow(
                 transaction_id=str(tx["transaction_id"]),
                 ts=str(tx["ts"]),
                 customer_id=str(tx["customer_id"]),
-                amount_try=extraction.tx.amount_try,
+                amount_try=result.amount_try,
                 label=label,
                 typology=str(tx.get("typology", "normal")),
                 exclude=bool(tx.get("exclude_from_training", False)),
                 features=[feats[n] for n in names],
-                rule_score=ruleset.score_only(feats),
+                rule_score=result.rules.score if result.rules else ruleset.score_only(feats),
             )
         )
-        await extractor.commit(extraction, learn_profile=label == 0)
+        await engine.commit(result, feedback=simulated_feedback(result.decision, label))
     return rows
+
+
+async def live_replay_features(
+    customers: Sequence[dict[str, Any]],
+    transactions: Sequence[dict[str, Any]],
+    ruleset: RuleSet,
+) -> list[list[float]]:
+    """Replay the stream the way production sees it (parity check).
+
+    Each event is scored and committed without feedback; the step-up outcome
+    arrives afterwards through :meth:`ScoringEngine.apply_feedback`, as the
+    ``POST /api/transactions/{id}/step-up-result`` endpoint delivers it.
+    """
+    names = model_feature_names()
+    engine = replay_engine(customers, ruleset)
+    out: list[list[float]] = []
+    for tx in _ordered(transactions):
+        result = await engine.score(tx)
+        out.append([result.extraction.features[n] for n in names])
+        await engine.commit(result)
+        feedback = simulated_feedback(result.decision, int(tx.get("label", 0)))
+        if feedback is not None:
+            await engine.apply_feedback(result.transaction_id, feedback)
+    return out
 
 
 def _split(rows: list[BackfillRow], cfg: TrainingConfig) -> tuple[list[BackfillRow], ...]:
@@ -338,8 +383,10 @@ def render_model_card(meta: dict[str, Any]) -> str:
         f"- Zaman bazlı bölme 70/15/15 — eğitim {split['train'][0]} ({split['train'][1]} fraud), "
         f"doğrulama {split['valid'][0]} ({split['valid'][1]}), test {split['test'][0]} "
         f"({split['test'][1]}); test dönemi {split['test_period'][0]} → {split['test_period'][1]}.",
-        "- Feature'lar online skorlayıcıyla **aynı** fonksiyonlarla kronolojik replay ile "
-        "üretildi (eğitim/servis kayması yok).",
+        "- Feature'lar online skorlayıcıyla **aynı** motorla (feature store → kurallar → "
+        "politika) kronolojik replay ile üretildi; profil öğrenmesi canlı sistemle aynı "
+        "`should_learn` kuralını kullanır (parite testi: `test_a3_*`). Replay'de champion "
+        "model yoktur; modelin ALLOW sınırını değiştirdiği olaylar kalan kaymadır.",
         "",
         "## Test metrikleri",
         "| Bileşen | PR-AUC | ROC-AUC | Recall @ %1 FPR | Kesinlik @ %1 bütçe | "
