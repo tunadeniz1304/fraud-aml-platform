@@ -24,6 +24,7 @@ from app.config import get_settings
 from app.db.audit import verify_chain
 from app.db.database import Database
 from app.monitoring.logging import configure_logging
+from app.security.startup import enforce_startup_policy
 
 logger = logging.getLogger("fraud.worker")
 
@@ -145,6 +146,9 @@ async def run_worker(stop: asyncio.Event | None = None) -> WorkerContext:
     from app.bus.redis_streams import RedisStreamsBus
 
     settings = get_settings()
+    # same fail-fast policy as the API: a prod worker must not run the audit
+    # verification (and the rest) with demo secrets or an unkeyed audit chain
+    enforce_startup_policy(settings)
     stop = stop or asyncio.Event()
     db = Database(settings.resolved_database_url)
     redis = (

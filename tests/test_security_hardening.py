@@ -22,7 +22,7 @@ from app.db.models import Approval
 from app.security.auth import BREAK_GLASS_USERNAME, Principal, UserDirectory, issue_token
 
 DEMO = BASE_DIR / "data" / "demo"
-SVC = "svc-credential-for-tests-01"
+SVC = "svc-credential-for-tests-" + "0" * 8 + "01"
 
 
 def _bearer(user: str, role: str) -> dict[str, str]:
@@ -47,12 +47,19 @@ def demo_env(app_env: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return app_env
 
 
+def _set_prod_extras(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Round-2 A9 prod requirements: keyed audit chain, shared rate-limit storage."""
+    monkeypatch.setenv("AUDIT_HMAC_KEY", "prod-audit-chain-" + "k" * 24)
+    monkeypatch.setenv("RATE_LIMIT_STORAGE_URI", "redis://127.0.0.1:6379/1")
+
+
 @pytest.fixture()
 def prod_env(demo_env: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("ENVIRONMENT", "prod")
     monkeypatch.setenv("JWT_SECRET", "prod-signing-material-" + "x" * 24)
     monkeypatch.setenv("CONSORTIUM_SALT", "prod-consortium-" + "y" * 24)
     monkeypatch.setenv("SEED_DEMO_USERS", "false")
+    _set_prod_extras(monkeypatch)
     get_settings.cache_clear()
     return demo_env
 
@@ -219,6 +226,7 @@ def test_hsts_only_in_prod(demo_env: Path, monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setenv("JWT_SECRET", "prod-signing-material-" + "x" * 24)
     monkeypatch.setenv("CONSORTIUM_SALT", "prod-consortium-" + "y" * 24)
     monkeypatch.setenv("SEED_DEMO_USERS", "false")
+    _set_prod_extras(monkeypatch)
     get_settings.cache_clear()
     r = TestClient(create_app()).get("/api/health")
     assert r.headers["strict-transport-security"].startswith("max-age=")
@@ -441,6 +449,11 @@ def test_h6_several_workers_need_a_shared_jwt_secret(
     with pytest.raises(RuntimeError, match="WEB_CONCURRENCY"):
         create_app()
     monkeypatch.setenv("JWT_SECRET", "shared-signing-material-" + "w" * 16)
+    get_settings.cache_clear()
+    # several workers also need shared state (A9, round 2)
+    with pytest.raises(RuntimeError, match="REDIS_URL"):
+        create_app()
+    monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:6379/0")
     get_settings.cache_clear()
     assert create_app() is not None
 

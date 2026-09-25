@@ -262,3 +262,89 @@ def test_a8_requests_without_credentials_or_with_stale_sessions_do_not_count(
         # a forged token still counts
         forged = {"Authorization": "Bearer not-a-token"}
         assert [client.get("/api/cases", headers=forged).status_code for _ in range(4)][-1] == 429
+
+
+# --- A9: stricter production start-up policy (API and worker) ---------------
+
+
+@pytest.fixture()
+def strong_prod(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ENVIRONMENT", "prod")
+    monkeypatch.setenv("JWT_SECRET", "prod-signing-material-" + "x" * 24)
+    monkeypatch.setenv("CONSORTIUM_SALT", "prod-consortium-" + "y" * 24)
+    monkeypatch.setenv("SEED_DEMO_USERS", "false")
+    monkeypatch.setenv("AUDIT_HMAC_KEY", "prod-audit-chain-" + "k" * 24)
+    monkeypatch.setenv("RATE_LIMIT_STORAGE_URI", "redis://127.0.0.1:6379/1")
+    get_settings.cache_clear()
+
+
+def _problems() -> list[str]:
+    from app.security.startup import startup_problems
+
+    get_settings.cache_clear()
+    return startup_problems(get_settings())
+
+
+def test_a9_strong_prod_configuration_passes(strong_prod: None) -> None:
+    assert _problems() == []
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "fragment"),
+    [
+        ("AUDIT_HMAC_KEY", "", "AUDIT_HMAC_KEY zorunludur"),
+        ("AUDIT_HMAC_KEY", "short-key", "AUDIT_HMAC_KEY rastgele"),
+        ("ADMIN_TOKEN", "admin123", "ADMIN_TOKEN örnek/demo"),
+        ("ADMIN_TOKEN", "s3cret", "ADMIN_TOKEN örnek/demo"),
+        ("ADMIN_TOKEN", "a1b2c3d4e5f6", "ADMIN_TOKEN tanımlıysa en az 32"),
+        ("ADMIN_TOKEN", "change-this-" + "q" * 30, "ADMIN_TOKEN örnek/demo"),
+        ("SERVICE_API_KEY", "svc-short", "SERVICE_API_KEY tanımlıysa en az 32"),
+        ("SERVICE_API_KEY", "demo-service-" + "q" * 30, "SERVICE_API_KEY örnek/demo"),
+        ("RATE_LIMIT_STORAGE_URI", "memory://", "RATE_LIMIT_STORAGE_URI=memory://"),
+    ],
+)
+def test_a9_prod_refuses_weak_settings(
+    strong_prod: None, monkeypatch: pytest.MonkeyPatch, name: str, value: str, fragment: str
+) -> None:
+    if value:
+        monkeypatch.setenv(name, value)
+    else:
+        monkeypatch.delenv(name, raising=False)
+    problems = _problems()
+    assert any(fragment in p for p in problems), problems
+
+
+def test_a9_strong_static_credentials_are_accepted(
+    strong_prod: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ADMIN_TOKEN", "Zq8" + "r7Kp2" * 8)
+    monkeypatch.setenv("SERVICE_API_KEY", "Mx4" + "t9Lw3" * 8)
+    assert _problems() == []
+
+
+def test_a9_weak_static_credentials_are_fine_outside_prod(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ADMIN_TOKEN", "s3cret")
+    monkeypatch.delenv("AUDIT_HMAC_KEY", raising=False)
+    assert _problems() == []
+
+
+def test_a9_several_workers_need_redis_in_any_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WEB_CONCURRENCY", "2")
+    monkeypatch.setenv("JWT_SECRET", "shared-signing-material-" + "w" * 16)
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    assert any("REDIS_URL" in p for p in _problems())
+    monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+    assert _problems() == []
+
+
+async def test_a9_worker_enforces_the_startup_policy(
+    strong_prod: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.worker import run_worker
+
+    monkeypatch.delenv("AUDIT_HMAC_KEY", raising=False)
+    get_settings.cache_clear()
+    with pytest.raises(RuntimeError, match="AUDIT_HMAC_KEY"):
+        await run_worker()
