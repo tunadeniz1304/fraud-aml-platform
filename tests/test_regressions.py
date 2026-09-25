@@ -148,7 +148,9 @@ class TestBug06AllSignalsReachTheScore:
 
     async def test_each_context_signal_raises_the_score(self):
         base = (await self._score())["risk_score"]
-        assert (await self._score(country="NG"))["risk_score"] > base
+        # IR is on the versioned FATF call-for-action list; NG left the FATF
+        # grey list in October 2025, so it no longer carries a country signal
+        assert (await self._score(country="IR"))["risk_score"] > base
         assert (await self._score(purpose="ACİL: güvenli hesaba aktar"))["risk_score"] > base
         assert (await self._score(ip_address="45.84.1.10"))["risk_score"] > base  # VPN
         assert (await self._score(ip_address="197.210.1.1"))["risk_score"] > base  # NG IP, TR tx
