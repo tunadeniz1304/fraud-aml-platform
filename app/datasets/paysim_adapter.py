@@ -9,7 +9,8 @@ logs calibrated on a real operator. One row::
 Mapping rules:
 
 * ``step`` (hour index, 1–743) → ``ts`` = ``paysim_base_date`` + ``step`` hours;
-  rows of the same hour keep their file order through a seconds offset;
+  the rows of one hour are spread evenly over it in file order (see
+  :func:`load_transactions`);
 * ``type`` → channel + purpose (:data:`TYPE_MAP`);
 * ``nameOrig`` → ``customer_id``, ``nameDest`` → ``beneficiary_id``;
 * ``amount`` × ``paysim_try_per_unit`` → TRY amount (configured ratio);

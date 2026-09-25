@@ -52,6 +52,12 @@ python scripts/validate_public_data.py --dataset paysim --sample-frac 0.1
 | `paysim_sample.csv` | 19.999 satır, 26 fraud (%0,130; tam veride %0,129). (`type`, `isFraud`) katmanlı rastgele örnek, seed 20260925 | 1,5 MB | `paysim_sample.ATTRIBUTION.md` |
 | `elliptic_sample/` | 510 düğüm (31 yasa dışı, 171 meşru, 308 bilinmeyen). Zaman adımları 10, 30 (eğitim) ve 42 (test) için yasa dışı bir düğümden başlayan genişlik öncelikli bağlı alt graflar | 1,7 MB | `elliptic_sample/ATTRIBUTION.md` |
 
+**Bu örnekler duman testidir (smoke test), performans kanıtı değildir.** Hattın internetsiz
+uçtan uca çalıştığını ve sonucun yeniden üretilebildiğini gösterirler. `paysim_sample.csv`'nin
+70/15/15 zaman bölmesinde doğrulama döneminde hiç fraud yoktur, testte 14 fraud vardır. Stacker
+bu yüzden sabit bir skor üretir ve metrikler anlamsızdır. Performans sayıları yalnız tam veri
+çalıştırmalarından (`artifacts/validation/paysim/`, `elliptic/`, `ulb/`) alınır.
+
 Elliptic'in lisansı (CC BY-NC-ND 4.0) verinin bir **parçasını değiştirmeden** ve ticari
 olmayan amaçla paylaşmaya izin verir, uyarlanmış (türev) materyali paylaşmaya izin vermez.
 Bu yüzden örnek satırlar yuvarlanmadan ve yeniden kodlanmadan, **birebir** kopyalanır.
@@ -63,7 +69,7 @@ Proje kodu MIT lisanslıdır. Bu veri örnekleri kendi lisanslarına tabidir.
 
 | PaySim | Platform | Not |
 |---|---|---|
-| `step` (saat, 1–743) | `ts = paysim_base_date + step saat` | Aynı saatteki satırların dosya sırası saniye ofsetiyle korunur |
+| `step` (saat, 1–743) | `ts = paysim_base_date + step saat + ofset` | PaySim yalnız saati kaydeder. Bir adımın satırları dosya sırasıyla o saate eşit aralıklarla yayılır (`sıra / adımdaki satır · 3600` sn). Sıra korunur, olay bir sonraki saate taşmaz ve saat içi zamanlama özellikleri yapay olarak sıfırlanmaz. PaySim'de dakika/saniye bilgisi yoktur; bu ofset uydurulmuş bir zaman değil, bir sıralama aracıdır |
 | `type` | kanal + amaç | `PAYMENT→mobile/Ödeme`, `TRANSFER→web/Transfer`, `CASH_OUT→atm/Nakit çekim`, `CASH_IN→atm/Nakit yatırma`, `DEBIT→web/Borç ödeme` |
 | `nameOrig` | `customer_id` | |
 | `nameDest` | `beneficiary_id` | Grafta aynı kimlikli müşterinin hesabı sayılır (`C…` kimlikleri) |
