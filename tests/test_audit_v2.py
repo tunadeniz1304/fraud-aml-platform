@@ -206,7 +206,11 @@ async def test_a4_second_transfer_of_the_day_is_step_up_not_hold(pipeline: Any) 
 
 # --- A5: card testing is its own typology -----------------------------------------------------
 async def test_a5_card_testing_opens_card_testing_case(pipeline: Any) -> None:
+    # the scenario only guarantees STEP_UP (the model decides whether it reaches HOLD);
+    # lower the thresholds so it always opens a case, then check the case type
+    await pipeline.set_thresholds(0.02, 0.05, 0.99)
     out = await pipeline.run_scenario("card_testing")
+    assert out["cases"], out["results"]
     assert out["cases"][0]["case_type"] == "CARD_TESTING"
 
 
