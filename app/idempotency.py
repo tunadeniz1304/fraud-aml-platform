@@ -11,30 +11,99 @@ The index answers "could this id already be persisted?" without the database:
   with every id this process decides. A negative answer is exact, so a new id
   (the common case) never touches the database; a positive answer (a real
   replay, or a ~0.1 % false positive) falls back to the stored-decision query.
-* with Redis, a **claim** (``SET idem:<id> NX EX``) shared by every worker:
+* with Redis, a **claim** (``SET idem:<id> NX PX``) shared by every worker:
   exactly one worker scores an id, the decision summary is stored under the
   same key so a replay reaching another worker returns the same decision.
   Keys expire after ``idempotency_ttl_s``; older replays are still caught by
   the Bloom filter (startup ids) and the database primary key.
+
+M1 hardening:
+
+* every claim and summary carries the **payload digest** (SHA-256 of the
+  canonical request); the same id with a different payload is rejected with
+  :class:`IdempotencyConflict` (HTTP 409) instead of returning the decision
+  of another transaction;
+* a PENDING claim lives only ``pending_ttl_s`` (default 45 s) and is
+  refreshed by its owner while it works, so a crashed worker blocks the id
+  for at most one lease instead of the whole idempotency window;
+* a concurrent retry waits ``pending_wait_s`` (default 250 ms) and then gets
+  :class:`IngestInProgress` (HTTP 409 "processing" + ``Retry-After``) instead
+  of blocking for 30 s and re-scoring;
+* the owner first stores a **provisional** summary (still on the short,
+  refreshed lease) and marks it committed only once the persistence writer
+  committed the decision. The Redis ingress requires a committed summary, so
+  a crash between the decision and the commit ends in a redelivery that
+  scores the id again instead of an acknowledged-but-lost transaction.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
 import math
+import uuid
 from typing import Any
 
 from sqlalchemy import func, select
 
+from app.bus.base import RetryLater
 from app.db.database import Database
 from app.db.models import Transaction
 
 logger = logging.getLogger("fraud.idempotency")
 
 PENDING = "__pending__"
+#: request fields that do not change the transaction itself
+_VOLATILE = frozenset({"ingested_by", "payload_hash"})
+
+# refresh a lease only while it still holds *our* value
+_REFRESH = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('PEXPIRE', KEYS[1], ARGV[2])
+end
+return 0
+"""
+# delete a key only while it still holds *our* value
+_RELEASE = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+"""
+
+
+class IdempotencyConflict(Exception):
+    """The id was already used for a different payload (HTTP 409)."""
+
+    def __init__(self, tx_id: str) -> None:
+        super().__init__(f"transaction_id {tx_id} başka bir içerikle zaten kullanıldı")
+        self.tx_id = tx_id
+
+
+class IngestInProgress(RetryLater):
+    """Another request / worker is still scoring this id (HTTP 409 + Retry-After)."""
+
+    def __init__(self, tx_id: str, retry_after_s: float = 1.0) -> None:
+        super().__init__(f"transaction_id {tx_id} hâlâ işleniyor")
+        self.tx_id = tx_id
+        self.retry_after_s = retry_after_s
+
+
+def payload_digest(tx: dict[str, Any]) -> str:
+    """SHA-256 of the canonical request (sorted keys, sender fields excluded)."""
+    doc = {k: v for k, v in tx.items() if k not in _VOLATILE and v is not None}
+    raw = json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def check_digest(tx_id: str, result: dict[str, Any] | None, digest: str) -> None:
+    """Raise :class:`IdempotencyConflict` when ``result`` belongs to another payload."""
+    stored = (result or {}).get("payload_hash")
+    if stored and digest and stored != digest:
+        raise IdempotencyConflict(tx_id)
 
 
 class BloomFilter:
@@ -97,12 +166,19 @@ class IdempotencyIndex:
         ttl_s: int = 86_400,
         capacity: int = 100_000,
         prefix: str = "idem",
+        pending_ttl_s: float = 45.0,
+        pending_wait_s: float = 0.25,
     ) -> None:
         self.redis = redis
         self.ttl_s = ttl_s
         self.prefix = prefix
         self.capacity = capacity
+        self.pending_ttl_ms = max(100, int(pending_ttl_s * 1000))
+        self.pending_wait_s = pending_wait_s
         self.bloom = ScalableBloom(capacity)
+        #: keys this process owns -> the value it stored (lease refreshed)
+        self._owned: dict[str, str] = {}
+        self._refresher: asyncio.Task[None] | None = None
 
     async def load(self, db: Database, *, chunk: int = 10_000) -> int:
         """Add every persisted transaction id (streamed, bounded memory)."""
@@ -128,36 +204,130 @@ class IdempotencyIndex:
     def _key(self, tx_id: str) -> str:
         return f"{self.prefix}:{tx_id}"
 
-    async def claim(self, tx_id: str) -> bool:
+    @property
+    def retry_after_s(self) -> float:
+        return max(1.0, self.pending_ttl_ms / 3000)
+
+    def _own(self, tx_id: str, value: str) -> None:
+        self._owned[tx_id] = value
+        if self._refresher is None or self._refresher.done():
+            self._refresher = asyncio.create_task(self._refresh_loop(), name="idem-lease")
+
+    async def _refresh_loop(self) -> None:
+        """Keep the leases of in-flight ids alive (exits when none are left)."""
+        interval = self.pending_ttl_ms / 3000
+        while self._owned:
+            await asyncio.sleep(interval)
+            for tx_id, value in list(self._owned.items()):
+                try:
+                    await self.redis.eval(_REFRESH, 1, self._key(tx_id), value, self.pending_ttl_ms)
+                except Exception:  # noqa: BLE001 - next tick retries; the lease may lapse
+                    logger.warning("[Idempotency] %s kilidi yenilenemedi", tx_id)
+
+    async def close(self) -> None:
+        """Stop refreshing; the leases of unfinished ids then expire on their own."""
+        self._owned.clear()
+        if self._refresher is not None:
+            self._refresher.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._refresher
+            self._refresher = None
+
+    async def claim(self, tx_id: str, digest: str = "") -> bool:
         """True when this worker owns ``tx_id`` (always true without Redis)."""
         if self.redis is None:
             return True
-        return bool(await self.redis.set(self._key(tx_id), PENDING, nx=True, ex=self.ttl_s))
+        # the owner token makes release / refresh compare-and-set per claim
+        value = f"{PENDING}:{digest}:{uuid.uuid4().hex[:12]}"
+        if not await self.redis.set(self._key(tx_id), value, nx=True, px=self.pending_ttl_ms):
+            return False
+        self._own(tx_id, value)
+        return True
 
-    async def record(self, tx_id: str, summary: dict[str, Any]) -> None:
-        if self.redis is not None:
-            await self.redis.set(self._key(tx_id), json.dumps(summary, default=str), ex=self.ttl_s)
+    async def record(
+        self,
+        tx_id: str,
+        summary: dict[str, Any],
+        digest: str = "",
+        *,
+        committed: bool = True,
+    ) -> None:
+        """Store the decision of ``tx_id``.
+
+        A provisional summary (``committed=False``: decided, not yet in the
+        database) keeps the short, refreshed lease until :meth:`commit`.
+        """
+        if self.redis is None:
+            return
+        doc = {**summary, "_digest": digest, "_committed": committed}
+        if not committed:
+            doc["_owner"] = uuid.uuid4().hex[:12]
+        value = json.dumps(doc, default=str)
+        if committed:
+            self._owned.pop(tx_id, None)
+            await self.redis.set(self._key(tx_id), value, ex=self.ttl_s)
+        else:
+            await self.redis.set(self._key(tx_id), value, px=self.pending_ttl_ms)
+            self._own(tx_id, value)
+
+    async def commit(self, tx_id: str) -> None:
+        """The decision of ``tx_id`` is in the database: keep it for the full TTL."""
+        value = self._owned.pop(tx_id, None)
+        if self.redis is None or value is None or value.startswith(PENDING):
+            return
+        doc = {**json.loads(value), "_committed": True}
+        doc.pop("_owner", None)
+        committed = json.dumps(doc, default=str)
+        await self.redis.set(self._key(tx_id), committed, ex=self.ttl_s)
 
     async def release(self, tx_id: str) -> None:
-        """Give up a claim that produced no decision (so a retry may score it)."""
-        if self.redis is not None:
-            await self.redis.delete(self._key(tx_id))
+        """Give up a claim that produced no decision (so a retry may score it).
 
-    async def claimed_result(self, tx_id: str, *, wait_s: float = 30.0) -> dict[str, Any] | None:
-        """Decision recorded by the worker that owns ``tx_id`` (waits while pending)."""
+        Compare-and-delete: a claim that expired and was taken over by another
+        worker is left alone.
+        """
+        value = self._owned.pop(tx_id, None)
+        if self.redis is not None and value is not None:
+            await self.redis.eval(_RELEASE, 1, self._key(tx_id), value)
+
+    async def claimed_result(
+        self,
+        tx_id: str,
+        digest: str = "",
+        *,
+        wait_s: float | None = None,
+        require_committed: bool = False,
+    ) -> dict[str, Any] | None:
+        """Decision recorded by the worker that owns ``tx_id``.
+
+        Waits up to ``wait_s`` (default ``pending_wait_s``) while the owner is
+        still working, then raises :class:`IngestInProgress`. ``None`` means
+        the claim is gone (released or expired): the caller may claim the id
+        itself. A digest mismatch raises :class:`IdempotencyConflict`.
+        """
         if self.redis is None:
             return None
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + wait_s
+        deadline = loop.time() + (self.pending_wait_s if wait_s is None else wait_s)
         delay = 0.002
         while True:
             raw = await self.redis.get(self._key(tx_id))
             if raw is None:
                 return None
-            if raw != PENDING:
+            if raw.startswith(PENDING):
+                owner = raw[len(PENDING) + 1 :].split(":", 1)[0]
+                if digest and owner and owner != digest:
+                    raise IdempotencyConflict(tx_id)
+            else:
                 data: dict[str, Any] = json.loads(raw)
-                return data
+                stored = data.pop("_digest", "")
+                committed = data.pop("_committed", True)
+                data.pop("_owner", None)
+                if digest and stored and stored != digest:
+                    raise IdempotencyConflict(tx_id)
+                if committed or not require_committed:
+                    return data
             if loop.time() >= deadline:
-                return None
+                raise IngestInProgress(tx_id, retry_after_s=self.retry_after_s)
             await asyncio.sleep(delay)
             delay = min(delay * 2, 0.05)

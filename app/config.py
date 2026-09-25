@@ -98,7 +98,7 @@ class Settings(BaseSettings):
     idempotency_ttl_s: int = 86_400
     # M1: lease of a PENDING claim (refreshed while the owner is scoring) and
     # how long a concurrent retry waits before answering 409 "processing"
-    idempotency_pending_ttl_s: int = 45
+    idempotency_pending_ttl_s: float = 45.0
     idempotency_pending_wait_ms: int = 250
     # H3: multi-worker propagation — account-status poll (DB fallback when
     # Redis is not configured) and runtime-config (thresholds/rules/models) poll
