@@ -4,6 +4,8 @@
 * ``recall_at_fpr`` — fraud caught when at most X% of clean traffic is flagged;
 * ``budget_metrics`` — with a fixed alert budget (top-k% riskiest), share of
   fraud *amount* caught (cost-weighted recall) and alert precision;
+* ``brier`` / ``expected_calibration_error`` — probability calibration of a
+  score that claims to be a probability (the stacker output);
 * ``psi`` — population stability index for feature/score drift.
 """
 
@@ -36,6 +38,34 @@ def recall_at_fpr(y: ArrayLike, scores: ArrayLike, fpr: float = 0.01) -> float:
         return 0.0
     threshold = float(np.quantile(negatives, 1.0 - fpr, method="higher"))
     return float((positives > threshold).mean())
+
+
+def brier(y: ArrayLike, probs: ArrayLike) -> float:
+    ya, pa = np.asarray(y, dtype=float), np.asarray(probs, dtype=float)
+    return float(np.mean((pa - ya) ** 2))
+
+
+def expected_calibration_error(y: ArrayLike, probs: ArrayLike, bins: int = 10) -> float:
+    """ECE with ``bins`` equal-width probability bins: the weighted mean of
+    ``|mean predicted - observed rate|`` per bin."""
+    ya, pa = np.asarray(y, dtype=float), np.clip(np.asarray(probs, dtype=float), 0.0, 1.0)
+    idx = np.minimum((pa * bins).astype(int), bins - 1)
+    total = 0.0
+    for b in range(bins):
+        mask = idx == b
+        if mask.any():
+            total += float(mask.sum()) * abs(float(pa[mask].mean()) - float(ya[mask].mean()))
+    return total / max(1, len(pa))
+
+
+def calibration(y: ArrayLike, probs: ArrayLike, bins: int = 10) -> dict[str, float]:
+    ya, pa = np.asarray(y, dtype=float), np.asarray(probs, dtype=float)
+    return {
+        "brier": round(brier(ya, pa), 6),
+        "ece_10bin": round(expected_calibration_error(ya, pa, bins), 6),
+        "mean_predicted": round(float(pa.mean()), 6),
+        "observed_rate": round(float(ya.mean()), 6),
+    }
 
 
 def budget_metrics(

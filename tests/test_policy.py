@@ -124,12 +124,51 @@ class TestStacker:
             y = int(rng.random() < 0.05)
             ml = min(0.999, max(0.001, rng.gauss(0.8 if y else 0.05, 0.15)))
             rule = 0.6 if y and rng.random() < 0.5 else 0.0
-            anomaly = rng.random()  # pure noise -> coefficient floored, never negative
+            anomaly = rng.random()  # pure noise -> never a negative coefficient
             rows.append((rule, ml, anomaly))
             labels.append(y)
         stacker = Stacker.fit(rows, labels)
-        assert all(c >= 0.05 for c in stacker.coef) and stacker.coef[0] >= 0.3
+        assert all(c >= 0.0 for c in stacker.coef)
+        assert stacker.coef[0] > 0.05 and stacker.coef[1] > 0.5
         mean = sum(stacker.predict(*r) for r in rows) / len(rows)
         assert mean == pytest.approx(sum(labels) / len(labels), abs=0.01)
         assert stacker.predict(0.6, 0.5, 0.5) > stacker.predict(0.0, 0.5, 0.5)
+        fit = stacker.to_dict()["fit"]
+        assert set(fit["ablation"]["variants"]) == {
+            "floored_legacy",
+            "unconstrained",
+            "nonneg",
+            "nonneg_no_anomaly",
+        }
+
+    def test_noise_input_is_not_forced_in(self):
+        """No coefficient floor: an input with no signal gets (close to) zero
+        weight, or is dropped by the validation ablation."""
+        import random
+
+        rng = random.Random(1)
+        rows, labels = [], []
+        for _ in range(4000):
+            y = int(rng.random() < 0.05)
+            ml = min(0.999, max(0.001, rng.gauss(0.7 if y else 0.1, 0.15)))
+            rows.append((0.0, ml, rng.random()))
+            labels.append(y)
+        stacker = Stacker.fit(rows, labels)
+        assert stacker.coef[2] < 0.05
+        # a rule input that is constant carries no information either
+        assert stacker.coef[0] < 0.05
+
+    def test_negative_evidence_is_clipped_to_zero(self):
+        import random
+
+        rng = random.Random(2)
+        rows, labels = [], []
+        for _ in range(3000):
+            y = int(rng.random() < 0.1)
+            ml = min(0.999, max(0.001, rng.gauss(0.7 if y else 0.1, 0.15)))
+            anomaly = min(0.999, max(0.001, rng.gauss(0.2 if y else 0.6, 0.1)))  # inverted
+            rows.append((0.0, ml, anomaly))
+            labels.append(y)
+        stacker = Stacker.fit(rows, labels, select_inputs=False)
+        assert stacker.coef[2] == pytest.approx(0.0, abs=1e-6)
         assert Stacker.from_dict(stacker.to_dict()) == stacker
