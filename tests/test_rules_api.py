@@ -227,6 +227,41 @@ class TestBacktest:
         bad = client.post("/api/rules/simulate", json={**draft, "when": "zzz > 1"}, headers=ANALYST)
         assert bad.status_code == 422
 
+    def test_m6_simulation_is_capped_and_time_boxed(self, client, app_env, monkeypatch):
+        import time
+
+        from app.api.routes import rules as rules_routes
+        from app.config import get_settings
+
+        settings = get_settings()
+        monkeypatch.setattr(settings, "rule_backtest_max_rows", 3)
+        seen: list[int] = []
+        real_synthetic = rules_routes.rule_store.synthetic_backtest_rows
+
+        def spy(path, limit):
+            seen.append(limit)
+            return real_synthetic(path, limit)
+
+        monkeypatch.setattr(rules_routes.rule_store, "synthetic_backtest_rows", spy)
+        draft = {**NEW_RULE, "when": "amount_try >= 1", "source": "synthetic"}
+        assert client.post("/api/rules/simulate", json=draft, headers=ANALYST).status_code == 200
+        assert seen == [3]  # the server cap wins over the requested 20 000
+        too_many = client.post(
+            "/api/rules/simulate", json={**draft, "limit": 1_000_000}, headers=ANALYST
+        )
+        assert too_many.status_code == 422
+
+        def slow_backtest(*args, **kwargs):
+            time.sleep(0.5)
+            raise AssertionError("must not be awaited past the timeout")
+
+        monkeypatch.setattr(settings, "rule_backtest_timeout_s", 0.05)
+        monkeypatch.setattr(rules_routes, "backtest", slow_backtest)
+        r = client.post("/api/rules/simulate", json=draft, headers=ANALYST)
+        assert r.status_code == 503 and "süre sınırını" in r.json()["detail"]
+        # the event loop stayed free: other requests are served meanwhile
+        assert client.get("/api/rules", headers=ANALYST).status_code == 200
+
 
 class TestPolicyApi:
     def test_get_and_set_thresholds(self, client):

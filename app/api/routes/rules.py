@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -54,12 +55,12 @@ class SimulateIn(BaseModel):
     when: str | None = Field(default=None, max_length=500)
     score: float | None = Field(default=None, gt=0, le=1)
     source: Literal["auto", "db", "synthetic"] = "auto"
-    limit: int = Field(default=20_000, ge=1, le=200_000)
+    limit: int = Field(default=20_000, ge=1, le=50_000)
 
 
 class DraftSimulateIn(RuleIn):
     source: Literal["auto", "db", "synthetic"] = "auto"
-    limit: int = Field(default=20_000, ge=1, le=200_000)
+    limit: int = Field(default=20_000, ge=1, le=50_000)
 
 
 class ThresholdsIn(BaseModel):
@@ -181,7 +182,9 @@ async def disable_rule(
 
 async def _backtest_rows(source: str, limit: int) -> tuple[str, list[Any]]:
     pipeline = require_pipeline()
-    synthetic = get_settings().data_dir / "generated" / "backtest.jsonl"
+    settings = get_settings()
+    limit = min(limit, settings.rule_backtest_max_rows)
+    synthetic = settings.data_dir / "generated" / "backtest.jsonl"
     rows: list[Any] = []
     if source in ("auto", "db"):
         async with pipeline.db.session() as session:
@@ -189,10 +192,26 @@ async def _backtest_rows(source: str, limit: int) -> tuple[str, list[Any]]:
         labelled = sum(1 for _, label in rows if label is not None)
         if source == "db" or labelled >= 50:
             return "db", rows
-    synth = rule_store.synthetic_backtest_rows(synthetic, limit)
+    synth = await asyncio.to_thread(rule_store.synthetic_backtest_rows, synthetic, limit)
     if synth or source == "synthetic":
         return "synthetic", synth
     return "db", rows
+
+
+async def _run_backtest(draft: RuleDef, source: str, limit: int) -> dict[str, Any]:
+    """Replay off the event loop, within the row cap and the time budget."""
+    rows_source, rows = await _backtest_rows(source, limit)
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(backtest, draft, rows, source=rows_source),
+            timeout=get_settings().rule_backtest_timeout_s,
+        )
+    except TimeoutError:
+        raise HTTPException(
+            status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Simülasyon süre sınırını aştı — daha az satırla (limit) deneyin",
+        ) from None
+    return result.as_dict() | {"when": draft.when}
 
 
 @router.post("/rules/{rule_id}/simulate", dependencies=[analyst_only])
@@ -206,20 +225,20 @@ async def simulate_rule(rule_id: str, body: SimulateIn | None = None) -> dict[st
         raise HTTPException(status_code=404, detail="Kural bulunamadı")
     try:
         draft = with_overrides(rule, {"when": body.when, "score": body.score, "enabled": True})
-        source, rows = await _backtest_rows(body.source, body.limit)
-        return backtest(draft, rows, source=source).as_dict() | {"when": draft.when}
+        draft.validate()
     except RuleError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
+    return await _run_backtest(draft, body.source, body.limit)
 
 
 @router.post("/rules/simulate", dependencies=[analyst_only])
 async def simulate_draft(body: DraftSimulateIn) -> dict[str, Any]:
     try:
         draft = RuleDef.from_dict(body.model_dump(exclude={"source", "limit"}))
-        source, rows = await _backtest_rows(body.source, body.limit)
-        return backtest(draft, rows, source=source).as_dict() | {"when": draft.when}
+        draft.validate()
     except RuleError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
+    return await _run_backtest(draft, body.source, body.limit)
 
 
 # --- policy -------------------------------------------------------------------------------

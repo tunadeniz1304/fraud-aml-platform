@@ -97,6 +97,28 @@ class TestExpressionCompiler:
         assert expr.evaluate_bool({"a": "text"}) is False
         assert expr.names == frozenset({"a"})
 
+    def test_m6_arithmetic_is_numeric_only(self):
+        # string/list repetition would allocate unbounded memory on the scoring path
+        repeat = compile_expression("a * 100000000 == 'x'", NAMES)
+        with pytest.raises(TypeError):
+            repeat({"a": "x"})
+        assert repeat.evaluate_bool({"a": "x"}) is False
+        for source in ("a + b", "a % b", "a // b", "(1, 2) * a"):
+            assert (
+                compile_expression(f"({source}) == 1", NAMES).evaluate_bool({"a": "ab", "b": 2})
+                is False
+            )
+        assert compile_expression("a * 2 == 4", NAMES).evaluate_bool({"a": 2}) is True
+
+    def test_m6_literals_are_capped(self):
+        with pytest.raises(ExpressionError, match="metin sabiti"):
+            compile_expression("a == '" + "x" * 101 + "'", NAMES)
+        with pytest.raises(ExpressionError, match="sayı sabiti"):
+            compile_expression("a * 99999999999999999999 > 1", NAMES)
+        with pytest.raises(ExpressionError):
+            compile_expression("a ** 99", NAMES)
+        assert compile_expression("a >= 1e15 and b == 'TR'", NAMES)({"a": 1e15, "b": "TR"})
+
 
 class TestRuleSet:
     def test_core_rules_compile_against_feature_registry(self):

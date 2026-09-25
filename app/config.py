@@ -167,6 +167,9 @@ class Settings(BaseSettings):
     # A rule's HOLD floor below this risk *and* amount becomes STEP_UP (audit A4).
     rule_floor_hold_min_risk: float = 0.45
     rule_floor_hold_min_amount_try: float = 25_000.0
+    #: rule-studio backtest: rows replayed at most, and wall-clock budget (s)
+    rule_backtest_max_rows: int = 50_000
+    rule_backtest_timeout_s: float = 15.0
     # Weights of external signals in risk = 1-(1-stack)·Π(1-w·s).
     policy_signal_weights: dict[str, float] = Field(
         default_factory=lambda: {
