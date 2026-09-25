@@ -244,6 +244,9 @@ def to_markdown(results: list[dict[str, Any]], note: str = "") -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Windows konsolu (cp1254) Türkçe yardım metninde UnicodeEncodeError verir.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=["engine", "http", "http-seq", "both"], default="engine")
     parser.add_argument("--url", default="http://localhost:8000")
