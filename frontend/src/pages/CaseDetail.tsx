@@ -60,10 +60,12 @@ function Waterfall({ items }: { items: Shap[] }) {
 function Graph({ customerId }: { customerId: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
+  const [data, setData] = useState<{ nodes: cytoscape.ElementDefinition[]; edges: cytoscape.ElementDefinition[] } | null>(null);
   useEffect(() => {
     let cy: cytoscape.Core | undefined;
     api<{ nodes: cytoscape.ElementDefinition[]; edges: cytoscape.ElementDefinition[] }>(`/api/graph/customer/${customerId}?hops=2`)
       .then((g) => {
+        setData(g);
         if (!ref.current) return;
         cy = cytoscape({
           container: ref.current,
@@ -87,9 +89,95 @@ function Graph({ customerId }: { customerId: string }) {
   return (
     <div>
       <ErrorNote error={error} />
-      <div ref={ref} className="h-80 w-full rounded-lg border border-slate-200 dark:border-slate-800" role="img" aria-label="Varlık ağı grafiği" />
-      <p className="mt-1 text-xs text-slate-500">● müşteri ■ hesap ◆ cihaz ▲ IP · kırmızı: doğrulanmış fraud · yeşil çerçeve: bu müşteri</p>
+      <div ref={ref} className="h-80 w-full rounded-lg border border-slate-200 dark:border-slate-800" role="img" aria-label={`Varlık ağı grafiği: ${data?.nodes.length ?? 0} düğüm, ${data?.edges.length ?? 0} bağlantı. Tablo alternatifi aşağıda.`} />
+      <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">● müşteri ■ hesap ◆ cihaz ▲ IP · kırmızı: doğrulanmış fraud · yeşil çerçeve: bu müşteri</p>
+      {data && <GraphTable nodes={data.nodes} edges={data.edges} />}
     </div>
+  );
+}
+
+const NODE_TYPE: Record<string, string> = { customer: "müşteri", account: "hesap", device: "cihaz", ip: "IP" };
+
+/** Accessible alternative to the Cytoscape canvas (WCAG 1.1.1). */
+export function GraphTable({ nodes, edges }: { nodes: cytoscape.ElementDefinition[]; edges: cytoscape.ElementDefinition[] }) {
+  const label = (id: unknown) => {
+    const n = nodes.find((x) => x.data.id === id);
+    return String(n?.data.label ?? id);
+  };
+  return (
+    <details className="mt-2 text-xs">
+      <summary className="cursor-pointer">Grafiği tablo olarak göster ({nodes.length} düğüm, {edges.length} bağlantı)</summary>
+      <div className="mt-2 max-h-64 overflow-auto">
+        <table>
+          <caption className="text-left font-medium">Düğümler</caption>
+          <thead><tr><th scope="col">Düğüm</th><th scope="col">Tür</th><th scope="col">İşaret</th></tr></thead>
+          <tbody>
+            {nodes.map((n) => (
+              <tr key={String(n.data.id)}>
+                <th scope="row" className="normal-case tracking-normal">{String(n.data.label ?? n.data.id)}</th>
+                <td>{NODE_TYPE[String(n.data.type)] ?? String(n.data.type ?? "—")}</td>
+                <td>{[n.data.center ? "bu müşteri" : "", n.data.fraud ? "doğrulanmış fraud" : ""].filter(Boolean).join(", ") || "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <table className="mt-2">
+          <caption className="text-left font-medium">Bağlantılar</caption>
+          <thead><tr><th scope="col">Kaynak</th><th scope="col">Hedef</th><th scope="col">Tür</th></tr></thead>
+          <tbody>
+            {edges.map((e, i) => (
+              <tr key={String(e.data.id ?? i)}>
+                <td>{label(e.data.source)}</td>
+                <td>{label(e.data.target)}</td>
+                <td>{String(e.data.type ?? "—")}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  );
+}
+
+function Approvals({ c, reload }: { c: CaseDetail; reload: () => void }) {
+  const [error, setError] = useState<string | null>(null);
+  if (!c.approvals?.length) return null;
+  const decide = async (id: number, verb: "approve" | "reject") => {
+    setError(null);
+    try {
+      await api(`/api/approvals/${id}/${verb}`, { method: "POST", json: {} });
+      reload();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+  return (
+    <Card title="Onaylar (dört göz ilkesi)">
+      <table>
+        <caption className="sr-only">Bu vakaya ait onay talepleri</caption>
+        <thead><tr><th scope="col">#</th><th scope="col">Tür</th><th scope="col">Durum</th><th scope="col">Talep eden</th><th scope="col"><span className="sr-only">İşlem</span></th></tr></thead>
+        <tbody>
+          {c.approvals.map((a) => (
+            <tr key={a.id}>
+              <td className="font-mono">{a.id}</td>
+              <td>{a.kind}</td>
+              <td>{a.status}</td>
+              <td>{a.requested_by}</td>
+              <td className="space-x-1 whitespace-nowrap">
+                {a.status === "BEKLIYOR" && canSenior() && (
+                  <>
+                    <Button variant="success" onClick={() => decide(a.id, "approve")} aria-label={`Onay talebi #${a.id} onayla`}>Onayla</Button>
+                    <Button variant="ghost" onClick={() => decide(a.id, "reject")} aria-label={`Onay talebi #${a.id} reddet`}>Reddet</Button>
+                  </>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="mt-2 text-xs text-slate-600 dark:text-slate-400">Talebi açan kişi kendi talebini onaylayamaz; onay kıdemli analist veya yönetici gerektirir.</p>
+      <ErrorNote error={error} />
+    </Card>
   );
 }
 
@@ -133,8 +221,8 @@ function Copilot({ c, reload }: { c: CaseDetail; reload: () => void }) {
         <Button variant="ghost" onClick={() => run("recommendation")} disabled={!!busy}>Karar öner</Button>
         <Button variant="ghost" onClick={() => run("sib")} disabled={!!busy}>ŞİB taslağı üret</Button>
       </div>
-      {busy && <p className="mt-2 text-xs text-slate-500">Copilot araçlarla kanıt topluyor…</p>}
-      {meta && <p className="mt-2 text-xs text-slate-500">{meta}</p>}
+      {busy && <p className="mt-2 text-xs text-slate-600 dark:text-slate-400">Copilot araçlarla kanıt topluyor…</p>}
+      {meta && <p className="mt-2 text-xs text-slate-600 dark:text-slate-400">{meta}</p>}
       <ErrorNote error={error} />
       {c.summary && (
         <ol className="mt-3 list-decimal space-y-1 pl-5 text-sm">
@@ -184,9 +272,9 @@ function SibEditor({ c, reload }: { c: CaseDetail; reload: () => void }) {
       <div className="mt-2 flex flex-wrap gap-2">
         <Button variant="ghost" onClick={save}>Kaydet</Button>
         <Button onClick={submit} disabled={c.decision !== "FRAUD"}>Onaya gönder (maker-checker)</Button>
-        {c.sib_draft && <a className="text-sm text-indigo-600 underline" href={`/api/cases/${c.id}/sib.pdf`} onClick={(e) => { e.preventDefault(); download(`/api/cases/${c.id}/sib.pdf`, `SIB-${c.id}.pdf`); }}>PDF indir</a>}
+        {c.sib_draft && <a className="text-sm text-indigo-700 dark:text-indigo-300 underline" href={`/api/cases/${c.id}/sib.pdf`} onClick={(e) => { e.preventDefault(); download(`/api/cases/${c.id}/sib.pdf`, `SIB-${c.id}.pdf`); }}>PDF indir</a>}
       </div>
-      <p className="mt-2 text-xs text-amber-600">Tipping-off yasağı: bildirimde bulunulduğu bilgisi müşteriyle paylaşılamaz.</p>
+      <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">Tipping-off yasağı: bildirimde bulunulduğu bilgisi müşteriyle paylaşılamaz.</p>
     </Card>
   );
 }
@@ -226,12 +314,12 @@ export default function CaseDetailPage({ caseId }: { caseId: number }) {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        <a href="#/cases" className="text-sm text-indigo-600">← Kuyruk</a>
+        <a href="#/cases" aria-label="Vaka kuyruğuna dön" className="text-sm text-indigo-700 dark:text-indigo-300">← Kuyruk</a>
         <h1 className="text-lg font-semibold">#{c.id} {c.title}</h1>
         <Badge tone="indigo">{c.case_type}</Badge>
         <Badge>{c.status}</Badge>
         {c.ring_id && <Badge tone="rose">{c.ring_id}</Badge>}
-        <span className="text-sm text-slate-500">toplam {tl(c.total_amount_try)} · atanan {c.assigned_to ?? "—"}</span>
+        <span className="text-sm text-slate-600 dark:text-slate-400">toplam {tl(c.total_amount_try)} · atanan {c.assigned_to ?? "—"}</span>
       </div>
       <ErrorNote error={error} />
       <div className="flex flex-wrap gap-2">
@@ -261,9 +349,9 @@ export default function CaseDetailPage({ caseId }: { caseId: number }) {
         <Card title="Varlık ağı (2 adım)"><Graph customerId={c.customer_id} /></Card>
         <Copilot c={c} reload={load} />
         <Card title="Zaman çizelgesi">
-          <ol className="max-h-80 space-y-1 overflow-y-auto text-xs">
+          <ol className="max-h-80 space-y-1 overflow-y-auto text-xs" tabIndex={0} aria-label="Vaka olayları">
             {c.events.map((e) => (
-              <li key={e.id}><span className="text-slate-500">{when(e.created_at)}</span> <b>{e.event_type}</b> · {e.actor} {e.payload?.text ? `— ${String(e.payload.text)}` : ""}</li>
+              <li key={e.id}><span className="text-slate-600 dark:text-slate-400">{when(e.created_at)}</span> <b>{e.event_type}</b> · {e.actor} {e.payload?.text ? `— ${String(e.payload.text)}` : ""}</li>
             ))}
           </ol>
           <div className="mt-2 flex gap-2">
@@ -272,6 +360,7 @@ export default function CaseDetailPage({ caseId }: { caseId: number }) {
           </div>
         </Card>
         <SibEditor c={c} reload={load} />
+        <Approvals c={c} reload={load} />
       </div>
     </div>
   );

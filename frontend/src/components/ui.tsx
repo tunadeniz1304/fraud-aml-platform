@@ -28,15 +28,15 @@ export function Button({ variant = "primary", className, ...props }: ButtonHTMLA
   variant?: "primary" | "ghost" | "danger" | "success";
 }) {
   const styles = {
-    primary: "bg-indigo-600 text-white hover:bg-indigo-500",
+    primary: "bg-indigo-600 text-white hover:bg-indigo-700",
     ghost: "border border-slate-300 hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800",
-    danger: "bg-rose-600 text-white hover:bg-rose-500",
-    success: "bg-emerald-600 text-white hover:bg-emerald-500",
+    danger: "bg-rose-700 text-white hover:bg-rose-800",
+    success: "bg-emerald-700 text-white hover:bg-emerald-800",
   }[variant];
   return (
     <button
       className={cx(
-        "rounded-lg px-3 py-1.5 text-sm font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:cursor-not-allowed disabled:opacity-50",
+        "rounded-lg px-3 py-1.5 text-sm font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-900 disabled:cursor-not-allowed disabled:opacity-50",
         styles,
         className,
       )}
@@ -78,9 +78,9 @@ export function Badge({ children, tone = "slate" }: { children: ReactNode; tone?
 export function Stat({ label, value, hint }: { label: string; value: ReactNode; hint?: string }) {
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-      <div className="text-xs uppercase tracking-wide text-slate-500">{label}</div>
+      <div className="text-xs uppercase tracking-wide text-slate-600 dark:text-slate-400">{label}</div>
       <div className="mt-1 text-2xl font-semibold tabular-nums">{value}</div>
-      {hint && <div className="mt-1 text-xs text-slate-500">{hint}</div>}
+      {hint && <div className="mt-1 text-xs text-slate-600 dark:text-slate-400">{hint}</div>}
     </div>
   );
 }
@@ -103,5 +103,5 @@ export function ErrorNote({ error }: { error: string | null }) {
 }
 
 export function Empty({ children }: { children: ReactNode }) {
-  return <p className="py-6 text-center text-sm text-slate-500">{children}</p>;
+  return <p className="py-6 text-center text-sm text-slate-600 dark:text-slate-400">{children}</p>;
 }

@@ -36,11 +36,11 @@ export default function ScenariosPage() {
           {list.map((s) => (
             <Button key={s.name} variant="ghost" className="h-20 text-left" onClick={() => trigger(s.name)} disabled={!!busy}>
               <div className="font-semibold">{s.title}</div>
-              <div className="text-xs text-slate-500">beklenen: {s.expected}</div>
+              <div className="text-xs text-slate-600 dark:text-slate-400">beklenen: {s.expected}</div>
             </Button>
           ))}
         </div>
-        {busy && <p className="mt-2 text-sm text-slate-500">“{busy}” enjekte ediliyor…</p>}
+        {busy && <p className="mt-2 text-sm text-slate-600 dark:text-slate-400">“{busy}” enjekte ediliyor…</p>}
         <ErrorNote error={error} />
       </Card>
       {run && (
@@ -60,7 +60,7 @@ export default function ScenariosPage() {
             ))}
           </ul>
           <div className="mt-3 flex flex-wrap gap-2 text-sm">
-            {run.cases.map((c) => <a key={c.id} className="text-indigo-600 underline" href={`#/cases/${c.id}`}>Vaka #{c.id} ({c.case_type}{c.sib_status ? `, ${c.sib_status}` : ""})</a>)}
+            {run.cases.map((c) => <a key={c.id} className="text-indigo-700 dark:text-indigo-300 underline" href={`#/cases/${c.id}`}>Vaka #{c.id} ({c.case_type}{c.sib_status ? `, ${c.sib_status}` : ""})</a>)}
             {run.rings.map((g) => <Badge key={g.id} tone="rose">{g.stats.summary}</Badge>)}
           </div>
         </Card>

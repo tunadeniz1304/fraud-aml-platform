@@ -14,7 +14,7 @@ type Llm = { mode: string; model: string; calls: number; failures: number; last_
 
 function Row({ label, a, b }: { label: string; a?: number | null; b?: number | null }) {
   const fmt = (v?: number | null) => (v == null ? "—" : v.toFixed(3));
-  return <tr><td>{label}</td><td className="tabular-nums">{fmt(a)}</td><td className="tabular-nums">{fmt(b)}</td></tr>;
+  return <tr><th scope="row" className="normal-case tracking-normal">{label}</th><td className="tabular-nums">{fmt(a)}</td><td className="tabular-nums">{fmt(b)}</td></tr>;
 }
 
 export default function ModelsPage() {
@@ -45,7 +45,8 @@ export default function ModelsPage() {
       <div className="grid gap-4 lg:grid-cols-2">
         <Card title="Champion vs challenger" actions={isAdmin() && cmp?.challenger && <Button variant="ghost" onClick={promote}>Challenger'ı terfi et</Button>}>
           <table>
-            <thead><tr><th>Metrik (test)</th><th>{cmp?.champion}</th><th>{cmp?.challenger ?? "—"}</th></tr></thead>
+            <caption className="sr-only">Champion ve challenger model metrikleri</caption>
+            <thead><tr><th scope="col">Metrik (test)</th><th scope="col">{cmp?.champion}</th><th scope="col">{cmp?.challenger ?? "—"}</th></tr></thead>
             <tbody>
               <Row label="PR-AUC" a={cmp?.offline.champion?.pr_auc} b={cmp?.offline.challenger?.pr_auc} />
               <Row label="ROC-AUC" a={cmp?.offline.champion?.roc_auc} b={cmp?.offline.challenger?.roc_auc} />
@@ -55,10 +56,11 @@ export default function ModelsPage() {
               {cmp?.online.labelled && <Row label="Etiketli PR-AUC" a={cmp.online.labelled.champion_pr_auc} b={cmp.online.labelled.challenger_pr_auc} />}
             </tbody>
           </table>
-          <p className="mt-2 text-xs text-slate-500">Gölge skorlama: {cmp?.online.shadow_decisions ?? 0} karar · karar uyumu {cmp?.online.agreement != null ? `%${(cmp.online.agreement * 100).toFixed(1)}` : "—"}. Challenger kararları etkilemez.</p>
+          <p className="mt-2 text-xs text-slate-600 dark:text-slate-400">Gölge skorlama: {cmp?.online.shadow_decisions ?? 0} karar · karar uyumu {cmp?.online.agreement != null ? `%${(cmp.online.agreement * 100).toFixed(1)}` : "—"}. Challenger kararları etkilemez.</p>
         </Card>
         <Card title={`Drift (PSI) · ${drift?.observed ?? 0} gözlem`}>
-          {psi.length === 0 ? <p className="text-sm text-slate-500">Yeterli gözlem yok (en az 50).</p> : (
+          {psi.length === 0 ? <p className="text-sm text-slate-600 dark:text-slate-400">Yeterli gözlem yok (en az 50).</p> : (
+            <>
             <ul className="space-y-1 text-xs">
               {psi.map(([k, v]) => (
                 <li key={k} className="grid grid-cols-[10rem_1fr_3rem] items-center gap-2">
@@ -68,8 +70,17 @@ export default function ModelsPage() {
                 </li>
               ))}
             </ul>
+            <details className="mt-2 text-xs">
+              <summary className="cursor-pointer">Tablo olarak göster</summary>
+              <table>
+                <caption className="sr-only">Özellik bazında PSI değerleri</caption>
+                <thead><tr><th scope="col">Özellik</th><th scope="col">PSI</th><th scope="col">Durum</th></tr></thead>
+                <tbody>{psi.map(([k, v]) => <tr key={k}><th scope="row" className="normal-case tracking-normal">{k}</th><td className="tabular-nums">{v.toFixed(3)}</td><td>{v > 0.25 ? "belirgin drift" : v > 0.1 ? "izle" : "stabil"}</td></tr>)}</tbody>
+              </table>
+            </details>
+            </>
           )}
-          {drift?.alerts.length ? <p className="mt-2 text-sm font-semibold text-rose-600">⚠ Belirgin drift: {drift.alerts.join(", ")}</p> : null}
+          {drift?.alerts.length ? <p className="mt-2 text-sm font-semibold text-rose-700 dark:text-rose-400">⚠ Belirgin drift: {drift.alerts.join(", ")}</p> : null}
         </Card>
       </div>
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">

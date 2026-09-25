@@ -60,16 +60,16 @@ export default function RulesPage() {
                   <span className="font-mono">{r.id}</span>
                   {!r.enabled && <Badge tone="rose">kapalı</Badge>}
                   {r.action_hint && <Badge tone="amber">{r.action_hint}</Badge>}
-                  <span className="ml-auto text-xs text-slate-500">v{r.version} · {r.score}</span>
+                  <span className="ml-auto text-xs text-slate-600 dark:text-slate-400">v{r.version} · {r.score}</span>
                 </div>
-                <code className="block truncate text-xs text-slate-500">{r.when}</code>
+                <code className="block truncate text-xs text-slate-600 dark:text-slate-400">{r.when}</code>
               </button>
             </li>
           ))}
         </ul>
       </Card>
       <Card title="Kural düzenleyici (güvenli DSL — eval yok)">
-        {!edit ? <p className="text-sm text-slate-500">Soldan bir kural seçin.</p> : (
+        {!edit ? <p className="text-sm text-slate-600 dark:text-slate-400">Soldan bir kural seçin.</p> : (
           <div className="space-y-2 text-sm">
             <label className="block">Kimlik <input className="w-full font-mono" value={edit.id} onChange={(e) => setEdit({ ...edit, id: e.target.value })} disabled={rules.some((r) => r.id === edit.id && r.version > 0)} /></label>
             <label className="block">Ad <input className="w-full" value={edit.name} onChange={(e) => setEdit({ ...edit, name: e.target.value })} /></label>
@@ -94,7 +94,7 @@ export default function RulesPage() {
                 kesinlik <b>{result.precision == null ? "—" : result.precision.toFixed(3)}</b>, duyarlılık <b>{result.recall == null ? "—" : result.recall.toFixed(3)}</b>
               </div>
             )}
-            <details className="text-xs text-slate-500"><summary>Kullanılabilir alanlar ({Object.keys(fields).length})</summary>
+            <details className="text-xs text-slate-600 dark:text-slate-400"><summary>Kullanılabilir alanlar ({Object.keys(fields).length})</summary>
               <ul className="mt-1 grid grid-cols-1 gap-x-4 md:grid-cols-2">{Object.entries(fields).map(([k, v]) => <li key={k}><code>{k}</code> — {v}</li>)}</ul>
             </details>
           </div>
