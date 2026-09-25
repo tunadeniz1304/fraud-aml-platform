@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-25T10:44:34+00:00",
+  "generated_at": "2026-09-25T17:10:53+00:00",
   "dataset": "Elliptic",
   "source": "data\\external\\elliptic",
   "nodes": 203769,
@@ -15,48 +15,93 @@
   "split": "zaman adımı 1–34 eğitim, 35+ test",
   "results": {
     "graph": {
-      "illicit_f1": 0.1158,
-      "illicit_precision": 0.0845,
-      "illicit_recall": 0.1837,
-      "illicit_f1_at_0.5": 0.0733,
-      "pr_auc": 0.083,
-      "threshold": 0.2875,
+      "illicit_f1": 0.1177,
+      "illicit_f1_ci95": [
+        0.1093,
+        0.1257
+      ],
+      "illicit_precision": 0.0693,
+      "illicit_recall": 0.3887,
+      "illicit_f1_at_0.5": 0.0,
+      "pr_auc": 0.0754,
+      "pr_auc_ci95": [
+        0.0712,
+        0.0809
+      ],
+      "threshold": 0.1144,
+      "boosting_rounds": 22,
       "features": 4
     },
     "local": {
-      "illicit_f1": 0.7567,
-      "illicit_precision": 0.7982,
-      "illicit_recall": 0.7193,
-      "illicit_f1_at_0.5": 0.774,
-      "pr_auc": 0.7868,
-      "threshold": 0.3358,
+      "illicit_f1": 0.7447,
+      "illicit_f1_ci95": [
+        0.723,
+        0.7639
+      ],
+      "illicit_precision": 0.7586,
+      "illicit_recall": 0.7313,
+      "illicit_f1_at_0.5": 0.773,
+      "pr_auc": 0.7867,
+      "pr_auc_ci95": [
+        0.7645,
+        0.8075
+      ],
+      "threshold": 0.2831,
+      "boosting_rounds": 229,
       "features": 93
     },
     "local+graph": {
-      "illicit_f1": 0.7649,
-      "illicit_precision": 0.8366,
-      "illicit_recall": 0.7045,
-      "illicit_f1_at_0.5": 0.7713,
-      "pr_auc": 0.7832,
-      "threshold": 0.4307,
+      "illicit_f1": 0.7313,
+      "illicit_f1_ci95": [
+        0.7099,
+        0.7505
+      ],
+      "illicit_precision": 0.7313,
+      "illicit_recall": 0.7313,
+      "illicit_f1_at_0.5": 0.7664,
+      "pr_auc": 0.7846,
+      "pr_auc_ci95": [
+        0.7627,
+        0.8057
+      ],
+      "threshold": 0.265,
+      "boosting_rounds": 182,
       "features": 97
     },
     "all": {
-      "illicit_f1": 0.8149,
-      "illicit_precision": 0.926,
-      "illicit_recall": 0.7276,
-      "illicit_f1_at_0.5": 0.8188,
-      "pr_auc": 0.8036,
-      "threshold": 0.4213,
+      "illicit_f1": 0.7984,
+      "illicit_f1_ci95": [
+        0.7798,
+        0.817
+      ],
+      "illicit_precision": 0.8764,
+      "illicit_recall": 0.7331,
+      "illicit_f1_at_0.5": 0.8192,
+      "pr_auc": 0.805,
+      "pr_auc_ci95": [
+        0.785,
+        0.8249
+      ],
+      "threshold": 0.2633,
+      "boosting_rounds": 351,
       "features": 165
     },
     "all+graph": {
-      "illicit_f1": 0.7903,
-      "illicit_precision": 0.8509,
+      "illicit_f1": 0.7891,
+      "illicit_f1_ci95": [
+        0.7705,
+        0.8065
+      ],
+      "illicit_precision": 0.8482,
       "illicit_recall": 0.7378,
-      "illicit_f1_at_0.5": 0.8209,
-      "pr_auc": 0.8065,
-      "threshold": 0.2093,
+      "illicit_f1_at_0.5": 0.8201,
+      "pr_auc": 0.8031,
+      "pr_auc_ci95": [
+        0.7829,
+        0.8233
+      ],
+      "threshold": 0.2073,
+      "boosting_rounds": 311,
       "features": 169
     }
   },
@@ -65,5 +110,13 @@
     "in_degree",
     "out_degree",
     "component_size"
-  ]
+  ],
+  "graph_features_mode": "inductive: her düğüm yalnızca kendi zaman adımının alt grafiğinde",
+  "cross_step_edges": 0,
+  "early_stopping": "adım 1–29 fit, 30–34 doğrulama (sabır 50); sonra 1–34 yeniden fit",
+  "threshold_selection": "eğitim içi genişleyen pencere zamansal katlar: 20–24, 25–29, 30–34",
+  "bootstrap": {
+    "rounds": 1000,
+    "method": "stratified percentile, 95%"
+  }
 }

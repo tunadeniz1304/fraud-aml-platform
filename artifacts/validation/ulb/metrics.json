@@ -1,60 +1,318 @@
 {
-  "generated_at": "2026-09-25T10:39:06+00:00",
+  "generated_at": "2026-09-25T17:12:54+00:00",
   "dataset": "ULB Credit Card (OpenML 1597)",
   "rows": {
-    "train": 169461,
-    "valid": 29904,
-    "test": 85442
+    "train": 199364,
+    "valid": 42721,
+    "test": 42722
   },
-  "test_fraud": 108,
-  "test_fraud_rate": 0.00126,
+  "test_fraud": 52,
+  "test_fraud_rate": 0.00122,
   "results": {
     "gbm": {
-      "n": 85442,
-      "positives": 108,
-      "pr_auc": 0.7969,
-      "roc_auc": 0.9826,
-      "recall_at_1pct_fpr": 0.8796,
-      "budget_1pct": {
-        "alert_budget": 0.01,
-        "alerts": 854,
-        "precision": 0.1112,
-        "recall": 0.8796,
-        "cost_weighted_recall": 0.8744
+      "pr_auc": 0.7335,
+      "roc_auc": 0.9795,
+      "recall_at_1pct_fpr": 0.8462,
+      "budget_0.005": {
+        "recall": 0.8077,
+        "precision": 0.1963,
+        "cost_weighted_recall": 0.6191,
+        "cost": {
+          "alerts": 214,
+          "false_alerts": 172,
+          "fraud_amount_total": 6168.88,
+          "fraud_amount_caught": 3818.99,
+          "fraud_amount_missed": 2349.89,
+          "review_cost": 8600.0,
+          "total_cost": 10949.89,
+          "baseline_cost_no_system": 6168.88
+        },
+        "recall_ci95": [
+          0.6923,
+          0.9038
+        ]
       },
-      "brier": 0.00044,
-      "mean_score": 0.001128
-    },
-    "anomaly": {
-      "n": 85442,
-      "positives": 108,
-      "pr_auc": 0.0436,
-      "roc_auc": 0.9431,
-      "recall_at_1pct_fpr": 0.5185,
-      "budget_1pct": {
-        "alert_budget": 0.01,
-        "alerts": 854,
-        "precision": 0.0644,
-        "recall": 0.5093,
-        "cost_weighted_recall": 0.5653
+      "budget_0.01": {
+        "recall": 0.8462,
+        "precision": 0.103,
+        "cost_weighted_recall": 0.7799,
+        "cost": {
+          "alerts": 427,
+          "false_alerts": 383,
+          "fraud_amount_total": 6168.88,
+          "fraud_amount_caught": 4811.24,
+          "fraud_amount_missed": 1357.64,
+          "review_cost": 19150.0,
+          "total_cost": 20507.64,
+          "baseline_cost_no_system": 6168.88
+        },
+        "recall_ci95": [
+          0.7495,
+          0.9423
+        ]
+      },
+      "budget_0.02": {
+        "recall": 0.8462,
+        "precision": 0.0515,
+        "cost_weighted_recall": 0.7799,
+        "cost": {
+          "alerts": 854,
+          "false_alerts": 810,
+          "fraud_amount_total": 6168.88,
+          "fraud_amount_caught": 4811.24,
+          "fraud_amount_missed": 1357.64,
+          "review_cost": 40500.0,
+          "total_cost": 41857.64,
+          "baseline_cost_no_system": 6168.88
+        },
+        "recall_ci95": [
+          0.7495,
+          0.9423
+        ]
+      },
+      "pr_auc_ci95": [
+        0.6092,
+        0.8451
+      ],
+      "roc_auc_ci95": [
+        0.9626,
+        0.9928
+      ],
+      "calibration": {
+        "brier": 0.000441,
+        "ece_10bin": 0.000322,
+        "mean_predicted": 0.001007,
+        "observed_rate": 0.001217
       }
     },
-    "hybrid": {
-      "n": 85442,
-      "positives": 108,
-      "pr_auc": 0.7704,
-      "roc_auc": 0.9569,
-      "recall_at_1pct_fpr": 0.8241,
-      "budget_1pct": {
-        "alert_budget": 0.01,
-        "alerts": 854,
-        "precision": 0.103,
-        "recall": 0.8148,
-        "cost_weighted_recall": 0.8273
+    "anomaly": {
+      "pr_auc": 0.0419,
+      "roc_auc": 0.933,
+      "recall_at_1pct_fpr": 0.5769,
+      "budget_0.005": {
+        "recall": 0.2308,
+        "precision": 0.0561,
+        "cost_weighted_recall": 0.3704,
+        "cost": {
+          "alerts": 214,
+          "false_alerts": 202,
+          "fraud_amount_total": 6168.88,
+          "fraud_amount_caught": 2284.98,
+          "fraud_amount_missed": 3883.9,
+          "review_cost": 10100.0,
+          "total_cost": 13983.9,
+          "baseline_cost_no_system": 6168.88
+        },
+        "recall_ci95": [
+          0.1154,
+          0.3462
+        ]
       },
-      "brier": 0.000429,
-      "mean_score": 0.001141
+      "budget_0.01": {
+        "recall": 0.5577,
+        "precision": 0.0679,
+        "cost_weighted_recall": 0.396,
+        "cost": {
+          "alerts": 427,
+          "false_alerts": 398,
+          "fraud_amount_total": 6168.88,
+          "fraud_amount_caught": 2442.65,
+          "fraud_amount_missed": 3726.23,
+          "review_cost": 19900.0,
+          "total_cost": 23626.23,
+          "baseline_cost_no_system": 6168.88
+        },
+        "recall_ci95": [
+          0.4423,
+          0.6923
+        ]
+      },
+      "budget_0.02": {
+        "recall": 0.6538,
+        "precision": 0.0398,
+        "cost_weighted_recall": 0.5571,
+        "cost": {
+          "alerts": 854,
+          "false_alerts": 820,
+          "fraud_amount_total": 6168.88,
+          "fraud_amount_caught": 3436.6,
+          "fraud_amount_missed": 2732.28,
+          "review_cost": 41000.0,
+          "total_cost": 43732.28,
+          "baseline_cost_no_system": 6168.88
+        },
+        "recall_ci95": [
+          0.5192,
+          0.7885
+        ]
+      },
+      "pr_auc_ci95": [
+        0.0312,
+        0.0581
+      ],
+      "roc_auc_ci95": [
+        0.888,
+        0.9696
+      ]
+    },
+    "hybrid": {
+      "pr_auc": 0.7091,
+      "roc_auc": 0.9484,
+      "recall_at_1pct_fpr": 0.7885,
+      "budget_0.005": {
+        "recall": 0.7692,
+        "precision": 0.1869,
+        "cost_weighted_recall": 0.6174,
+        "cost": {
+          "alerts": 214,
+          "false_alerts": 174,
+          "fraud_amount_total": 6168.88,
+          "fraud_amount_caught": 3808.79,
+          "fraud_amount_missed": 2360.09,
+          "review_cost": 8700.0,
+          "total_cost": 11060.09,
+          "baseline_cost_no_system": 6168.88
+        },
+        "recall_ci95": [
+          0.6538,
+          0.8846
+        ]
+      },
+      "budget_0.01": {
+        "recall": 0.7885,
+        "precision": 0.096,
+        "cost_weighted_recall": 0.6186,
+        "cost": {
+          "alerts": 427,
+          "false_alerts": 386,
+          "fraud_amount_total": 6168.88,
+          "fraud_amount_caught": 3815.85,
+          "fraud_amount_missed": 2353.03,
+          "review_cost": 19300.0,
+          "total_cost": 21653.03,
+          "baseline_cost_no_system": 6168.88
+        },
+        "recall_ci95": [
+          0.6731,
+          0.8846
+        ]
+      },
+      "budget_0.02": {
+        "recall": 0.8269,
+        "precision": 0.0504,
+        "cost_weighted_recall": 0.6191,
+        "cost": {
+          "alerts": 854,
+          "false_alerts": 811,
+          "fraud_amount_total": 6168.88,
+          "fraud_amount_caught": 3818.99,
+          "fraud_amount_missed": 2349.89,
+          "review_cost": 40550.0,
+          "total_cost": 42899.89,
+          "baseline_cost_no_system": 6168.88
+        },
+        "recall_ci95": [
+          0.7308,
+          0.9231
+        ]
+      },
+      "pr_auc_ci95": [
+        0.5794,
+        0.841
+      ],
+      "roc_auc_ci95": [
+        0.9012,
+        0.9841
+      ],
+      "calibration": {
+        "brier": 0.000438,
+        "ece_10bin": 7.4e-05,
+        "mean_predicted": 0.001187,
+        "observed_rate": 0.001217
+      }
     }
   },
-  "limitation": "Özellikler PCA bileşenleri: kural motoru, feature store ve graf katmanı uygulanamaz; yalnızca GBM + anomali + kalibrasyon hattı test edilir."
+  "hybrid_minus_gbm_pr_auc_ci95": [
+    -0.0674,
+    0.0143
+  ],
+  "stacker": {
+    "inputs": [
+      "rule",
+      "ml",
+      "anomaly"
+    ],
+    "transform": "logit",
+    "coef": [
+      0.003736,
+      0.881574,
+      0.409023
+    ],
+    "intercept": -2.143549,
+    "fit": {
+      "method": "non-negative logistic regression over logits (Platt-type), L2=0.001, fitted on the validation split",
+      "rows": 42721,
+      "positives": 56,
+      "anomaly_input": "kept",
+      "ablation": {
+        "protocol": "validation first half -> fit, second half -> score (time order)",
+        "rows": [
+          21360,
+          21361
+        ],
+        "positives": [
+          22,
+          34
+        ],
+        "variants": {
+          "floored_legacy": {
+            "log_loss": 0.002305,
+            "brier": 0.000369,
+            "pr_auc": 0.8865,
+            "coef": [
+              0.3,
+              0.9574,
+              0.3843
+            ]
+          },
+          "unconstrained": {
+            "log_loss": 0.002507,
+            "brier": 0.000407,
+            "pr_auc": 0.8861,
+            "coef": [
+              0.0019,
+              0.8262,
+              0.3611
+            ]
+          },
+          "nonneg": {
+            "log_loss": 0.002508,
+            "brier": 0.000408,
+            "pr_auc": 0.8861,
+            "coef": [
+              0.0,
+              0.826,
+              0.3619
+            ]
+          },
+          "nonneg_no_anomaly": {
+            "log_loss": 0.002692,
+            "brier": 0.000417,
+            "pr_auc": 0.8851,
+            "coef": [
+              0.0,
+              0.9609,
+              0.0
+            ]
+          }
+        },
+        "anomaly_kept": true
+      }
+    }
+  },
+  "bootstrap": {
+    "rounds": 1000,
+    "method": "stratified percentile (pos/neg ayrı)"
+  },
+  "limitation": "Yalnızca ML yığını test edilir: özellikler PCA bileşenleri olduğu için kural motoru, feature store, graf katmanı ve politika uygulanamaz."
 }

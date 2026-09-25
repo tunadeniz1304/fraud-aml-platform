@@ -1,15 +1,16 @@
 {
-  "generated_at": "2026-09-25T10:00:35+00:00",
+  "generated_at": "2026-09-25T16:57:19+00:00",
   "dataset": "PaySim",
   "source": "tests\\fixtures\\paysim_sample.csv",
   "subset": {
     "sample_frac": 1.0,
     "sampling": "alıcı (nameDest) bazlı hash örneklemesi",
+    "role": "duman testi (fixture)",
     "steps": [
       1,
       729
     ],
-    "train_until_step": 510.6
+    "train_until_step": 322.0
   },
   "mapping": {
     "type_map": {
@@ -41,294 +42,463 @@
       "oldbalanceDest",
       "newbalanceDest"
     ],
-    "amount_prior_try": 74492.31
+    "amount_prior_try": 74352.14
+  },
+  "split": {
+    "method": "zaman sıralı satır bölmesi 70/15/15 (sınırlar zaman damgası değişiminde)",
+    "valid_start_ts": 1768377303.529,
+    "test_start_ts": 1768573894.737
   },
   "rows": {
     "total": 19999,
-    "train": 16194,
-    "valid": 2857,
-    "test": 948,
-    "test_fraud": 7,
-    "test_fraud_rate": 0.00738
+    "train": 13999,
+    "valid": 3000,
+    "test": 3000,
+    "train_fraud": 12,
+    "valid_fraud": 0,
+    "test_fraud": 14,
+    "test_fraud_rate": 0.00467
   },
   "layers": {
     "rules": {
-      "pr_auc": 0.1083,
-      "roc_auc": 0.7301,
+      "pr_auc": 0.0546,
+      "roc_auc": 0.7664,
       "recall_at_1pct_fpr": 0.0,
       "budget_0.005": {
         "recall": 0.0,
         "precision": 0.0,
         "cost_weighted_recall": 0.0,
         "cost": {
-          "alerts": 5,
-          "false_alerts": 5,
-          "fraud_amount_total": 13296617.43,
+          "alerts": 15,
+          "false_alerts": 15,
+          "fraud_amount_total": 21515904.35,
           "fraud_amount_caught": 0.0,
-          "fraud_amount_missed": 13296617.43,
-          "review_cost": 250.0,
-          "total_cost": 13296867.43,
-          "baseline_cost_no_system": 13296617.43
-        }
+          "fraud_amount_missed": 21515904.35,
+          "review_cost": 750.0,
+          "total_cost": 21516654.35,
+          "baseline_cost_no_system": 21515904.35
+        },
+        "recall_ci95": [
+          0.1429,
+          0.5714
+        ]
       },
       "budget_0.01": {
         "recall": 0.1429,
-        "precision": 0.1111,
-        "cost_weighted_recall": 0.4512,
+        "precision": 0.0667,
+        "cost_weighted_recall": 0.2823,
         "cost": {
-          "alerts": 9,
-          "false_alerts": 8,
-          "fraud_amount_total": 13296617.43,
-          "fraud_amount_caught": 5999376.79,
-          "fraud_amount_missed": 7297240.64,
-          "review_cost": 400.0,
-          "total_cost": 7297640.64,
-          "baseline_cost_no_system": 13296617.43
-        }
+          "alerts": 30,
+          "false_alerts": 28,
+          "fraud_amount_total": 21515904.35,
+          "fraud_amount_caught": 6073849.22,
+          "fraud_amount_missed": 15442055.13,
+          "review_cost": 1400.0,
+          "total_cost": 15443455.13,
+          "baseline_cost_no_system": 21515904.35
+        },
+        "recall_ci95": [
+          0.1429,
+          0.5714
+        ]
+      },
+      "budget_0.02": {
+        "recall": 0.3571,
+        "precision": 0.0833,
+        "cost_weighted_recall": 0.8602,
+        "cost": {
+          "alerts": 60,
+          "false_alerts": 55,
+          "fraud_amount_total": 21515904.35,
+          "fraud_amount_caught": 18507898.04,
+          "fraud_amount_missed": 3008006.31,
+          "review_cost": 2750.0,
+          "total_cost": 3010756.31,
+          "baseline_cost_no_system": 21515904.35
+        },
+        "recall_ci95": [
+          0.3571,
+          0.8571
+        ]
       },
       "pr_auc_ci95": [
-        0.0042,
-        0.3091
+        0.0179,
+        0.1308
       ],
       "roc_auc_ci95": [
-        0.4082,
-        0.991
+        0.633,
+        0.8966
       ]
     },
     "gbm": {
-      "pr_auc": 0.0376,
-      "roc_auc": 0.7034,
+      "pr_auc": 0.0207,
+      "roc_auc": 0.7236,
       "recall_at_1pct_fpr": 0.1429,
       "budget_0.005": {
         "recall": 0.0,
         "precision": 0.0,
         "cost_weighted_recall": 0.0,
         "cost": {
-          "alerts": 5,
-          "false_alerts": 5,
-          "fraud_amount_total": 13296617.43,
+          "alerts": 15,
+          "false_alerts": 15,
+          "fraud_amount_total": 21515904.35,
           "fraud_amount_caught": 0.0,
-          "fraud_amount_missed": 13296617.43,
-          "review_cost": 250.0,
-          "total_cost": 13296867.43,
-          "baseline_cost_no_system": 13296617.43
-        }
+          "fraud_amount_missed": 21515904.35,
+          "review_cost": 750.0,
+          "total_cost": 21516654.35,
+          "baseline_cost_no_system": 21515904.35
+        },
+        "recall_ci95": [
+          0.0,
+          0.1429
+        ]
       },
       "budget_0.01": {
         "recall": 0.1429,
-        "precision": 0.1111,
-        "cost_weighted_recall": 0.0048,
+        "precision": 0.0667,
+        "cost_weighted_recall": 0.0911,
         "cost": {
-          "alerts": 9,
-          "false_alerts": 8,
-          "fraud_amount_total": 13296617.43,
-          "fraud_amount_caught": 64083.54,
-          "fraud_amount_missed": 13232533.89,
-          "review_cost": 400.0,
-          "total_cost": 13232933.89,
-          "baseline_cost_no_system": 13296617.43
-        }
+          "alerts": 30,
+          "false_alerts": 28,
+          "fraud_amount_total": 21515904.35,
+          "fraud_amount_caught": 1960683.11,
+          "fraud_amount_missed": 19555221.24,
+          "review_cost": 1400.0,
+          "total_cost": 19556621.24,
+          "baseline_cost_no_system": 21515904.35
+        },
+        "recall_ci95": [
+          0.0,
+          0.3571
+        ]
+      },
+      "budget_0.02": {
+        "recall": 0.1429,
+        "precision": 0.0333,
+        "cost_weighted_recall": 0.0911,
+        "cost": {
+          "alerts": 60,
+          "false_alerts": 58,
+          "fraud_amount_total": 21515904.35,
+          "fraud_amount_caught": 1960683.11,
+          "fraud_amount_missed": 19555221.24,
+          "review_cost": 2900.0,
+          "total_cost": 19558121.24,
+          "baseline_cost_no_system": 21515904.35
+        },
+        "recall_ci95": [
+          0.0,
+          0.3571
+        ]
       },
       "pr_auc_ci95": [
-        0.0057,
-        0.209
+        0.0078,
+        0.0774
       ],
       "roc_auc_ci95": [
-        0.4979,
-        0.8801
+        0.6012,
+        0.8338
       ]
     },
     "rules+gbm": {
-      "pr_auc": 0.046,
-      "roc_auc": 0.7795,
+      "pr_auc": 0.0047,
+      "roc_auc": 0.5,
       "recall_at_1pct_fpr": 0.0,
       "budget_0.005": {
         "recall": 0.0,
         "precision": 0.0,
         "cost_weighted_recall": 0.0,
         "cost": {
-          "alerts": 5,
-          "false_alerts": 5,
-          "fraud_amount_total": 13296617.43,
+          "alerts": 15,
+          "false_alerts": 15,
+          "fraud_amount_total": 21515904.35,
           "fraud_amount_caught": 0.0,
-          "fraud_amount_missed": 13296617.43,
-          "review_cost": 250.0,
-          "total_cost": 13296867.43,
-          "baseline_cost_no_system": 13296617.43
-        }
+          "fraud_amount_missed": 21515904.35,
+          "review_cost": 750.0,
+          "total_cost": 21516654.35,
+          "baseline_cost_no_system": 21515904.35
+        },
+        "recall_ci95": [
+          1.0,
+          1.0
+        ]
       },
       "budget_0.01": {
         "recall": 0.0,
         "precision": 0.0,
         "cost_weighted_recall": 0.0,
         "cost": {
-          "alerts": 9,
-          "false_alerts": 9,
-          "fraud_amount_total": 13296617.43,
+          "alerts": 30,
+          "false_alerts": 30,
+          "fraud_amount_total": 21515904.35,
           "fraud_amount_caught": 0.0,
-          "fraud_amount_missed": 13296617.43,
-          "review_cost": 450.0,
-          "total_cost": 13297067.43,
-          "baseline_cost_no_system": 13296617.43
-        }
+          "fraud_amount_missed": 21515904.35,
+          "review_cost": 1500.0,
+          "total_cost": 21517404.35,
+          "baseline_cost_no_system": 21515904.35
+        },
+        "recall_ci95": [
+          1.0,
+          1.0
+        ]
+      },
+      "budget_0.02": {
+        "recall": 0.0,
+        "precision": 0.0,
+        "cost_weighted_recall": 0.0,
+        "cost": {
+          "alerts": 60,
+          "false_alerts": 60,
+          "fraud_amount_total": 21515904.35,
+          "fraud_amount_caught": 0.0,
+          "fraud_amount_missed": 21515904.35,
+          "review_cost": 3000.0,
+          "total_cost": 21518904.35,
+          "baseline_cost_no_system": 21515904.35
+        },
+        "recall_ci95": [
+          1.0,
+          1.0
+        ]
       },
       "pr_auc_ci95": [
-        0.0078,
-        0.12
+        0.0047,
+        0.0047
       ],
       "roc_auc_ci95": [
-        0.5354,
-        0.9582
+        0.5,
+        0.5
       ]
     },
     "+anomaly": {
-      "pr_auc": 0.2869,
-      "roc_auc": 0.7828,
-      "recall_at_1pct_fpr": 0.2857,
+      "pr_auc": 0.0047,
+      "roc_auc": 0.5,
+      "recall_at_1pct_fpr": 0.0,
       "budget_0.005": {
-        "recall": 0.2857,
-        "precision": 0.4,
-        "cost_weighted_recall": 0.8169,
+        "recall": 0.0,
+        "precision": 0.0,
+        "cost_weighted_recall": 0.0,
         "cost": {
-          "alerts": 5,
-          "false_alerts": 3,
-          "fraud_amount_total": 13296617.43,
-          "fraud_amount_caught": 10862483.26,
-          "fraud_amount_missed": 2434134.17,
-          "review_cost": 150.0,
-          "total_cost": 2434284.17,
-          "baseline_cost_no_system": 13296617.43
-        }
+          "alerts": 15,
+          "false_alerts": 15,
+          "fraud_amount_total": 21515904.35,
+          "fraud_amount_caught": 0.0,
+          "fraud_amount_missed": 21515904.35,
+          "review_cost": 750.0,
+          "total_cost": 21516654.35,
+          "baseline_cost_no_system": 21515904.35
+        },
+        "recall_ci95": [
+          1.0,
+          1.0
+        ]
       },
       "budget_0.01": {
-        "recall": 0.2857,
-        "precision": 0.2222,
-        "cost_weighted_recall": 0.8169,
+        "recall": 0.0,
+        "precision": 0.0,
+        "cost_weighted_recall": 0.0,
         "cost": {
-          "alerts": 9,
-          "false_alerts": 7,
-          "fraud_amount_total": 13296617.43,
-          "fraud_amount_caught": 10862483.26,
-          "fraud_amount_missed": 2434134.17,
-          "review_cost": 350.0,
-          "total_cost": 2434484.17,
-          "baseline_cost_no_system": 13296617.43
-        }
+          "alerts": 30,
+          "false_alerts": 30,
+          "fraud_amount_total": 21515904.35,
+          "fraud_amount_caught": 0.0,
+          "fraud_amount_missed": 21515904.35,
+          "review_cost": 1500.0,
+          "total_cost": 21517404.35,
+          "baseline_cost_no_system": 21515904.35
+        },
+        "recall_ci95": [
+          1.0,
+          1.0
+        ]
+      },
+      "budget_0.02": {
+        "recall": 0.0,
+        "precision": 0.0,
+        "cost_weighted_recall": 0.0,
+        "cost": {
+          "alerts": 60,
+          "false_alerts": 60,
+          "fraud_amount_total": 21515904.35,
+          "fraud_amount_caught": 0.0,
+          "fraud_amount_missed": 21515904.35,
+          "review_cost": 3000.0,
+          "total_cost": 21518904.35,
+          "baseline_cost_no_system": 21515904.35
+        },
+        "recall_ci95": [
+          1.0,
+          1.0
+        ]
       },
       "pr_auc_ci95": [
-        0.0143,
-        0.6249
+        0.0047,
+        0.0047
       ],
       "roc_auc_ci95": [
-        0.5164,
-        0.9841
+        0.5,
+        0.5
       ]
     },
     "+graph": {
-      "pr_auc": 0.2869,
-      "roc_auc": 0.7828,
-      "recall_at_1pct_fpr": 0.2857,
+      "pr_auc": 0.0047,
+      "roc_auc": 0.5,
+      "recall_at_1pct_fpr": 0.0,
       "budget_0.005": {
-        "recall": 0.2857,
-        "precision": 0.4,
-        "cost_weighted_recall": 0.8169,
+        "recall": 0.0,
+        "precision": 0.0,
+        "cost_weighted_recall": 0.0,
         "cost": {
-          "alerts": 5,
-          "false_alerts": 3,
-          "fraud_amount_total": 13296617.43,
-          "fraud_amount_caught": 10862483.26,
-          "fraud_amount_missed": 2434134.17,
-          "review_cost": 150.0,
-          "total_cost": 2434284.17,
-          "baseline_cost_no_system": 13296617.43
-        }
+          "alerts": 15,
+          "false_alerts": 15,
+          "fraud_amount_total": 21515904.35,
+          "fraud_amount_caught": 0.0,
+          "fraud_amount_missed": 21515904.35,
+          "review_cost": 750.0,
+          "total_cost": 21516654.35,
+          "baseline_cost_no_system": 21515904.35
+        },
+        "recall_ci95": [
+          1.0,
+          1.0
+        ]
       },
       "budget_0.01": {
-        "recall": 0.2857,
-        "precision": 0.2222,
-        "cost_weighted_recall": 0.8169,
+        "recall": 0.0,
+        "precision": 0.0,
+        "cost_weighted_recall": 0.0,
         "cost": {
-          "alerts": 9,
-          "false_alerts": 7,
-          "fraud_amount_total": 13296617.43,
-          "fraud_amount_caught": 10862483.26,
-          "fraud_amount_missed": 2434134.17,
-          "review_cost": 350.0,
-          "total_cost": 2434484.17,
-          "baseline_cost_no_system": 13296617.43
-        }
+          "alerts": 30,
+          "false_alerts": 30,
+          "fraud_amount_total": 21515904.35,
+          "fraud_amount_caught": 0.0,
+          "fraud_amount_missed": 21515904.35,
+          "review_cost": 1500.0,
+          "total_cost": 21517404.35,
+          "baseline_cost_no_system": 21515904.35
+        },
+        "recall_ci95": [
+          1.0,
+          1.0
+        ]
+      },
+      "budget_0.02": {
+        "recall": 0.0,
+        "precision": 0.0,
+        "cost_weighted_recall": 0.0,
+        "cost": {
+          "alerts": 60,
+          "false_alerts": 60,
+          "fraud_amount_total": 21515904.35,
+          "fraud_amount_caught": 0.0,
+          "fraud_amount_missed": 21515904.35,
+          "review_cost": 3000.0,
+          "total_cost": 21518904.35,
+          "baseline_cost_no_system": 21515904.35
+        },
+        "recall_ci95": [
+          1.0,
+          1.0
+        ]
       },
       "pr_auc_ci95": [
-        0.0143,
-        0.6249
+        0.0047,
+        0.0047
       ],
       "roc_auc_ci95": [
-        0.5164,
-        0.9841
+        0.5,
+        0.5
       ]
     },
     "full": {
-      "pr_auc": 0.2869,
-      "roc_auc": 0.7829,
-      "recall_at_1pct_fpr": 0.2857,
+      "pr_auc": 0.0047,
+      "roc_auc": 0.5,
+      "recall_at_1pct_fpr": 0.0,
       "budget_0.005": {
-        "recall": 0.2857,
-        "precision": 0.4,
-        "cost_weighted_recall": 0.8169,
+        "recall": 0.0,
+        "precision": 0.0,
+        "cost_weighted_recall": 0.0,
         "cost": {
-          "alerts": 5,
-          "false_alerts": 3,
-          "fraud_amount_total": 13296617.43,
-          "fraud_amount_caught": 10862483.26,
-          "fraud_amount_missed": 2434134.17,
-          "review_cost": 150.0,
-          "total_cost": 2434284.17,
-          "baseline_cost_no_system": 13296617.43
-        }
+          "alerts": 15,
+          "false_alerts": 15,
+          "fraud_amount_total": 21515904.35,
+          "fraud_amount_caught": 0.0,
+          "fraud_amount_missed": 21515904.35,
+          "review_cost": 750.0,
+          "total_cost": 21516654.35,
+          "baseline_cost_no_system": 21515904.35
+        },
+        "recall_ci95": [
+          1.0,
+          1.0
+        ]
       },
       "budget_0.01": {
-        "recall": 0.2857,
-        "precision": 0.2222,
-        "cost_weighted_recall": 0.8169,
+        "recall": 0.0,
+        "precision": 0.0,
+        "cost_weighted_recall": 0.0,
         "cost": {
-          "alerts": 9,
-          "false_alerts": 7,
-          "fraud_amount_total": 13296617.43,
-          "fraud_amount_caught": 10862483.26,
-          "fraud_amount_missed": 2434134.17,
-          "review_cost": 350.0,
-          "total_cost": 2434484.17,
-          "baseline_cost_no_system": 13296617.43
-        }
+          "alerts": 30,
+          "false_alerts": 30,
+          "fraud_amount_total": 21515904.35,
+          "fraud_amount_caught": 0.0,
+          "fraud_amount_missed": 21515904.35,
+          "review_cost": 1500.0,
+          "total_cost": 21517404.35,
+          "baseline_cost_no_system": 21515904.35
+        },
+        "recall_ci95": [
+          1.0,
+          1.0
+        ]
+      },
+      "budget_0.02": {
+        "recall": 0.0,
+        "precision": 0.0,
+        "cost_weighted_recall": 0.0,
+        "cost": {
+          "alerts": 60,
+          "false_alerts": 60,
+          "fraud_amount_total": 21515904.35,
+          "fraud_amount_caught": 0.0,
+          "fraud_amount_missed": 21515904.35,
+          "review_cost": 3000.0,
+          "total_cost": 21518904.35,
+          "baseline_cost_no_system": 21515904.35
+        },
+        "recall_ci95": [
+          1.0,
+          1.0
+        ]
       },
       "pr_auc_ci95": [
-        0.0143,
-        0.6249
+        0.0047,
+        0.0047
       ],
       "roc_auc_ci95": [
-        0.5168,
-        0.9841
+        0.5,
+        0.5
       ]
     }
   },
   "ablation": [
     {
       "layer": "rules+gbm",
-      "delta_pr_auc": -0.0623,
+      "delta_pr_auc": -0.0499,
       "ci95": [
-        -0.1987,
-        0.0104
+        -0.1261,
+        -0.0132
       ],
-      "verdict": "katkı yok"
+      "verdict": "zarar"
     },
     {
       "layer": "+anomaly",
-      "delta_pr_auc": 0.2409,
+      "delta_pr_auc": 0.0,
       "ci95": [
-        0.0048,
-        0.5464
+        0.0,
+        0.0
       ],
-      "verdict": "katkı var"
+      "verdict": "katkı yok"
     },
     {
       "layer": "+graph",
@@ -343,39 +513,128 @@
       "layer": "full",
       "delta_pr_auc": 0.0,
       "ci95": [
-        -0.0,
+        0.0,
         0.0
       ],
       "verdict": "katkı yok"
     }
   ],
+  "stacked_vs_gbm": [
+    {
+      "layer": "rules+gbm",
+      "delta_pr_auc_vs_gbm": -0.016,
+      "ci95": [
+        -0.0727,
+        -0.0031
+      ],
+      "verdict": "zarar"
+    },
+    {
+      "layer": "+anomaly",
+      "delta_pr_auc_vs_gbm": -0.016,
+      "ci95": [
+        -0.0727,
+        -0.0031
+      ],
+      "verdict": "zarar"
+    },
+    {
+      "layer": "+graph",
+      "delta_pr_auc_vs_gbm": -0.016,
+      "ci95": [
+        -0.0727,
+        -0.0031
+      ],
+      "verdict": "zarar"
+    },
+    {
+      "layer": "full",
+      "delta_pr_auc_vs_gbm": -0.016,
+      "ci95": [
+        -0.0727,
+        -0.0031
+      ],
+      "verdict": "zarar"
+    }
+  ],
+  "calibration_test": {
+    "gbm": {
+      "brier": 0.004778,
+      "ece_10bin": 0.004714,
+      "mean_predicted": 0.000717,
+      "observed_rate": 0.004667
+    },
+    "rules+gbm": {
+      "brier": 0.004667,
+      "ece_10bin": 0.004666,
+      "mean_predicted": 1e-06,
+      "observed_rate": 0.004667
+    },
+    "+anomaly": {
+      "brier": 0.004667,
+      "ece_10bin": 0.004666,
+      "mean_predicted": 1e-06,
+      "observed_rate": 0.004667
+    },
+    "+graph": {
+      "brier": 0.010832,
+      "ece_10bin": 0.078659,
+      "mean_predicted": 0.083326,
+      "observed_rate": 0.004667
+    }
+  },
+  "stacker": {
+    "inputs": [
+      "rule",
+      "ml",
+      "anomaly"
+    ],
+    "transform": "logit",
+    "coef": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "intercept": -13.81551,
+    "fit": {
+      "method": "non-negative logistic regression over logits (Platt-type), L2=0.001, fitted on the validation split",
+      "rows": 3000,
+      "positives": 0,
+      "anomaly_input": "kept",
+      "ablation": null
+    }
+  },
+  "rules+gbm_coef": [
+    0.0,
+    0.0
+  ],
   "actions": {
     "all": {
-      "ALLOW": 948,
+      "ALLOW": 3000,
       "STEP_UP": 0,
       "HOLD": 0,
       "BLOCK": 0
     },
     "fraud": {
-      "ALLOW": 7,
+      "ALLOW": 14,
       "STEP_UP": 0,
       "HOLD": 0,
       "BLOCK": 0
     }
   },
   "feature_importance_top": {
-    "amount_try": 0.36391,
-    "hour": 0.36009,
-    "amount_zscore": 0.10903,
-    "amount_log": 0.08258,
-    "is_cash_channel": 0.02841,
-    "hour_unusual": 0.02765,
-    "amount_ratio": 0.0202,
-    "is_night": 0.00609,
-    "payee_age_d": 0.00106,
-    "near_threshold": 0.00094,
-    "payee_fan_in_24h": 5e-05,
-    "first_large_transfer": 0.0
+    "hour": 0.29957,
+    "amount_try": 0.2884,
+    "amount_zscore": 0.25132,
+    "amount_log": 0.07203,
+    "is_cash_channel": 0.03918,
+    "hour_unusual": 0.02061,
+    "amount_ratio": 0.01738,
+    "is_night": 0.00615,
+    "payee_age_d": 0.00444,
+    "near_threshold": 0.00065,
+    "payee_fan_in_24h": 0.00015,
+    "near_threshold_cnt_24h": 0.00011
   },
   "thresholds": {
     "step_up": 0.35,
@@ -384,9 +643,158 @@
   },
   "model": {
     "features": 48,
-    "trees": 77
+    "trees": 299
   },
-  "replay_seconds": 5.7,
   "review_cost_try": 50.0,
-  "bootstrap_rounds": 200
+  "bootstrap": {
+    "rounds": 1000,
+    "method": "stratified percentile (pos/neg ayrı)"
+  },
+  "budgets": [
+    0.005,
+    0.01,
+    0.02
+  ],
+  "feature_ablation": {
+    "hour": {
+      "features": [
+        "hour",
+        "is_night",
+        "night_ratio_7d",
+        "hour_unusual"
+      ],
+      "importance_share_full_model": 0.3263,
+      "delta_pr_auc_gbm_ci95": [
+        -0.0678,
+        0.0098
+      ],
+      "top_features_without": {
+        "amount_zscore": 0.48929,
+        "amount_try": 0.36334,
+        "is_cash_channel": 0.0814,
+        "amount_log": 0.04787,
+        "amount_ratio": 0.0099,
+        "payee_age_d": 0.00726,
+        "near_threshold": 0.0008,
+        "payee_fan_in_24h": 8e-05,
+        "near_threshold_cnt_24h": 6e-05,
+        "first_large_transfer": 0.0,
+        "cnt_1m": 0.0,
+        "sum_1m": 0.0
+      },
+      "gbm": {
+        "pr_auc": 0.0207,
+        "pr_auc_ci95": [
+          0.0078,
+          0.0774
+        ],
+        "recall_0.005": [
+          0.0,
+          [
+            0.0,
+            0.1429
+          ]
+        ],
+        "recall_0.01": [
+          0.1429,
+          [
+            0.0,
+            0.3571
+          ]
+        ],
+        "recall_0.02": [
+          0.1429,
+          [
+            0.0,
+            0.3571
+          ]
+        ]
+      },
+      "gbm_without": {
+        "pr_auc": 0.0103,
+        "pr_auc_ci95": [
+          0.0069,
+          0.0249
+        ],
+        "recall_0.005": [
+          0.0,
+          [
+            0.0,
+            0.0
+          ]
+        ],
+        "recall_0.01": [
+          0.0,
+          [
+            0.0,
+            0.0
+          ]
+        ],
+        "recall_0.02": [
+          0.0714,
+          [
+            0.0,
+            0.2143
+          ]
+        ]
+      },
+      "+anomaly": {
+        "pr_auc": 0.0047,
+        "pr_auc_ci95": [
+          0.0047,
+          0.0047
+        ],
+        "recall_0.005": [
+          0.0,
+          [
+            1.0,
+            1.0
+          ]
+        ],
+        "recall_0.01": [
+          0.0,
+          [
+            1.0,
+            1.0
+          ]
+        ],
+        "recall_0.02": [
+          0.0,
+          [
+            1.0,
+            1.0
+          ]
+        ]
+      },
+      "+anomaly_without": {
+        "pr_auc": 0.0047,
+        "pr_auc_ci95": [
+          0.0047,
+          0.0047
+        ],
+        "recall_0.005": [
+          0.0,
+          [
+            1.0,
+            1.0
+          ]
+        ],
+        "recall_0.01": [
+          0.0,
+          [
+            1.0,
+            1.0
+          ]
+        ],
+        "recall_0.02": [
+          0.0,
+          [
+            1.0,
+            1.0
+          ]
+        ]
+      }
+    }
+  },
+  "replay_seconds": 10.7
 }
