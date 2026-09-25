@@ -5,6 +5,7 @@ Each test names the finding it pins down.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime
 from pathlib import Path
@@ -12,10 +13,13 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import IntegrityError
 
 from app.api.dashboard import create_app
+from app.cases.service import CaseError, CaseService, MakerCheckerError
 from app.config import BASE_DIR, get_settings
-from app.security.auth import Principal, issue_token
+from app.db.models import Approval
+from app.security.auth import BREAK_GLASS_USERNAME, Principal, UserDirectory, issue_token
 
 DEMO = BASE_DIR / "data" / "demo"
 SVC = "svc-credential-for-tests-01"
@@ -24,6 +28,11 @@ SVC = "svc-credential-for-tests-01"
 def _bearer(user: str, role: str) -> dict[str, str]:
     token, _ = issue_token(Principal(user, role, user))  # type: ignore[arg-type]
     return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture()
+async def service(store: Any) -> CaseService:
+    return CaseService(store.db, accounts=store.accounts, writer=store.writer)
 
 
 @pytest.fixture()
@@ -54,7 +63,8 @@ def _step_up_tx(tx_id: str) -> dict[str, Any]:
     avg = float(c.get("avg_amount") or 1000)
     return {
         "transaction_id": tx_id,
-        "ts": datetime.now().replace(microsecond=0).isoformat(),
+        # a fixed daytime hour: the evening/night rules must not tip it to HOLD
+        "ts": datetime.now().replace(hour=11, minute=0, second=0, microsecond=0).isoformat(),
         "customer_id": c["customer_id"],
         "amount": avg * 6,
         "currency": "TRY",
@@ -280,3 +290,81 @@ class TestSessions:
             # a token forged for a role the user never had is downgraded too
             forged = _bearer("analist", "admin")
             assert c.get("/api/auth/me", headers=forged).json()["role"] == "analist"
+
+
+class TestApprovals:
+    def test_h5_break_glass_token_cannot_decide(
+        self, app_env: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ADMIN_TOKEN", "break-glass-credential-for-tests")
+        glass = {"Authorization": "Bearer break-glass-credential-for-tests"}
+        with TestClient(create_app()) as c:
+            c.post("/api/admin/accounts/CUST-0003/status?status=BLOKE", headers=glass)
+            req = c.post("/api/admin/accounts/CUST-0003/status?status=AKTIF", headers=glass)
+            approval = req.json()["approval"]
+            # recorded as the break-glass identity, never as a directory user
+            assert approval["requested_by"] == BREAK_GLASS_USERNAME
+            denied = c.post(f"/api/approvals/{approval['id']}/approve", headers=glass)
+            assert denied.status_code == 403 and "break-glass" in denied.json()["detail"]
+            ok = c.post(
+                f"/api/approvals/{approval['id']}/approve",
+                headers=_bearer("kidemli_analist", "kidemli_analist"),
+            )
+            assert ok.status_code == 200
+        with pytest.raises(ValueError, match="':'"):
+            UserDirectory().add(BREAK_GLASS_USERNAME, "admin", "x", "pw-irrelevant")
+
+    async def test_m3_minimum_approver_role_per_kind(self, service: CaseService) -> None:
+        req = await service.request_approval("MODEL_PROMOTE", "fraud_gbm_v9", {}, "admin")
+        with pytest.raises(MakerCheckerError, match="admin"):
+            await service.decide_approval(
+                req["id"], approve=True, actor="kidemli_analist", role="kidemli_analist"
+            )
+        unblock = await service.request_approval("UNBLOCK", "CUST-0009", {}, "analist")
+        with pytest.raises(MakerCheckerError, match="kidemli_analist"):
+            await service.decide_approval(unblock["id"], approve=False, actor="a2", role="analist")
+        # four-eyes compares the stable id case-insensitively
+        with pytest.raises(MakerCheckerError, match="dört göz"):
+            await service.decide_approval(
+                unblock["id"], approve=False, actor="ANALIST", role="admin"
+            )
+
+    async def test_m2_decision_is_claimed_once_and_reverted_on_handler_failure(
+        self, service: CaseService
+    ) -> None:
+        async def boom(_approval: dict[str, Any], _actor: str) -> dict[str, Any]:
+            raise RuntimeError("handler failed")
+
+        service.handlers["MODEL_PROMOTE"] = boom
+        req = await service.request_approval("MODEL_PROMOTE", "fraud_gbm_v9", {}, "admin")
+        with pytest.raises(RuntimeError):
+            await service.decide_approval(req["id"], approve=True, actor="admin2", role="admin")
+        (after,) = await service.list_approvals()
+        assert after["status"] == "BEKLIYOR" and after["decided_by"] is None
+
+        calls: list[str] = []
+
+        async def ok(_approval: dict[str, Any], actor: str) -> dict[str, Any]:
+            calls.append(actor)
+            return {"done": True}
+
+        service.handlers["MODEL_PROMOTE"] = ok
+        results = await asyncio.gather(
+            service.decide_approval(req["id"], approve=True, actor="admin2", role="admin"),
+            service.decide_approval(req["id"], approve=True, actor="admin3", role="admin"),
+            return_exceptions=True,
+        )
+        assert sum(isinstance(r, dict) for r in results) == 1
+        assert sum(isinstance(r, CaseError) for r in results) == 1
+        assert len(calls) == 1
+
+    async def test_l6_one_pending_request_per_target_in_the_schema(
+        self, service: CaseService
+    ) -> None:
+        async with service.db.transaction() as session:
+            session.add(Approval(kind="UNBLOCK", target_id="C1", payload={}, requested_by="a"))
+        with pytest.raises(IntegrityError):
+            async with service.db.transaction() as session:
+                session.add(Approval(kind="UNBLOCK", target_id="C1", payload={}, requested_by="b"))
+        with pytest.raises(CaseError, match="bekleyen"):
+            await service.request_approval("UNBLOCK", "C1", {}, "b")

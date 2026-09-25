@@ -22,6 +22,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -226,6 +227,17 @@ class Approval(Base):
     """Maker-checker requests (unblock, ŞİB approval, model promotion)."""
 
     __tablename__ = "approvals"
+    # at most one pending request per (kind, target): race-safe duplicate guard
+    __table_args__ = (
+        Index(
+            "uq_approvals_pending_target",
+            "kind",
+            "target_id",
+            unique=True,
+            sqlite_where=text("status = 'BEKLIYOR'"),
+            postgresql_where=text("status = 'BEKLIYOR'"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     kind: Mapped[str] = mapped_column(String(32), index=True)

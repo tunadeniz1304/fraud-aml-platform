@@ -291,6 +291,8 @@ async def approve(
         approve=True,
         actor=principal.username,
         note=body.note if body else "",
+        role=principal.role,
+        via=principal.via,
     )
 
 
@@ -304,4 +306,6 @@ async def reject(
         approve=False,
         actor=principal.username,
         note=body.note if body else "",
+        role=principal.role,
+        via=principal.via,
     )

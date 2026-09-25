@@ -37,6 +37,9 @@ ROLE_LABELS = {
     "admin": "Yönetici",
     "service": "Servis",
 }
+#: audit identity of the static ADMIN_TOKEN — the ``:`` keeps it out of the
+#: user namespace, so it can never equal (or impersonate) a directory user
+BREAK_GLASS_USERNAME = "break-glass:admin-token"
 _PBKDF2_ROUNDS = 120_000
 _ALGORITHM = "HS256"
 
@@ -124,6 +127,8 @@ class UserDirectory:
         return cls.with_demo_users()
 
     def add(self, username: str, role: Role, display_name: str, password: str) -> None:
+        if not username or ":" in username:
+            raise ValueError("Kullanıcı adı boş olamaz ve ':' içeremez")
         self.users[username] = UserRecord(username, role, display_name, hash_password(password))
 
     def authenticate(self, username: str, password: str) -> Principal:

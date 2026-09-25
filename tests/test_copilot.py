@@ -252,7 +252,13 @@ class TestApi:
                 client.post(f"/api/approvals/{req.json()['id']}/approve", headers=ADMIN).status_code
                 == 403
             )
-            ok = client.post(f"/api/approvals/{req.json()['id']}/approve", headers=SENIOR)
+            # a model promotion needs a second *admin* (a senior analyst is not enough)
+            senior = client.post(f"/api/approvals/{req.json()['id']}/approve", headers=SENIOR)
+            assert senior.status_code == 403 and "admin" in senior.json()["detail"]
+            client.app.state.users.add("admin2", "admin", "Yönetici 2", "pw-admin2")
+            ok = client.post(
+                f"/api/approvals/{req.json()['id']}/approve", headers=_h("admin2", "admin")
+            )
             assert ok.status_code == 200 and ok.json()["result"]["champion"] == "fraud_gbm_v4"
             ready = client.get("/api/health/ready", headers=ADMIN).json()
             assert ready["info"]["model"] == "fraud_gbm_v4"

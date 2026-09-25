@@ -10,6 +10,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.config import get_settings
 from app.security.auth import (
+    BREAK_GLASS_USERNAME,
     AuthError,
     NonceStore,
     Principal,
@@ -48,7 +49,7 @@ def _unauthorized(detail: str = "Kimlik doğrulama gerekli") -> HTTPException:
 def principal_from_token(token: str) -> Principal:
     configured = admin_token()
     if configured and constant_time_equals(token, configured):
-        return Principal("admin-token", "admin", "Break-glass yönetici", via="admin_token")
+        return Principal(BREAK_GLASS_USERNAME, "admin", "Break-glass yönetici", via="admin_token")
     try:
         return decode_token(token)
     except AuthError as exc:

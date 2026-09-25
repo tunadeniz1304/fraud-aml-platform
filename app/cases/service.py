@@ -29,6 +29,7 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.cases import sla
@@ -40,6 +41,7 @@ from app.db.database import Database
 from app.db.models import Alert, Approval, Case, CaseEvent, Decision, Label, Transaction
 from app.db.writer import PersistenceWriter
 from app.monitoring import metrics
+from app.security.auth import ROLE_RANK
 from app.services.accounts import AccountService
 
 logger = logging.getLogger("fraud.cases")
@@ -56,6 +58,12 @@ MANUAL_TRANSITIONS: dict[str, tuple[str, ...]] = {
 }
 OUTCOMES = {"FRAUD": ("KAPANDI_FRAUD", 1), "TEMIZ": ("KAPANDI_TEMIZ", 0)}
 APPROVAL_KINDS = ("UNBLOCK", "SIB", "MODEL_PROMOTE")
+#: least privileged role that may decide each approval kind (unknown kinds: admin)
+APPROVAL_MIN_ROLE: dict[str, str] = {
+    "UNBLOCK": "kidemli_analist",
+    "SIB": "kidemli_analist",
+    "MODEL_PROMOTE": "admin",
+}
 
 #: rule tag -> alert type (the tag carried by the strongest fired rule wins;
 #: ties follow this order)
@@ -771,6 +779,24 @@ class CaseService:
     ) -> dict[str, Any]:
         if kind not in APPROVAL_KINDS:
             raise CaseError(f"geçersiz onay türü: {kind}")
+        try:
+            result = await self._insert_approval(kind, target_id, payload, actor, note)
+        except IntegrityError:
+            # lost the race to a concurrent request (partial unique index)
+            raise CaseError("bu hedef için bekleyen bir onay talebi zaten var") from None
+        await self._audit(
+            "APPROVAL_REQUESTED",
+            str(result["id"]),
+            actor,
+            f"Onay talebi: {kind} → {target_id}",
+            kind=kind,
+            target_id=target_id,
+        )
+        return result
+
+    async def _insert_approval(
+        self, kind: str, target_id: str, payload: dict[str, Any], actor: str, note: str
+    ) -> dict[str, Any]:
         async with self.db.transaction() as session:
             pending = (
                 await session.execute(
@@ -803,14 +829,6 @@ class CaseService:
             session.add(approval)
             await session.flush()
             result = _approval_dict(approval)
-        await self._audit(
-            "APPROVAL_REQUESTED",
-            str(result["id"]),
-            actor,
-            f"Onay talebi: {kind} → {target_id}",
-            kind=kind,
-            target_id=target_id,
-        )
         return result
 
     async def list_approvals(self, status: str | None = "BEKLIYOR") -> list[dict[str, Any]]:
@@ -821,30 +839,76 @@ class CaseService:
             return [_approval_dict(a) for a in (await session.execute(query)).scalars()]
 
     async def decide_approval(
-        self, approval_id: int, *, approve: bool, actor: str, note: str = ""
+        self,
+        approval_id: int,
+        *,
+        approve: bool,
+        actor: str,
+        note: str = "",
+        role: str | None = None,
+        via: str = "jwt",
     ) -> dict[str, Any]:
+        """Approve/reject a pending request.
+
+        ``role``/``via`` come from the authenticated principal (the API always
+        passes them): the break-glass admin token never decides, and each kind
+        has a minimum approver role. The status flip is a conditional UPDATE
+        (``WHERE status='BEKLIYOR'``) so two concurrent approvers cannot both
+        win; if the approval handler fails, the request is put back to
+        ``BEKLIYOR`` and the error is re-raised.
+        """
+        if via == "admin_token":
+            raise MakerCheckerError(
+                "break-glass yönetici token'ı onay veremez — kişisel hesapla giriş yapın"
+            )
         async with self.db.transaction() as session:
             approval = await session.get(Approval, approval_id)
             if approval is None:
                 raise CaseNotFoundError(approval_id)
             if approval.status != "BEKLIYOR":
                 raise CaseError("onay talebi zaten sonuçlandı")
-            if approval.requested_by == actor:
+            if approval.requested_by.casefold() == actor.casefold():
                 raise MakerCheckerError("dört göz ilkesi: talebi açan kişi onaylayamaz")
-            approval.status = "ONAYLANDI" if approve else "REDDEDILDI"
-            approval.decided_by = actor
-            approval.decided_at = utcnow()
-            approval.note = (approval.note + "\n" + note).strip() if note else approval.note
+            minimum = APPROVAL_MIN_ROLE.get(approval.kind, "admin")
+            if role is not None and ROLE_RANK.get(role, -1) < ROLE_RANK[minimum]:
+                raise MakerCheckerError(
+                    f"{approval.kind} onayı için en az '{minimum}' rolü gerekir"
+                )
+            decided_at = utcnow()
+            merged_note = (approval.note + "\n" + note).strip() if note else approval.note
+            claimed = await session.execute(
+                update(Approval)
+                .where(Approval.id == approval_id, Approval.status == "BEKLIYOR")
+                .values(
+                    status="ONAYLANDI" if approve else "REDDEDILDI",
+                    decided_by=actor,
+                    decided_at=decided_at,
+                    note=merged_note,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if getattr(claimed, "rowcount", 0) != 1:
+                raise CaseError("onay talebi zaten sonuçlandı")
             if approval.kind == "SIB" and not approve:
                 case = await self._case(session, int(approval.target_id))
                 case.sib_status = "SIB_TASLAK"
                 session.add(self._event(case.id, "SIB_REJECTED", actor, note=note))
-            snapshot = _approval_dict(approval)
+            snapshot = {
+                **_approval_dict(approval),
+                "status": "ONAYLANDI" if approve else "REDDEDILDI",
+                "decided_by": actor,
+                "decided_at": decided_at,
+                "note": merged_note,
+            }
         outcome: dict[str, Any] = {}
         if approve:
             handler = self.handlers.get(snapshot["kind"])
             if handler is not None:
-                outcome = await handler(snapshot, actor)
+                try:
+                    outcome = await handler(snapshot, actor)
+                except BaseException:
+                    await self._reopen_approval(approval_id)
+                    raise
         await self._audit(
             "APPROVAL_DECIDED",
             str(approval_id),
@@ -855,6 +919,20 @@ class CaseService:
             approved=approve,
         )
         return {**snapshot, "result": outcome}
+
+    async def _reopen_approval(self, approval_id: int) -> None:
+        """The approval handler failed: the request goes back to ``BEKLIYOR``
+        (no half-applied "ONAYLANDI" without its effect)."""
+        try:
+            async with self.db.transaction() as session:
+                await session.execute(
+                    update(Approval)
+                    .where(Approval.id == approval_id, Approval.status == "ONAYLANDI")
+                    .values(status="BEKLIYOR", decided_by=None, decided_at=None)
+                    .execution_options(synchronize_session=False)
+                )
+        except Exception:
+            logger.exception("[Cases] onay #%s geri alınamadı", approval_id)
 
     async def _approve_unblock(self, approval: dict[str, Any], actor: str) -> dict[str, Any]:
         if self.accounts is None:
