@@ -28,6 +28,18 @@ from app.graph.entity_graph import EntityGraph
 ToolFn = Callable[..., Awaitable[dict[str, Any]]]
 
 
+@dataclass(frozen=True)
+class CaseScope:
+    """The case under investigation: tools may only read its own customer's data.
+
+    A prompt-injected or confused model must not be able to pull another
+    customer's profile, transactions or cases through the copilot.
+    """
+
+    case_id: int
+    customer_id: str
+
+
 def _prop(kind: str, description: str) -> dict[str, str]:
     return {"type": kind, "description": description}
 
@@ -141,10 +153,16 @@ class CopilotTools:
     def names(self) -> list[str]:
         return list(self._fns)
 
-    async def call(self, name: str, arguments: dict[str, Any]) -> ToolOutput:
+    async def call(
+        self, name: str, arguments: dict[str, Any], *, scope: CaseScope | None = None
+    ) -> ToolOutput:
         fn = self._fns.get(name)
         if fn is None:
             return ToolOutput({"error": f"bilinmeyen araç: {name}"})
+        if scope is not None:
+            violation = await self._scope_violation(arguments, scope)
+            if violation:
+                return ToolOutput({"error": violation})
         try:
             data = await fn(**arguments)
         except TypeError as exc:
@@ -153,6 +171,30 @@ class CopilotTools:
             return ToolOutput({"error": f"araç hatası: {type(exc).__name__}"})
         evidence = [str(e) for e in data.pop("_evidence", [])]
         return ToolOutput(data, evidence)
+
+    async def _scope_violation(self, arguments: dict[str, Any], scope: CaseScope) -> str | None:
+        """Reason the call reaches outside the case, or ``None`` if it is in scope."""
+        if "customer_id" in arguments and str(arguments["customer_id"]) != scope.customer_id:
+            return "kapsam dışı: yalnızca bu vakanın müşterisi sorgulanabilir"
+        if "case_id" in arguments:
+            try:
+                case_id = int(arguments["case_id"])
+            except (TypeError, ValueError):
+                return "geçersiz argüman: case_id"
+            if case_id != scope.case_id:
+                return "kapsam dışı: yalnızca incelenen vaka sorgulanabilir"
+        if "transaction_id" in arguments:
+            async with self.db.session() as session:
+                owner = (
+                    await session.execute(
+                        select(Transaction.customer_id).where(
+                            Transaction.id == str(arguments["transaction_id"])
+                        )
+                    )
+                ).scalar_one_or_none()
+            if owner is not None and owner != scope.customer_id:
+                return "kapsam dışı: işlem bu vakanın müşterisine ait değil"
+        return None
 
     # --- tools ------------------------------------------------------------------------
     async def get_case(self, case_id: int) -> dict[str, Any]:
