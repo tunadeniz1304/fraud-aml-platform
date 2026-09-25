@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 from app.api.dashboard import create_app
-from app.config import BASE_DIR
+from app.config import BASE_DIR, get_settings
 from app.llm.redaction import Redactor
 from app.llm.service import UNTRUSTED_CLOSE, UNTRUSTED_OPEN, untrusted_block
 from app.security import auth as auth_module
@@ -211,3 +211,54 @@ def test_l11_break_glass_cannot_file_maker_checker_requests(
             assert "Break-glass" in response.json()["detail"]
         pending = client.get("/api/approvals", headers=glass)
         assert pending.status_code == 200 and pending.json() == []
+
+
+# --- A8: the 401 throttle must not lock out a whole NAT ---------------------
+
+
+def test_a8_throttle_spares_valid_sessions_and_probes(
+    app_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RATE_LIMIT_AUTH_FAILURES", "3/minute")
+    get_settings.cache_clear()
+    token, _ = issue_token(Principal("analist", "analist", "Analist"))
+    valid = {"Authorization": f"Bearer {token}"}
+    with TestClient(create_app()) as client:
+        codes = [
+            client.get("/api/cases", headers={"Authorization": f"Bearer guess-{i}"}).status_code
+            for i in range(4)
+        ]
+        assert codes == [401, 401, 401, 429]
+        # the attacker stays blocked …
+        assert (
+            client.get("/api/cases", headers={"Authorization": "Bearer guess-x"}).status_code == 429
+        )
+        # … but a colleague behind the same address with a real session is not
+        assert client.get("/api/auth/me", headers=valid).status_code == 200
+        # and neither are the probes / scrape endpoint
+        assert client.get("/api/health").status_code == 200
+        assert client.get("/api/health/live").status_code == 200
+        assert client.get("/metrics").status_code != 429
+
+
+def test_a8_requests_without_credentials_or_with_stale_sessions_do_not_count(
+    app_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RATE_LIMIT_AUTH_FAILURES", "3/minute")
+    get_settings.cache_clear()
+    token, _ = issue_token(Principal("analist", "analist", "Analist"))
+    with TestClient(create_app()) as client:
+        # a dashboard tab polling after its session ended sends no credentials
+        assert {client.get("/api/cases").status_code for _ in range(6)} == {401}
+        # a logged-out (revoked) but genuinely signed token is not a guess either
+        assert (
+            client.post(
+                "/api/auth/logout", headers={"Authorization": f"Bearer {token}"}
+            ).status_code
+            == 200
+        )
+        stale = {"Authorization": f"Bearer {token}"}
+        assert {client.get("/api/cases", headers=stale).status_code for _ in range(6)} == {401}
+        # a forged token still counts
+        forged = {"Authorization": "Bearer not-a-token"}
+        assert [client.get("/api/cases", headers=forged).status_code for _ in range(4)][-1] == 429

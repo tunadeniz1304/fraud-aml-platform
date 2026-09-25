@@ -209,6 +209,24 @@ def decode_token(token: str) -> Principal:
     )
 
 
+def signed_by_us(token: str) -> bool:
+    """True when ``token`` carries this API's signature, issuer and audience,
+    even if it has expired. Such a token cannot be a guess (only the server
+    can mint it); an expired or revoked session is not credential stuffing."""
+    try:
+        jwt.decode(
+            token,
+            _jwt_secret(),
+            algorithms=[_ALGORITHM],
+            issuer=JWT_ISSUER,
+            audience=JWT_AUDIENCE,
+            options={"verify_exp": False},
+        )
+    except jwt.PyJWTError:
+        return False
+    return True
+
+
 # --- static credentials ----------------------------------------------------------
 def _configured(env_name: str, fallback: str) -> str:
     # Read at call time so rotations (and tests) take effect without restart.

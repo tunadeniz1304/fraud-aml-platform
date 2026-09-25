@@ -207,8 +207,10 @@ class TestRateLimits:
                 for i in range(5)
             ]
             assert codes[:3] == [401, 401, 401] and codes[3:] == [429, 429]
-            # the block applies to the client, whatever it presents next
-            assert c.get("/api/health").status_code == 429
+            # the block applies to unauthenticated requests from the client
+            # address; probes and valid sessions are exempt (A8, round 2)
+            assert c.get("/api/cases").status_code == 429
+            assert c.get("/api/health").status_code == 200
 
 
 def test_hsts_only_in_prod(demo_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:

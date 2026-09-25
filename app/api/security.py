@@ -27,12 +27,21 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.config import get_settings
 from app.monitoring import metrics, tracing
+from app.security.auth import (
+    AuthError,
+    admin_token,
+    constant_time_equals,
+    decode_token,
+    service_api_key,
+    signed_by_us,
+)
 from app.security.ratelimit import (
     auth_failures_exceeded,
     limiter,
     rate_limit_handler,
     record_auth_failure,
 )
+from app.security.revocation import REVOKED
 
 logger = logging.getLogger("fraud.http")
 
@@ -60,6 +69,54 @@ _HSTS = b"max-age=31536000; includeSubDomains"
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 
+def _throttle_exempt(path: str) -> bool:
+    """Probes and the scrape endpoint are never throttled: an orchestrator or
+    Prometheus that shares a NAT address with a guessing client must keep
+    seeing the service."""
+    return path in ("/health", "/api/health", "/metrics") or path.startswith("/api/health/")
+
+
+def _bearer_value(headers: dict[bytes, bytes]) -> str:
+    scheme, _, value = headers.get(b"authorization", b"").decode("latin-1").partition(" ")
+    return value.strip() if scheme.lower() == "bearer" else ""
+
+
+def _is_guess(headers: dict[bytes, bytes], method: str, path: str) -> bool:
+    """Does a 401 for this request look like credential guessing?
+
+    Only requests that tried to authenticate with something this server did
+    not issue count: an unknown bearer / API key / HMAC signature, or a failed
+    password login. A request without credentials (a dashboard tab whose
+    session ended) or with a token we signed ourselves (expired / revoked
+    session) is not a guess and must not push a shared NAT address into the
+    block.
+    """
+    token = _bearer_value(headers)
+    if token:
+        return not signed_by_us(token)
+    if headers.get(b"x-api-key") or headers.get(b"x-signature"):
+        return True
+    return method == "POST" and path == "/api/auth/login"
+
+
+async def _has_valid_credentials(headers: dict[bytes, bytes]) -> bool:
+    """A request that authenticates on its own is never blocked by the
+    per-address failure throttle (someone else behind the NAT guessed)."""
+    token = _bearer_value(headers)
+    if token:
+        configured = admin_token()
+        if configured and constant_time_equals(token, configured):
+            return True
+        try:
+            principal = decode_token(token)
+        except AuthError:
+            return False
+        return not await REVOKED.is_revoked(principal.token_id)
+    api_key = headers.get(b"x-api-key", b"").decode("latin-1")
+    configured_key = service_api_key()
+    return bool(api_key and configured_key and constant_time_equals(api_key, configured_key))
+
+
 class RequestContextMiddleware:
     """Pure-ASGI middleware (streaming/SSE friendly)."""
 
@@ -81,12 +138,14 @@ class RequestContextMiddleware:
         client = scope.get("client")
         client_ip = client[0] if client else "127.0.0.1"
         hsts = get_settings().environment == "prod"
+        method = str(scope.get("method", ""))
+        exempt = _throttle_exempt(path)
 
         async def send_wrapper(message: Message) -> None:
             if message["type"] == "http.response.start":
                 status_holder["status"] = message["status"]
-                if message["status"] == 401:
-                    # credential guessing: every 401 counts against the client IP
+                if message["status"] == 401 and not exempt and _is_guess(headers, method, path):
+                    # credential guessing counts against the client address
                     record_auth_failure(client_ip)
                 raw = list(message.get("headers", []))
                 present = {k.lower() for k, _ in raw}
@@ -101,9 +160,12 @@ class RequestContextMiddleware:
             await send(message)
 
         structlog.contextvars.bind_contextvars(request_id=request_id)
-        method = str(scope.get("method", ""))
         try:
-            if auth_failures_exceeded(client_ip):
+            if (
+                not exempt
+                and auth_failures_exceeded(client_ip)
+                and not await _has_valid_credentials(headers)
+            ):
                 blocked = JSONResponse(
                     status_code=429,
                     content={"detail": "Çok fazla başarısız kimlik doğrulama — hız sınırı aşıldı"},
