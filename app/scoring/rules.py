@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -283,20 +284,35 @@ class BacktestResult:
         }
 
 
+class BacktestCancelled(RuntimeError):
+    """The backtest was stopped through its ``stop`` event (time budget hit)."""
+
+
+#: rows replayed between two checks of the ``stop`` event
+_STOP_CHECK_EVERY = 256
+
+
 def backtest(
     definition: RuleDef,
     rows: Iterable[tuple[Mapping[str, float], int | None]],
     *,
     source: str = "db",
+    stop: threading.Event | None = None,
 ) -> BacktestResult:
     """Replay a rule over historical ``(features, label)`` rows.
 
     ``label`` is ``1`` (fraud), ``0`` (clean) or ``None`` (unlabelled — counts
     towards the alert volume but not towards precision/recall).
+
+    M6: the replay runs in a worker thread that cannot be killed, so it checks
+    ``stop`` every few hundred rows and raises :class:`BacktestCancelled` once
+    the caller gave up (time budget exceeded, request cancelled).
     """
     expression = definition.validate()
     evaluated = alerts = labelled = tp = positives = 0
     for features, label in rows:
+        if stop is not None and evaluated % _STOP_CHECK_EVERY == 0 and stop.is_set():
+            raise BacktestCancelled(f"{definition.id}: backtest {evaluated}. satırda durduruldu")
         evaluated += 1
         fired = expression.evaluate_bool(features)
         if label == 1:

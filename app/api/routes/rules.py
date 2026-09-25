@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -25,7 +26,15 @@ from app.features.definitions import EXTERNAL_FEATURES, FEATURES
 from app.ml.registry import ModelRegistry
 from app.scoring import rule_store
 from app.scoring.policy import PolicyError, Thresholds
-from app.scoring.rules import ACTIONS, SEVERITIES, RuleDef, RuleError, backtest, with_overrides
+from app.scoring.rules import (
+    ACTIONS,
+    SEVERITIES,
+    BacktestCancelled,
+    RuleDef,
+    RuleError,
+    backtest,
+    with_overrides,
+)
 from app.security.auth import Principal
 from app.security.deps import require_role
 
@@ -199,18 +208,26 @@ async def _backtest_rows(source: str, limit: int) -> tuple[str, list[Any]]:
 
 
 async def _run_backtest(draft: RuleDef, source: str, limit: int) -> dict[str, Any]:
-    """Replay off the event loop, within the row cap and the time budget."""
+    """Replay off the event loop, within the row cap and the time budget.
+
+    M6: the worker thread cannot be killed, so it gets a ``stop`` event that
+    is set as soon as this request gives up (timeout or cancellation); the
+    replay checks it and ends instead of burning a thread-pool slot.
+    """
     rows_source, rows = await _backtest_rows(source, limit)
+    stop = threading.Event()
     try:
         result = await asyncio.wait_for(
-            asyncio.to_thread(backtest, draft, rows, source=rows_source),
+            asyncio.to_thread(backtest, draft, rows, source=rows_source, stop=stop),
             timeout=get_settings().rule_backtest_timeout_s,
         )
-    except TimeoutError:
+    except (TimeoutError, BacktestCancelled):
         raise HTTPException(
             status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Simülasyon süre sınırını aştı — daha az satırla (limit) deneyin",
         ) from None
+    finally:
+        stop.set()
     return result.as_dict() | {"when": draft.when}
 
 

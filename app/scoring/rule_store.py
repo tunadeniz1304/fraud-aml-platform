@@ -7,6 +7,7 @@ is the source of truth and every change creates a new immutable
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import Iterable
@@ -151,17 +152,30 @@ def build_ruleset(definitions: Iterable[RuleDef]) -> RuleSet:
 
 
 # --- backtest data -------------------------------------------------------------------
+_BACKTEST_CHUNK = 1000
+
+
 async def db_backtest_rows(
     session: AsyncSession, limit: int
 ) -> list[tuple[dict[str, float], int | None]]:
-    rows = await session.execute(
+    """Newest ``limit`` decisions with their labels (unscored ones skipped).
+
+    M6: up to ``rule_backtest_max_rows`` rows are streamed in chunks of
+    :data:`_BACKTEST_CHUNK`, handing the event loop back between chunks, so
+    decoding tens of thousands of feature documents never stalls it.
+    """
+    result = await session.stream(
         select(Decision.features, Label.label)
         .outerjoin(Label, Label.transaction_id == Decision.transaction_id)
         .order_by(Decision.id.desc())
         .limit(limit)
     )
-    # unscored decisions (blocked account, unknown customer) carry no features
-    return [(dict(features), label) for features, label in rows.all() if features]
+    out: list[tuple[dict[str, float], int | None]] = []
+    async for chunk in result.partitions(_BACKTEST_CHUNK):
+        # unscored decisions (blocked account, unknown customer) carry no features
+        out.extend((dict(features), label) for features, label in chunk if features)
+        await asyncio.sleep(0)
+    return out
 
 
 def synthetic_backtest_rows(path: Path, limit: int) -> list[tuple[dict[str, float], int | None]]:
