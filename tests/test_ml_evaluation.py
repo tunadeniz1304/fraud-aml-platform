@@ -87,6 +87,30 @@ def test_rank_metrics_match_sklearn_and_bootstrap_is_stratified() -> None:
     assert ci["vs_baseline_pr_auc"]["full"] == [0.0, 0.0]
 
 
+def test_budget_recall_is_tie_aware_and_order_free() -> None:
+    """A coarse score (rules) ties at the alert cut: the point estimate, the
+    cost outcome and the stratified bootstrap must share ties the same way,
+    otherwise the CI need not contain the point estimate."""
+    import numpy as np
+
+    from app.ml import metrics as M
+    from app.validation.evaluate import _rank_metrics, bootstrap, cost_outcome
+
+    rng = np.random.default_rng(3)
+    y = (rng.random(4000) < 0.01).astype(int)
+    s = np.where(rng.random(4000) < 0.2, 0.5, 0.1)  # one big tie at the 1 % cut
+    s[np.flatnonzero(y)[:5]] = 0.9
+    point = M.budget_metrics(y, s, np.ones(4000), 0.01)
+    perm = rng.permutation(4000)
+    shuffled = M.budget_metrics(y[perm], s[perm], np.ones(4000), 0.01)
+    assert all(abs(shuffled[k] - point[k]) < 1e-12 for k in point)
+    assert abs(_rank_metrics(y, s, [40])[2][0] - point["recall"]) < 1e-12
+    cost = cost_outcome(y, s, np.ones(4000), 0.01, 50.0)
+    assert abs(cost["fraud_amount_caught"] - point["recall"] * y.sum()) < 0.01
+    lo, hi = bootstrap(y, {"rules": s}, rounds=200, chain=(), baseline=None)["rules"]["recall_0.01"]
+    assert lo <= point["recall"] <= hi
+
+
 def test_calibration_metrics() -> None:
     import numpy as np
 

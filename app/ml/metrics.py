@@ -68,24 +68,48 @@ def calibration(y: ArrayLike, probs: ArrayLike, bins: int = 10) -> dict[str, flo
     }
 
 
+def topk_weights(scores: ArrayLike, k: int) -> np.ndarray:
+    """Alert weight of each row when the ``k`` highest scores are alerted.
+
+    Rows strictly above the k-th score get 1, rows below get 0 and the rows
+    tied with the k-th score share the remaining alerts equally (the
+    expectation under random tie-breaking). The result therefore does not
+    depend on row order, which matters for coarse scores such as the rule
+    layer: with a stable sort a tie would be broken by time order in the point
+    estimate but by the positives-first layout of a stratified bootstrap."""
+    sa = np.asarray(scores, dtype=float)
+    n = len(sa)
+    k = min(max(int(k), 0), n)
+    w = np.zeros(n)
+    if k == 0:
+        return w
+    t = np.partition(-sa, k - 1)[k - 1] * -1.0
+    above = sa > t
+    tied = sa == t
+    w[above] = 1.0
+    w[tied] = (k - int(above.sum())) / int(tied.sum())
+    return w
+
+
 def budget_metrics(
     y: ArrayLike,
     scores: ArrayLike,
     amounts: ArrayLike,
     budget: float = 0.01,
 ) -> dict[str, float]:
-    ya = np.asarray(y)
+    ya = np.asarray(y, dtype=float)
     sa = np.asarray(scores, dtype=float)
     aa = np.asarray(amounts, dtype=float)
     k = max(1, round(len(sa) * budget))
-    top = np.argsort(-sa, kind="stable")[:k]
+    w = topk_weights(sa, k)
     fraud_amount = float(aa[ya == 1].sum())
-    caught_amount = float(aa[top][ya[top] == 1].sum())
+    caught_amount = float((w * ya * aa).sum())
+    hits = float((w * ya).sum())
     return {
         "alert_budget": budget,
         "alerts": int(k),
-        "precision": float(ya[top].mean()),
-        "recall": float(ya[top].sum() / max(1, ya.sum())),
+        "precision": hits / k,
+        "recall": hits / max(1.0, float(ya.sum())),
         "cost_weighted_recall": caught_amount / fraud_amount if fraud_amount else 0.0,
     }
 

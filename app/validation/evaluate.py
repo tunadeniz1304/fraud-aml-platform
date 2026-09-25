@@ -205,7 +205,19 @@ def _rank_metrics(y: np.ndarray, s: np.ndarray, ks: Sequence[int]) -> tuple[floa
     ap = float(np.sum(np.diff(np.r_[0.0, recall]) * precision))
     ranks = rankdata(s)
     auc = float((ranks[y == 1].sum() - pos * (pos + 1) / 2) / (pos * neg))
-    return ap, auc, [float(tp[k - 1] / pos) for k in ks]
+    # recall at top-k with ties at the cut shared equally (same rule as
+    # app.ml.metrics.topk_weights), so the bootstrap does not depend on the
+    # positives-first layout of the resample
+    start = np.r_[0, last[:-1] + 1]  # first index of each tied group
+    group = np.searchsorted(last, np.arange(len(ss)))
+    tp0 = np.r_[0.0, tp]
+    recalls = []
+    for k in ks:
+        g = group[k - 1]
+        a, b = start[g], last[g] + 1
+        in_group = tp0[b] - tp0[a]
+        recalls.append(float((tp0[a] + in_group * (k - a) / (b - a)) / pos))
+    return ap, auc, recalls
 
 
 def bootstrap(
@@ -258,10 +270,10 @@ def cost_outcome(
     y: np.ndarray, scores: np.ndarray, amount: np.ndarray, budget: float, review_cost: float
 ) -> dict[str, float]:
     k = max(1, round(len(scores) * budget))
-    top = np.argsort(-scores, kind="stable")[:k]
+    w = M.topk_weights(scores, k)  # tie-aware, see app.ml.metrics.topk_weights
     fraud_total = float(amount[y == 1].sum())
-    caught = float(amount[top][y[top] == 1].sum())
-    false_alerts = int((y[top] == 0).sum())
+    caught = float((w * (y == 1) * amount).sum())
+    false_alerts = round(float((w * (y == 0)).sum()), 2)
     review = false_alerts * review_cost
     return {
         "alerts": int(k),
