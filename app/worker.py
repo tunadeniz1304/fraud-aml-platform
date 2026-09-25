@@ -72,11 +72,13 @@ async def case_sla(ctx: WorkerContext) -> dict[str, Any]:
     from app.cases.service import CaseService
 
     result = await CaseService(ctx.db).sla_scan()
-    if result["internal_sla_breached"] or result["masak_due_soon"]:
+    if result["internal_sla_breached"] or result["masak_due_soon"] or result["masak_overdue"]:
         logger.warning(
-            "[Worker] SLA: %d vaka iç SLA'yı aştı, %d vakanın MASAK süresi dolmak üzere",
+            "[Worker] SLA: %d vaka iç SLA'yı aştı, %d vakanın MASAK süresi dolmak üzere, "
+            "%d vakanın MASAK süresi geçti",
             result["internal_sla_breached"],
             result["masak_due_soon"],
+            result["masak_overdue"],
         )
     return result
 

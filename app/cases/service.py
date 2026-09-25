@@ -994,15 +994,25 @@ class CaseService:
             for c in cases
             if c.internal_sla_due and c.status == "YENI" and c.internal_sla_due < now
         )
+        # L5: a passed MASAK deadline is "overdue", not "due soon"
+        masak_overdue = sum(1 for c in cases if c.masak_deadline and c.masak_deadline < now)
         masak_soon = sum(
             1
             for c in cases
-            if c.masak_deadline and sla.business_days_between(now, c.masak_deadline) <= warn_days
+            if c.masak_deadline
+            and c.masak_deadline >= now
+            and sla.business_days_between(now, c.masak_deadline) <= warn_days
         )
         metrics.CASES_OPEN.set(len(cases))
         metrics.SLA_BREACHED.set(breached)
         metrics.MASAK_DUE_SOON.set(masak_soon)
-        return {"open": len(cases), "internal_sla_breached": breached, "masak_due_soon": masak_soon}
+        metrics.MASAK_OVERDUE.set(masak_overdue)
+        return {
+            "open": len(cases),
+            "internal_sla_breached": breached,
+            "masak_due_soon": masak_soon,
+            "masak_overdue": masak_overdue,
+        }
 
 
 def _tx_dict(tx: Transaction | None) -> dict[str, Any] | None:

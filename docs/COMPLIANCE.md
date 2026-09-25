@@ -20,7 +20,7 @@ Bu belge hukuki görüş değildir. Platform aşağıdaki gereksinimler dikkate 
   - Kod: `app/copilot/templates.py` (ŞİB taslağı, `SibDraft` şeması), `app/cases/service.py` (vaka ve onay akışı).
 - **Şüpheli işlem tanımı (R2 md. 27).** Tipoloji eşlemesi (AML parçalama/katmanlama, mule, yaptırım) kural ve sinyal katmanında yapılır; bu eşleme kurum politikasıyla gözden geçirilmelidir.
   - Kod: `rules/core.yaml`, `app/scoring/engine.py`.
-- **Süre (R2 md. 28/2).** "Şüpheli işlemler, işleme ilişkin şüphenin oluştuğu tarihten itibaren en geç on iş günü içinde Başkanlığa bildirilir." Her vakada `masak_deadline` ve kalan iş günü tutulur; worker ≤ 2 iş günü kalan vakaları raporlar (`fraud_cases_masak_due_soon`).
+- **Süre (R2 md. 28/2).** "Şüpheli işlemler, işleme ilişkin şüphenin oluştuğu tarihten itibaren en geç on iş günü içinde Başkanlığa bildirilir." Her vakada `masak_deadline` ve kalan iş günü tutulur; worker ≤ 2 iş günü kalan vakaları (`fraud_cases_masak_due_soon`) ve süresi geçmiş vakaları (`fraud_cases_masak_overdue`) ayrı raporlar.
   - Kod: `app/cases/sla.py`. Resmî tatiller her yıl için `holidays.Turkey` ile hesaplanır (dini bayramlar dahil). Arife yarım günleri `tr_half_day_policy` ayarına bağlıdır: varsayılan `business_day` (sabah çalışılır, bu yüzden son tarih hiçbir zaman yasal süreden geç hesaplanmaz) ya da `holiday`. Ek kapanışlar `tr_holidays` ile eklenir.
 - **Bildirimin açıklanamaması / tipping-off (R1 md. 4/2, R2 md. 29/1).** Bildirimde bulunulduğu taraflara açıklanamaz ve bildirim gizlidir.
   - Kod: `app/scoring/engine.py::typology_cap` ve `app/scoring/policy.py` (`TYPOLOGY_CAP`): AML örüntülerinde müşteriye görünen BLOCK yerine HOLD uygulanır. `app/copilot/templates.py::TIPPING_OFF` uyarısı her ŞİB taslağına eklenir.

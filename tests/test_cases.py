@@ -122,7 +122,19 @@ class TestAlertIntake:
         assert await service.list_cases(customer_id="CUST-0001", case_type="DAVRANIS")
         assert await service.list_cases(assigned_to="nobody") == []
         scan = await service.sla_scan()
-        assert scan == {"open": 1, "internal_sla_breached": 1, "masak_due_soon": 0}
+        assert scan == {
+            "open": 1,
+            "internal_sla_breached": 1,
+            "masak_due_soon": 0,
+            "masak_overdue": 0,
+        }
+        # L5: a passed MASAK deadline counts as overdue, not as "due soon"
+        async with store.db.transaction() as session:
+            await session.execute(
+                update(Case).values(masak_deadline=datetime.now(UTC) - timedelta(days=1))
+            )
+        scan = await service.sla_scan()
+        assert scan["masak_overdue"] == 1 and scan["masak_due_soon"] == 0
         assert await service.counts() == {"YENI": 1}
 
 

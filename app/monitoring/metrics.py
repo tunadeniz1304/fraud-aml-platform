@@ -58,6 +58,9 @@ SLA_BREACHED = Gauge(
 MASAK_DUE_SOON = Gauge(
     "fraud_cases_masak_due_soon", "MASAK süresine ≤2 iş günü kalan açık vaka", registry=REGISTRY
 )
+MASAK_OVERDUE = Gauge(
+    "fraud_cases_masak_overdue", "MASAK bildirim süresi geçmiş açık vaka", registry=REGISTRY
+)
 SIB_SUBMITTED = Counter("fraud_sib_submitted_total", "Onaylanıp gönderilen ŞİB", registry=REGISTRY)
 HTTP_REQUESTS = Counter(
     "fraud_http_requests_total", "HTTP istekleri", ["method", "route", "status"], registry=REGISTRY

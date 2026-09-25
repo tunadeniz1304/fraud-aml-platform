@@ -26,6 +26,12 @@ groups:
         labels: {severity: critical}
         annotations:
           summary: "MASAK ŞİB süresinin dolmasına 2 iş günü veya daha az kalan vaka var"
+      - alert: MASAKSuresiGecti
+        expr: fraud_cases_masak_overdue > 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "MASAK ŞİB bildirim süresi geçmiş açık vaka var"
       - alert: LLMFallbackOraniYuksek
         expr: sum(rate(fraud_llm_calls_total{mode="fallback"}[10m])) / clamp_min(sum(rate(fraud_llm_calls_total[10m])), 1e-9) > 0.2
         for: 10m
