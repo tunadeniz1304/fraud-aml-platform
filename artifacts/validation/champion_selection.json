@@ -1,68 +1,98 @@
 {
-  "generated_at": "2026-09-25T10:42:36+00:00",
+  "generated_at": "2026-09-25T17:43:44+00:00",
   "dataset": "champion/challenger",
   "candidates": {
-    "fraud_gbm_v3": {
+    "fraud_gbm_v5": {
       "params": {
         "seed": 42,
         "num_boost_round": 300,
         "iforest_estimators": 100
       },
-      "synthetic_holdout": {
-        "pr_auc": 0.558,
-        "roc_auc": 0.7862,
-        "recall_at_1pct_fpr": 0.5354,
-        "cost_weighted_recall_1pct": 0.676
+      "synthetic_validation": {
+        "pr_auc": 0.7852,
+        "roc_auc": 0.9731,
+        "recall_at_1pct_fpr": 0.873,
+        "cost_weighted_recall_1pct": 0.8551,
+        "missed_amount_share_1pct": 0.1449
       },
-      "synthetic_missed_amount_share_1pct": 0.324,
-      "paysim_replay": {
-        "pr_auc": 0.0356,
-        "roc_auc": 0.5828,
-        "cost_1pct": {
-          "alerts": 281,
-          "false_alerts": 256,
-          "fraud_amount_total": 286805594.67,
-          "fraud_amount_caught": 80674350.79,
-          "fraud_amount_missed": 206131243.88,
-          "review_cost": 12800.0,
-          "total_cost": 206144043.88,
-          "baseline_cost_no_system": 286805594.67
+      "reported_after_selection": {
+        "synthetic_test": {
+          "pr_auc": 0.8355,
+          "roc_auc": 0.973,
+          "recall_at_1pct_fpr": 0.8507,
+          "cost_weighted_recall_1pct": 0.5075,
+          "missed_amount_share_1pct": 0.4925,
+          "calibration": {
+            "brier": 0.00662,
+            "ece_10bin": 0.003784,
+            "mean_predicted": 0.020698,
+            "observed_rate": 0.023229
+          }
+        },
+        "paysim_replay": {
+          "pr_auc": 0.0119,
+          "roc_auc": 0.6891,
+          "cost_1pct": {
+            "alerts": 956,
+            "false_alerts": 930,
+            "fraud_amount_total": 520720929.67,
+            "fraud_amount_caught": 98578806.19,
+            "fraud_amount_missed": 422142123.48,
+            "review_cost": 46500.0,
+            "total_cost": 422188623.48,
+            "baseline_cost_no_system": 520720929.67
+          }
         }
       }
     },
-    "fraud_gbm_v4": {
+    "fraud_gbm_v6": {
       "params": {
         "seed": 7,
         "num_boost_round": 500,
         "iforest_estimators": 200
       },
-      "synthetic_holdout": {
-        "pr_auc": 0.5561,
-        "roc_auc": 0.7855,
-        "recall_at_1pct_fpr": 0.5315,
-        "cost_weighted_recall_1pct": 0.6556
+      "synthetic_validation": {
+        "pr_auc": 0.7899,
+        "roc_auc": 0.9701,
+        "recall_at_1pct_fpr": 0.873,
+        "cost_weighted_recall_1pct": 0.8018,
+        "missed_amount_share_1pct": 0.1982
       },
-      "synthetic_missed_amount_share_1pct": 0.3444,
-      "paysim_replay": {
-        "pr_auc": 0.0166,
-        "roc_auc": 0.5979,
-        "cost_1pct": {
-          "alerts": 281,
-          "false_alerts": 270,
-          "fraud_amount_total": 286805594.67,
-          "fraud_amount_caught": 38370492.7,
-          "fraud_amount_missed": 248435101.97,
-          "review_cost": 13500.0,
-          "total_cost": 248448601.97,
-          "baseline_cost_no_system": 286805594.67
+      "reported_after_selection": {
+        "synthetic_test": {
+          "pr_auc": 0.8401,
+          "roc_auc": 0.978,
+          "recall_at_1pct_fpr": 0.8552,
+          "cost_weighted_recall_1pct": 0.5353,
+          "missed_amount_share_1pct": 0.4647,
+          "calibration": {
+            "brier": 0.006263,
+            "ece_10bin": 0.003751,
+            "mean_predicted": 0.020792,
+            "observed_rate": 0.023229
+          }
+        },
+        "paysim_replay": {
+          "pr_auc": 0.0122,
+          "roc_auc": 0.7042,
+          "cost_1pct": {
+            "alerts": 956,
+            "false_alerts": 929,
+            "fraud_amount_total": 520720929.67,
+            "fraud_amount_caught": 99814103.81,
+            "fraud_amount_missed": 420906825.86,
+            "review_cost": 46450.0,
+            "total_cost": 420953275.86,
+            "baseline_cost_no_system": 520720929.67
+          }
         }
       }
     }
   },
   "decision": {
-    "rule": "1 % alarm bütçesinde sentetik holdout'ta kaçan fraud tutarı payı en düşük aday; eşitlikte PaySim replay toplam maliyeti",
-    "winner": "fraud_gbm_v3",
-    "challenger": "fraud_gbm_v4",
+    "rule": "yalnız doğrulama dönemi: %1 alarm bütçesinde kaçan fraud tutarı payı en düşük aday; eşitlikte doğrulama PR-AUC'si yüksek olan. Test ve PaySim sonuçları karardan sonra bir kez raporlanır, seçimde kullanılmaz.",
+    "winner": "fraud_gbm_v5",
+    "challenger": "fraud_gbm_v6",
     "four_eyes": {
       "approval_id": 1,
       "requested_by": "admin",

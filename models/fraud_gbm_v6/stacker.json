@@ -1,0 +1,74 @@
+{
+ "inputs": [
+  "rule",
+  "ml",
+  "anomaly"
+ ],
+ "transform": "logit",
+ "coef": [
+  0.094593,
+  1.174001,
+  0.0
+ ],
+ "intercept": 1.818283,
+ "fit": {
+  "method": "non-negative logistic regression over logits (Platt-type), L2=0.001, fitted on the validation split",
+  "rows": 9514,
+  "positives": 126,
+  "anomaly_input": "dropped (validation ablation)",
+  "ablation": {
+   "protocol": "validation first half -> fit, second half -> score (time order)",
+   "rows": [
+    4757,
+    4757
+   ],
+   "positives": [
+    51,
+    75
+   ],
+   "variants": {
+    "floored_legacy": {
+     "log_loss": 0.023247,
+     "brier": 0.00455,
+     "pr_auc": 0.8199,
+     "coef": [
+      0.3,
+      1.4364,
+      0.05
+     ]
+    },
+    "unconstrained": {
+     "log_loss": 0.020976,
+     "brier": 0.004734,
+     "pr_auc": 0.8476,
+     "coef": [
+      0.0638,
+      1.3295,
+      -0.2848
+     ]
+    },
+    "nonneg": {
+     "log_loss": 0.021352,
+     "brier": 0.004712,
+     "pr_auc": 0.8273,
+     "coef": [
+      0.0374,
+      1.213,
+      0.0
+     ]
+    },
+    "nonneg_no_anomaly": {
+     "log_loss": 0.021352,
+     "brier": 0.004712,
+     "pr_auc": 0.8273,
+     "coef": [
+      0.0374,
+      1.213,
+      0.0
+     ]
+    }
+   },
+   "anomaly_kept": false
+  }
+ }
+}

@@ -1,6 +1,6 @@
 {
- "champion": "fraud_gbm_v3",
- "challenger": "fraud_gbm_v4",
+ "champion": "fraud_gbm_v5",
+ "challenger": "fraud_gbm_v6",
  "models": {
   "fraud_gbm_v1": {
    "path": "fraud_gbm_v1",
@@ -29,7 +29,7 @@
   },
   "fraud_gbm_v3": {
    "path": "fraud_gbm_v3",
-   "status": "champion",
+   "status": "archived",
    "metrics": {
     "pr_auc": 0.558,
     "roc_auc": 0.7862,
@@ -42,7 +42,7 @@
   },
   "fraud_gbm_v4": {
    "path": "fraud_gbm_v4",
-   "status": "challenger",
+   "status": "archived",
    "metrics": {
     "pr_auc": 0.5561,
     "roc_auc": 0.7855,
@@ -51,6 +51,39 @@
     "ml_pr_auc": 0.5671
    },
    "created_at": "2026-09-25T10:42:16+00:00"
+  },
+  "fraud_gbm_v5": {
+   "path": "fraud_gbm_v5",
+   "status": "champion",
+   "metrics": {
+    "pr_auc": 0.8355,
+    "roc_auc": 0.973,
+    "recall_at_1pct_fpr": 0.8507,
+    "cost_weighted_recall": 0.5075,
+    "ml_pr_auc": 0.8425,
+    "brier": 0.00662,
+    "ece_10bin": 0.003784,
+    "valid_pr_auc": 0.7852,
+    "valid_cost_weighted_recall": 0.8551
+   },
+   "created_at": "2026-09-25T17:35:28+00:00",
+   "promoted_at": "2026-09-25T17:43:44+00:00"
+  },
+  "fraud_gbm_v6": {
+   "path": "fraud_gbm_v6",
+   "status": "challenger",
+   "metrics": {
+    "pr_auc": 0.8401,
+    "roc_auc": 0.978,
+    "recall_at_1pct_fpr": 0.8552,
+    "cost_weighted_recall": 0.5353,
+    "ml_pr_auc": 0.8459,
+    "brier": 0.006263,
+    "ece_10bin": 0.003751,
+    "valid_pr_auc": 0.7899,
+    "valid_cost_weighted_recall": 0.8018
+   },
+   "created_at": "2026-09-25T17:37:54+00:00"
   }
  }
 }

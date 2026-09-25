@@ -1,0 +1,649 @@
+{
+ "version": "fraud_gbm_v5",
+ "created_with_seed": 42,
+ "features": [
+  "amount_try",
+  "amount_log",
+  "amount_ratio",
+  "amount_zscore",
+  "first_large_transfer",
+  "near_threshold",
+  "near_threshold_cnt_24h",
+  "cnt_1m",
+  "sum_1m",
+  "cnt_1h",
+  "sum_1h",
+  "cnt_24h",
+  "sum_24h",
+  "cnt_7d",
+  "sum_7d",
+  "time_since_last_s",
+  "distinct_payees_24h",
+  "distinct_payees_7d",
+  "is_new_payee",
+  "payee_relation_age_d",
+  "payee_fan_in_24h",
+  "payee_age_d",
+  "device_missing",
+  "is_new_device",
+  "device_age_d",
+  "device_customers_7d",
+  "is_new_location",
+  "ip_country_mismatch",
+  "is_anonymized_ip",
+  "is_foreign",
+  "is_high_risk_country",
+  "hour",
+  "is_night",
+  "night_ratio_7d",
+  "hour_unusual",
+  "is_cash_channel",
+  "channel_change",
+  "channel_unknown",
+  "login_to_transfer_s",
+  "session_duration_s",
+  "typing_deviation",
+  "paste_used",
+  "is_emulator",
+  "is_rooted",
+  "remote_access",
+  "active_call",
+  "purpose_risk",
+  "vulnerable_customer"
+ ],
+ "feature_descriptions": {
+  "amount_try": "İşlem tutarı (TRY'ye normalize)",
+  "amount_log": "log(1 + tutar)",
+  "amount_ratio": "Tutarın müşterinin adaptif ortalamasına oranı",
+  "amount_zscore": "Tutarın müşterinin EWMA dağılımına göre z-skoru",
+  "first_large_transfer": "Müşterinin şimdiye kadarki en büyük transferini aşıyor",
+  "near_threshold": "Tutar raporlama eşiğinin hemen altında (yapılandırma)",
+  "near_threshold_cnt_24h": "24 saatte eşik altı işlem sayısı (bu işlem dahil)",
+  "cnt_1m": "Son 1m içindeki işlem adedi",
+  "sum_1m": "Son 1m içindeki toplam tutar (TRY)",
+  "cnt_1h": "Son 1h içindeki işlem adedi",
+  "sum_1h": "Son 1h içindeki toplam tutar (TRY)",
+  "cnt_24h": "Son 24h içindeki işlem adedi",
+  "sum_24h": "Son 24h içindeki toplam tutar (TRY)",
+  "cnt_7d": "Son 7d içindeki işlem adedi",
+  "sum_7d": "Son 7d içindeki toplam tutar (TRY)",
+  "time_since_last_s": "Bir önceki işlemden bu yana geçen süre (sn)",
+  "distinct_payees_24h": "24 saatte farklı alıcı sayısı",
+  "distinct_payees_7d": "7 günde farklı alıcı sayısı",
+  "is_new_payee": "Bu alıcıya ilk kez para gönderiliyor",
+  "payee_relation_age_d": "Alıcıyla ilk işlemden bu yana gün (-1: yeni)",
+  "payee_fan_in_24h": "Alıcıya 24 saatte para gönderen farklı müşteri sayısı",
+  "payee_age_d": "Alıcının sistemde ilk görülmesinden bu yana gün (-1: yeni)",
+  "device_missing": "İşlemde cihaz bilgisi yok (şube/ATM/eski kanal)",
+  "is_new_device": "Cihaz müşteri için yeni (cihaz bilgisi yoksa 0)",
+  "device_age_d": "Cihazın sistemde ilk görülmesinden bu yana gün (-1: cihaz yok)",
+  "device_customers_7d": "Cihazı 7 günde kullanan farklı müşteri sayısı",
+  "is_new_location": "Lokasyon müşterinin bilinen lokasyonları dışında",
+  "ip_country_mismatch": "IP ülkesi ile işlem ülkesi uyuşmuyor",
+  "is_anonymized_ip": "IP bilinen VPN/Tor aralığında",
+  "is_foreign": "İşlem ülkesi müşterinin ev ülkesi dışında",
+  "is_high_risk_country": "İşlem ülkesi yüksek riskli yargı bölgesi",
+  "hour": "İşlem saati (0-23)",
+  "is_night": "Gece işlemi",
+  "night_ratio_7d": "Son 7 gündeki gece işlemlerinin oranı",
+  "hour_unusual": "Saat müşterinin adaptif saat dağılımında nadir",
+  "is_cash_channel": "Nakit kanalı (ATM / nakit çekim)",
+  "channel_change": "Kanal bir önceki işlemden farklı",
+  "channel_unknown": "Müşterinin kullanmadığı kanal",
+  "login_to_transfer_s": "Oturum açmadan transfere kadar geçen süre (sn, -1 yok)",
+  "session_duration_s": "Oturum süresi (sn, -1 yok)",
+  "typing_deviation": "Yazma ritminin müşteri profilinden sapması (z)",
+  "paste_used": "Tutar/IBAN yapıştırıldı",
+  "is_emulator": "Emülatör tespit edildi",
+  "is_rooted": "Root/jailbreak cihaz",
+  "remote_access": "Uzaktan erişim aracı aktif",
+  "active_call": "Transfer sırasında aktif telefon görüşmesi",
+  "purpose_risk": "Açıklamada aciliyet/sosyal mühendislik kalıbı skoru",
+  "vulnerable_customer": "Yaşlı/kırılgan müşteri"
+ },
+ "feature_importance": {
+  "amount_try": 0.05535,
+  "amount_log": 0.00305,
+  "amount_ratio": 0.16831,
+  "amount_zscore": 0.0702,
+  "first_large_transfer": 0.00039,
+  "near_threshold": 0.0203,
+  "near_threshold_cnt_24h": 0.0116,
+  "cnt_1m": 6e-05,
+  "sum_1m": 0.00022,
+  "cnt_1h": 0.00598,
+  "sum_1h": 0.0205,
+  "cnt_24h": 0.00156,
+  "sum_24h": 0.00828,
+  "cnt_7d": 0.01366,
+  "sum_7d": 0.01931,
+  "time_since_last_s": 0.10773,
+  "distinct_payees_24h": 0.0015,
+  "distinct_payees_7d": 0.00699,
+  "is_new_payee": 0.00538,
+  "payee_relation_age_d": 0.08861,
+  "payee_fan_in_24h": 0.00228,
+  "payee_age_d": 0.0554,
+  "device_missing": 0.0,
+  "is_new_device": 0.04674,
+  "device_age_d": 0.02016,
+  "device_customers_7d": 0.03809,
+  "is_new_location": 7e-05,
+  "ip_country_mismatch": 0.00025,
+  "is_anonymized_ip": 9e-05,
+  "is_foreign": 0.0,
+  "is_high_risk_country": 0.0,
+  "hour": 0.04837,
+  "is_night": 0.00084,
+  "night_ratio_7d": 0.03284,
+  "hour_unusual": 0.00669,
+  "is_cash_channel": 0.0,
+  "channel_change": 0.00011,
+  "channel_unknown": 0.00064,
+  "login_to_transfer_s": 0.04396,
+  "session_duration_s": 0.02375,
+  "typing_deviation": 0.01393,
+  "paste_used": 0.05565,
+  "is_emulator": 0.0,
+  "is_rooted": 0.0,
+  "remote_access": 0.0,
+  "active_call": 0.00013,
+  "purpose_risk": 0.00042,
+  "vulnerable_customer": 0.00062
+ },
+ "stacker": {
+  "inputs": [
+   "rule",
+   "ml",
+   "anomaly"
+  ],
+  "transform": "logit",
+  "coef": [
+   0.100977,
+   1.147558,
+   0.0
+  ],
+  "intercept": 1.893619,
+  "fit": {
+   "method": "non-negative logistic regression over logits (Platt-type), L2=0.001, fitted on the validation split",
+   "rows": 9514,
+   "positives": 126,
+   "anomaly_input": "dropped (validation ablation)",
+   "ablation": {
+    "protocol": "validation first half -> fit, second half -> score (time order)",
+    "rows": [
+     4757,
+     4757
+    ],
+    "positives": [
+     51,
+     75
+    ],
+    "variants": {
+     "floored_legacy": {
+      "log_loss": 0.023599,
+      "brier": 0.004856,
+      "pr_auc": 0.8216,
+      "coef": [
+       0.3,
+       1.3591,
+       0.05
+      ]
+     },
+     "unconstrained": {
+      "log_loss": 0.02139,
+      "brier": 0.004817,
+      "pr_auc": 0.8367,
+      "coef": [
+       0.0765,
+       1.2737,
+       -0.191
+      ]
+     },
+     "nonneg": {
+      "log_loss": 0.021741,
+      "brier": 0.004854,
+      "pr_auc": 0.8311,
+      "coef": [
+       0.0621,
+       1.1829,
+       0.0
+      ]
+     },
+     "nonneg_no_anomaly": {
+      "log_loss": 0.021741,
+      "brier": 0.004854,
+      "pr_auc": 0.8311,
+      "coef": [
+       0.0621,
+       1.1828,
+       0.0
+      ]
+     }
+    },
+    "anomaly_kept": false
+   }
+  }
+ },
+ "thresholds": {
+  "step_up": 0.35,
+  "hold": 0.6,
+  "block": 0.85
+ },
+ "metrics": {
+  "test": {
+   "rule": {
+    "n": 9514,
+    "positives": 221,
+    "pr_auc": 0.5988,
+    "roc_auc": 0.879,
+    "recall_at_1pct_fpr": 0.6561,
+    "budget_1pct": {
+     "alert_budget": 0.01,
+     "alerts": 95,
+     "precision": 0.8632,
+     "recall": 0.371,
+     "cost_weighted_recall": 0.48
+    }
+   },
+   "ml": {
+    "n": 9514,
+    "positives": 221,
+    "pr_auc": 0.8425,
+    "roc_auc": 0.9752,
+    "recall_at_1pct_fpr": 0.8552,
+    "budget_1pct": {
+     "alert_budget": 0.01,
+     "alerts": 95,
+     "precision": 0.9263,
+     "recall": 0.3982,
+     "cost_weighted_recall": 0.5095
+    }
+   },
+   "anomaly": {
+    "n": 9514,
+    "positives": 221,
+    "pr_auc": 0.5598,
+    "roc_auc": 0.9223,
+    "recall_at_1pct_fpr": 0.5973,
+    "budget_1pct": {
+     "alert_budget": 0.01,
+     "alerts": 95,
+     "precision": 0.8632,
+     "recall": 0.371,
+     "cost_weighted_recall": 0.3875
+    }
+   },
+   "hybrid": {
+    "n": 9514,
+    "positives": 221,
+    "pr_auc": 0.8355,
+    "roc_auc": 0.973,
+    "recall_at_1pct_fpr": 0.8507,
+    "budget_1pct": {
+     "alert_budget": 0.01,
+     "alerts": 95,
+     "precision": 0.9158,
+     "recall": 0.3937,
+     "cost_weighted_recall": 0.5075
+    }
+   },
+   "decisions_by_typology": {
+    "app": {
+     "BLOCK": 15,
+     "HOLD": 2
+    },
+    "ato": {
+     "ALLOW": 2,
+     "BLOCK": 8,
+     "HOLD": 6,
+     "STEP_UP": 2
+    },
+    "card_testing": {
+     "BLOCK": 89,
+     "HOLD": 11,
+     "STEP_UP": 1
+    },
+    "mule": {
+     "ALLOW": 49,
+     "BLOCK": 15,
+     "HOLD": 13,
+     "STEP_UP": 9
+    },
+    "normal": {
+     "ALLOW": 9275,
+     "HOLD": 1,
+     "STEP_UP": 2
+    },
+    "structuring": {
+     "BLOCK": 13,
+     "HOLD": 1
+    }
+   },
+   "calibration": {
+    "ml": {
+     "brier": 0.008692,
+     "ece_10bin": 0.008379,
+     "mean_predicted": 0.01485,
+     "observed_rate": 0.023229
+    },
+    "hybrid": {
+     "brier": 0.00662,
+     "ece_10bin": 0.003784,
+     "mean_predicted": 0.020698,
+     "observed_rate": 0.023229
+    }
+   }
+  },
+  "valid": {
+   "ml": {
+    "n": 9514,
+    "positives": 126,
+    "pr_auc": 0.7813,
+    "roc_auc": 0.9692,
+    "recall_at_1pct_fpr": 0.873,
+    "budget_1pct": {
+     "alert_budget": 0.01,
+     "alerts": 95,
+     "precision": 0.9053,
+     "recall": 0.6825,
+     "cost_weighted_recall": 0.8538
+    }
+   },
+   "hybrid": {
+    "n": 9514,
+    "positives": 126,
+    "pr_auc": 0.7852,
+    "roc_auc": 0.9731,
+    "recall_at_1pct_fpr": 0.873,
+    "budget_1pct": {
+     "alert_budget": 0.01,
+     "alerts": 95,
+     "precision": 0.9053,
+     "recall": 0.6825,
+     "cost_weighted_recall": 0.8551
+    }
+   }
+  },
+  "valid_pr_auc_ml": 0.7813,
+  "split": {
+   "train": [
+    44397,
+    569
+   ],
+   "valid": [
+    9514,
+    126
+   ],
+   "test": [
+    9514,
+    221
+   ],
+   "test_period": [
+    "2026-07-22T00:22:22",
+    "2026-07-30T23:52:35"
+   ]
+  },
+  "trees": 100
+ },
+ "psi_reference": {
+  "score": {
+   "edges": [
+    0.01,
+    0.05,
+    0.1,
+    0.2,
+    0.35,
+    0.6,
+    0.85
+   ],
+   "share": [
+    0.9568005045196553,
+    0.023018709270548665,
+    0.003468572629808703,
+    0.0032583561067899935,
+    0.0018919487071683834,
+    0.0015766239226403195,
+    0.002312381753205802,
+    0.007672903090182888
+   ]
+  },
+  "amount_ratio": {
+   "edges": [
+    0.38558833,
+    0.59915349,
+    0.76042543,
+    0.92165038,
+    1.08575733,
+    1.28562421,
+    1.54719951,
+    1.94615298,
+    2.62834797
+   ],
+   "share": [
+    0.10006306495690562,
+    0.09995795669539626,
+    0.09995795669539626,
+    0.10006306495690562,
+    0.09995795669539626,
+    0.09995795669539626,
+    0.10006306495690562,
+    0.09995795669539626,
+    0.09995795669539626,
+    0.10006306495690562
+   ]
+  },
+  "time_since_last_s": {
+   "edges": [
+    1206.3,
+    3161.6,
+    5809.6,
+    9190.6,
+    14819.5,
+    27108.8,
+    58583.2,
+    73204.6,
+    94108.3
+   ],
+   "share": [
+    0.10006306495690562,
+    0.09995795669539626,
+    0.09995795669539626,
+    0.10006306495690562,
+    0.09995795669539626,
+    0.09995795669539626,
+    0.10006306495690562,
+    0.09995795669539626,
+    0.09995795669539626,
+    0.10006306495690562
+   ]
+  },
+  "payee_relation_age_d": {
+   "edges": [
+    -1.0,
+    10.57146296,
+    30.01301505,
+    38.58308102,
+    41.89472222,
+    43.10571528,
+    44.28249306,
+    46.02205556,
+    48.05208449
+   ],
+   "share": [
+    0.0,
+    0.20002102165230187,
+    0.09995795669539626,
+    0.10006306495690562,
+    0.09995795669539626,
+    0.09995795669539626,
+    0.10006306495690562,
+    0.09995795669539626,
+    0.09995795669539626,
+    0.10006306495690562
+   ]
+  },
+  "amount_zscore": {
+   "edges": [
+    -1.30046134,
+    -0.69101739,
+    -0.35352925,
+    -0.1047357,
+    0.1042172,
+    0.31826339,
+    0.55918954,
+    0.82844364,
+    1.22518171
+   ],
+   "share": [
+    0.10006306495690562,
+    0.09995795669539626,
+    0.09995795669539626,
+    0.10006306495690562,
+    0.09995795669539626,
+    0.09995795669539626,
+    0.10006306495690562,
+    0.09995795669539626,
+    0.09995795669539626,
+    0.10006306495690562
+   ]
+  },
+  "paste_used": {
+   "edges": [
+    0.0
+   ],
+   "share": [
+    0.0,
+    1.0
+   ]
+  },
+  "payee_age_d": {
+   "edges": [
+    -1.0,
+    24.06991435,
+    38.03627315,
+    42.25377546,
+    43.5467419,
+    44.37536343,
+    45.85162384,
+    47.14958796,
+    49.07428819
+   ],
+   "share": [
+    0.0,
+    0.20002102165230187,
+    0.09995795669539626,
+    0.10006306495690562,
+    0.09995795669539626,
+    0.09995795669539626,
+    0.10006306495690562,
+    0.09995795669539626,
+    0.09995795669539626,
+    0.10006306495690562
+   ]
+  },
+  "amount_try": {
+   "edges": [
+    354.479,
+    593.372,
+    821.603,
+    1100.204,
+    1427.665,
+    1910.77,
+    2720.089,
+    4304.992,
+    8808.914
+   ],
+   "share": [
+    0.10006306495690562,
+    0.09995795669539626,
+    0.09995795669539626,
+    0.10006306495690562,
+    0.09995795669539626,
+    0.09995795669539626,
+    0.10006306495690562,
+    0.09995795669539626,
+    0.09995795669539626,
+    0.10006306495690562
+   ]
+  },
+  "hour": {
+   "edges": [
+    9.0,
+    10.0,
+    12.0,
+    13.0,
+    14.0,
+    15.0,
+    16.0,
+    18.0,
+    20.0
+   ],
+   "share": [
+    0.08671431574521757,
+    0.050872398570527645,
+    0.14914862308177423,
+    0.08629388269918016,
+    0.08913180575993274,
+    0.08208955223880597,
+    0.08398150094597435,
+    0.1559806600798823,
+    0.11456800504519656,
+    0.10121925583350852
+   ]
+  },
+  "is_new_device": {
+   "edges": [
+    0.0
+   ],
+   "share": [
+    0.0,
+    1.0
+   ]
+  },
+  "login_to_transfer_s": {
+   "edges": [
+    -1.0,
+    6.46,
+    24.2,
+    37.4,
+    51.5,
+    69.5,
+    92.7,
+    129.0,
+    198.17
+   ],
+   "share": [
+    0.0,
+    0.20002102165230187,
+    0.09974774017237754,
+    0.0996426319108682,
+    0.10016817321841497,
+    0.10027328147992433,
+    0.09995795669539626,
+    0.10006306495690562,
+    0.10006306495690562,
+    0.10006306495690562
+   ]
+  }
+ },
+ "data": {
+  "seed": 42,
+  "customers": 500,
+  "transactions": 63435,
+  "fraud": 926,
+  "fraud_rate": 0.0146,
+  "typologies": {
+   "app": 70,
+   "ato": 108,
+   "card_testing": 298,
+   "mule": 407,
+   "normal": 62448,
+   "sanctions": 10,
+   "structuring": 94
+  },
+  "payees": 5555,
+  "rings": 4
+ },
+ "train_seconds": 39.14
+}
