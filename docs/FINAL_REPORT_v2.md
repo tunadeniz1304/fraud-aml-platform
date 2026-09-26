@@ -256,7 +256,7 @@ göründüğü için karar karışımı da gerçekçi değil (%48 BLOCK). Daha b
 |---|---|
 | `ruff check`, `ruff format --check` | Geçti (193 dosya). |
 | `mypy app` | Geçti, 133 kaynak dosyada hata yok. |
-| pytest, rastgele sıra, coverage | `c55eb14` üzerinde tur 1 (seed 240473429): 665 test geçti, coverage **%93** (eşik %90), 10 dk 21 sn. Tur 2 ve 3 makinede bellek yetersizliği nedeniyle yarıda durduruldu ve tamamlanmadı. Önceki rastgele turlarda görülen tek kararsız test (R11) düzeltildi. |
+| pytest, rastgele sıra, coverage | `c55eb14` üzerinde tur 1 (seed 240473429): 665 test geçti, coverage **%93** (eşik %90), 10 dk 21 sn. Tur 2 (seed 918273645): 665 test geçti, coverage **%92**, 17 dk 3 sn. Tur 3 (seed 55512377) testlerin yaklaşık %90'ında makinede bellek yetersizliği nedeniyle durduruldu; o noktaya kadar hata yoktu, tur tamamlanmadı. Önceki rastgele turlarda görülen tek kararsız test (R11) düzeltildi. |
 | `npm run build`, `npm test` | `bc9b939` üzerinde geçti (build 17,3 sn; 4 dosyada 9 test). Arayüz kodu o commit'ten sonra değişmedi. |
 | `docker compose build` | `bc9b939` üzerinde geçti (yer tutucu `JWT_SECRET`, `AUDIT_HMAC_KEY`, `CONSORTIUM_SALT` ile). `USERS_FILE` eklendikten sonra `docker compose config` geçti. |
 
