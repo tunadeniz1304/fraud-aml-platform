@@ -74,9 +74,11 @@ def test_l9_digest_normalises_ts_to_utc() -> None:
     assert payload_digest(local) == payload_digest({**TX, "ts": "2026-09-26T09:00:00+00:00"})
     assert payload_digest(local) == payload_digest({**TX, "ts": "2026-09-26T09:00:00Z"})
     assert payload_digest(local) != payload_digest({**TX, "ts": "2026-09-26T12:00:00+00:00"})
-    # a naive ts keeps its old digest; a row stored before L9 still matches
+    # R1: a naive ts is UTC, as in the DB; a row stored before L9 still matches
     naive = {**TX, "ts": "2026-09-26T09:00:00"}
-    assert payload_digest(naive) == legacy_payload_digest(naive)
+    assert payload_digest(naive) == payload_digest(local)
+    old_naive = {"payload_hash": legacy_payload_digest(naive)}
+    check_digest("M1-0", old_naive, payload_digest(naive), legacy=legacy_payload_digest(naive))
     old_row = {"payload_hash": legacy_payload_digest(local)}
     check_digest("M1-1", old_row, payload_digest(local), legacy=legacy_payload_digest(local))
     with pytest.raises(IdempotencyConflict):

@@ -94,9 +94,10 @@ class IngestInProgress(RetryLater):
 
 
 def _canonical_ts(value: Any) -> Any:
-    """L9: one instant, one digest -- an offset-aware ``ts`` is rendered in UTC
-    (``...+03:00`` and the same instant in ``+00:00`` hash alike). A naive
-    or unparsable value is kept as sent (stored digests stay valid)."""
+    """L9: one instant, one digest -- ``ts`` is rendered in UTC (``...+03:00``
+    and the same instant in ``+00:00`` hash alike). A naive value is read as
+    UTC, as the DB stores it (R1); an unparsable one is kept as sent. Rows
+    stored with the old digest still match through ``legacy_payload_digest``."""
     parsed: datetime | None = None
     if isinstance(value, datetime):
         parsed = value
@@ -105,8 +106,10 @@ def _canonical_ts(value: Any) -> Any:
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError:
             return value
-    if parsed is None or parsed.tzinfo is None:
-        return value if not isinstance(value, datetime) else value.isoformat()
+    if parsed is None:
+        return value
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC).isoformat()
 
 
