@@ -57,7 +57,16 @@ Bağımsız denetim bulgularını kapatan sürüm. Bulgular önce `tests/test_au
 - **Vakalar:** işlem başına tek alarm, vaka süresi karar anından başlıyor. TEMIZ kapanışı atanan analisti veya kıdemli analisti istiyor, tek temiz etiket öğrenilmiyor. APP onayları müşteri adına giren analist adına kaydediliyor.
 - **Güvenlik:** JWT'de `aud` zorunlu, SSE biletinde iptal yeniden kontrol ediliyor, 401 kısıtlaması geçerli oturumları kilitlemiyor. LLM maskeleme noktalı kart/IBAN biçimlerini ve üç parçalı adları kapsıyor; güvenilmeyen veri etiketleri büyük/küçük harf ve boşluk farkından bağımsız etkisizleştiriliyor. Worker'ın audit zinciri doğrulaması metrikle izleniyor ve alarm üretiyor.
 - **Dayanıklılık:** karar tamamlanana kadar stream mesajı bekleyen durumda kalıyor. Idempotency özeti aynı anı farklı UTC ofsetlerinde aynı hash'liyor. Redis müşteri kilidi tutulduğu sürece yenileniyor ve commit kilit token'ıyla korunuyor (fencing). Backtest satırları parçalar hâlinde okunuyor ve zaman bütçesi aşılınca duruyor.
-- **Model ve senaryolar:** GBM çıktısı kalibre edilmemiş, politika eşikleri elle ayarlanmış olarak belgelendi. Kart testi senaryosu HOLD olarak beyan edildi ve her senaryonun beyan edilen sonucu test ediliyor. Popülasyon örneği olmayan seride drift referansı korunuyor. Sürüm dizeleri 2.1.0.
+- **Model ve senaryolar:** GBM çıktısı kalibre edilmemiş, politika eşikleri elle ayarlanmış olarak belgelendi. Kart testi senaryosu STEP_UP olarak beyan edildi ve her senaryonun beyan edilen sonucu test ediliyor. Popülasyon örneği olmayan seride drift referansı korunuyor. Sürüm dizeleri 2.1.0.
+
+### Bağımsız denetim turu 3 düzeltmeleri
+- **Vakalar:** Kendine atama TEMIZ kapanışındaki kıdem kapısını aşamıyor; bir iş arkadaşının vakasını devralmak kıdemli analist istiyor. Vaka artık FRAUD değilse ŞİB taslağı gönderilemiyor.
+- **Hesaplar:** prod ortamında kişisel hesaplar hash'li bir `USERS_FILE` dosyasından yükleniyor (`scripts/create_user.py`, PBKDF2, parola komut satırından alınmıyor). Böylece demo kullanıcıları kapalıyken de maker-checker için ayrı kıdemli analist ve admin tanımlanabiliyor.
+- **Feature kilidi:** kilit yenilenirken veya bırakılırken oluşan Redis hataları kilidin içinde ele alınıyor; skorlama çökmüyor.
+- **Step-up:** challenge deposu erişilemezken tekrar gönderilen istek, 500 yerine saklanan kararı döndürüyor.
+- **Idempotency:** saat dilimi belirtilmemiş `ts` UTC kabul ediliyor, DB ile aynı. Aynı an saat dilimi olmadan gönderildiğinde yanlış 409 dönmüyor.
+- **Dokümanlar:** v6 model kartı, ADR 0003 ve politika katmanı artık LightGBM ham çıktısını kalibre olarak tanımlamıyor.
+- **Testler:** Zamana bağlı idempotency testi artık bekleme süresinin üzerinde bir kilit süresi kullanıyor ve kararlı çalışıyor.
 
 ### Arayüz
 - Doğrulama görünümü, sunucu taraflı sayfalı ve filtreli vaka kuyruğu, erişilebilirlik iyileştirmeleri, arayüz testleri.

@@ -13,7 +13,7 @@ Ayrıntılı yöntem ve tablolar şu dokümanlardadır:
 | Konu | Sonuç |
 |---|---|
 | 2.0 denetimi | 31 bulgunun 30'u kapatıldı ve her biri için regresyon testi var. B11'in eşzamanlı hedefi (500 TPS, p99 < 150 ms) tek düğümde karşılanamadı; gerekçesi §4'te. |
-| 2.1 denetimi, tur 1 | 7/10. 37 bulgunun hepsi için düzeltme commit'i yazıldı. Tur 2 bunların 23'ünü kapalı, 14'ünü kısmi buldu; kalanların durumu ve gerekçeleri §6'da. |
+| 2.1 denetimi, tur 1 | 7/10. 37 bulgunun hepsi için düzeltme commit'i yazıldı. Tur 2 (7,5/10) bunların 23'ünü kapalı, 14'ünü kısmi buldu ve 25 yeni bulgu ekledi. Tur 3 (8,0/10, son tur) izlenen 39 maddenin 26'sını kapalı, 11'ini kısmi, 2'sini açık buldu. Tur 3 sonrası düzeltmeler ve açık kalanların gerekçeleri §6'da. |
 | Gerçek veri | PaySim (tam dosya, %10 alıcı örneği), Elliptic (tam graf) ve ULB (OpenML 1597) indirildi. Checksum'lar `scripts/public_data_checksums.json` içinde. Repoda internetsiz çalışan fixture'lar var. |
 | PaySim replay | Tam hibrit PR-AUC **0,3919** [0,3463; 0,4417]; kurallar tek başına 0,0462. Graf katmanı ve anomali girdisi PaySim'de **katkı yapmıyor**. |
 | Sentetik veri | Parmak izleri ve kâhin step-up geri bildirimi kaldırıldı. GBM PR-AUC **0,8423** [0,7929; 0,8865]. Eski 0,971'in bir sızıntıdan geldiği ölçüldü. |
@@ -252,12 +252,55 @@ göründüğü için karar karışımı da gerçekçi değil (%48 BLOCK). Daha b
 
 ## 5. Kalite kapıları
 
-<!-- GATES -->
+| Kapı | Sonuç |
+|---|---|
+| `ruff check`, `ruff format --check` | Geçti (193 dosya). |
+| `mypy app` | Geçti, 133 kaynak dosyada hata yok. |
+| pytest, rastgele sıra, coverage | `c55eb14` üzerinde tur 1 (seed 240473429): 665 test geçti, coverage **%93** (eşik %90), 10 dk 21 sn. Tur 2 ve 3 makinede bellek yetersizliği nedeniyle yarıda durduruldu ve tamamlanmadı. Önceki rastgele turlarda görülen tek kararsız test (R11) düzeltildi. |
+| `npm run build`, `npm test` | `bc9b939` üzerinde geçti (build 17,3 sn; 4 dosyada 9 test). Arayüz kodu o commit'ten sonra değişmedi. |
+| `docker compose build` | `bc9b939` üzerinde geçti (yer tutucu `JWT_SECRET`, `AUDIT_HMAC_KEY`, `CONSORTIUM_SALT` ile). `USERS_FILE` eklendikten sonra `docker compose config` geçti. |
 
 ## 6. Bağımsız denetim turları
 
 | Tur | Kapsam | Puan | Sonuç |
 |---|---|---|---|
 | 1 | Kod, çalışan sistem, PaySim yeniden değerlendirmesi | 7/10 | 37 bulgu; §2.F |
+| 2 | Tur 1 düzeltmeleri, canlı sistem (ayrı port, geçici DB) | 7,5/10 | Tur 1'in 23 bulgusu kapalı, 14'ü kısmi. 25 yeni bulgu: 2 yüksek (A1 compose'un dev modunda açılması, A2 yazıcının sonsuza dek yeniden denemesi), 12 orta (A3–A14), 11 düşük (L1–L11). Hepsi üç dalda düzeltildi ve birleştirildi: `07a4e10` (ML, drift, kilit fencing), `d95a01e` (güvenlik, dağıtım), `bc9b939` (dayanıklılık, iş akışı). |
+| 3 | Tur 2 düzeltmeleri, canlı sistem | 8,0/10 | İzlenen 39 maddeden 26'sı kapalı, 11'i kısmi, 2'si açık. Yeni bulgular: N1–N3 orta, N4–N5 düşük/orta, N6 doküman; düşük artıklar R1–R13. |
 
-<!-- AUDIT_ROUNDS -->
+Denetim en fazla üç tur olarak planlandı. 9/10 hedefine ulaşılamadı; son puan tur 3'ün 8,0/10'udur.
+Tur 3'ten sonra aşağıdaki düzeltmeler yapıldı; bunlar bağımsız bir turda yeniden puanlanmadı.
+
+| Bulgu | Düzeltme | Commit |
+|---|---|---|
+| N1, N2 | Kendine atama TEMIZ kapanışındaki kıdem kapısını aşamıyor; başkasının vakasını devralmak kıdemli analist istiyor; FRAUD olmayan vakada ŞİB gönderimi reddediliyor. | `9e53ba3` |
+| N3 | Prod'da demo kullanıcıları kapalıyken maker-checker için hash'li `USERS_FILE` hesapları (`scripts/create_user.py`). | `63a65ef` |
+| N4 | Feature kilidi yenilenirken veya bırakılırken oluşan Redis hataları kilidin içinde ele alınıyor. | `ed0266f` |
+| N5 | Challenge deposu erişilemezken tekrar gönderilen istekte saklanan karar dönüyor. | `eda9a68` |
+| R1 | Saat dilimi belirtilmemiş `ts` UTC kabul ediliyor; aynı an için yanlış 409 dönmüyor. | `c55eb14` |
+| R11 | Zamana bağlı idempotency testi, bekleme süresinin üzerinde bir kilit süresiyle kararlı. | `072ebe7` |
+| A13 artığı | v6 model kartı, ADR 0003 ve `policy.py` artık ham LightGBM çıktısını kalibre olarak tanımlamıyor. | `75f6fe6` |
+| N6, A12 | Bu bölüm, §5 ve `v2.1.0` etiketi. | — |
+
+### Açık kalan maddeler ve gerekçeleri
+
+| Madde | Durum | Gerekçe |
+|---|---|---|
+| A8, R12 | Kısıtlama yalnız IP'ye göre | Yalnız gerçek tahminler sayılıyor ve geçerli oturumlar kilitlenmiyor. Aynı NAT arkasındaki kullanıcılar 31 hatalı denemeden sonra 60 sn bekler. Yalnız kullanıcı adına göre anahtar, hesap kilitleme saldırısına kapı açar; IP ve kullanıcı adının birlikte kullanıldığı bir tasarım sonraki sürüme bırakıldı. API anahtarları en az 32 karakter olduğu için R12'nin etkisi ihmal edilebilir. |
+| M5 | Tek kıdemli analistin FRAUD kapanışı konsorsiyuma yayımlanıyor | Konsorsiyuma yalnız tuzlanmış karşı taraf özeti gidiyor ve FRAUD kapanışı zaten kıdemli analist istiyor. Yayını ayrıca dört göz onayına bağlamak iş akışı kararıdır; kurumla netleşmeden eklenmedi. |
+| M8 | Oturum süresi 60 dk, toplu iptal yok | `iss`/`aud` zorunlu, tekil iptal ve SSE yeniden kontrolü var. Süre `JWT_TTL_MINUTES` ile kısaltılabilir. Toplu iptal için `JWT_SECRET` döndürülebilir; bu tüm oturumları düşürür. |
+| M9 | Audit HMAC'inde anahtar kimliği ve döndürme yok | Anahtar prod'da zorunlu ve zincir doğrulaması izleniyor. Döndürme şu an zincirin kesilip yeni anahtarla yeniden başlatılmasıyla yapılabilir; anahtar kimliği şema değişikliği gerektirir ve sonraki sürüme bırakıldı. |
+| L3, R3 | Maskeleme `/` ve `_` ayraçlı kart numaralarını ve Batılı adları kaçırıyor | Türkçe adlar, IBAN, TCKN, telefon ve yaygın kart biçimleri maskeleniyor. Maskeleme LLM'e giden metin için ikinci savunma hattı; alan düzeyinde pseudonimleştirme birinci hat. Genel ad tespiti bir NER modeli gerektirir. |
+| R4 | Güvenilmeyen veri etiketi sıfır genişlikli ve tam genişlikli varyantları kaçırıyor | Etiketin etkisizleştirilmesi yalnız bir katman. Copilot araçları vakanın müşterisiyle sınırlı ve çıktılar şema doğrulamasından geçiyor. Unicode normalizasyonu bir sonraki sürümde. |
+| H7b, L8 | Step-up sonuç modeli varsayılan oranlarla | Oranlar MODEL_CARD'da açıkça belirtildi. Gerçek OTP sonuç verisi olmadan duyarlılık analizi varsayımı değiştirmez. Gerçek veride bu model gözlenen sonuçlarla değiştirilmeli. |
+| L6 | Champion seçim metriği örneklem içi ve gürültülü | Stacker doğrulama diliminde eğitiliyor, GBM de erken durmayı orada yapıyor. Seçim 126 pozitifle ve güven aralığı olmadan veriliyor. Test sonucu seçimden sonra bir kez raporlanıyor: v6 test metriklerinde v5'ten biraz iyi (PR-AUC 0,8401 / 0,8355). Seçimi teste göre değiştirmek testi seçime katmak olurdu, bu yüzden v5 champion kaldı. Ayrı bir seçim dilimi ve bootstrap aralığı sonraki eğitim turunda eklenecek. |
+| M15 | Eğitim/canlı çarpıklığı | MODEL_CARD'da açıkça belirtildi. Backfill ve canlı sistem aynı öğrenme kuralını paylaşıyor. Kalan fark sentetik geçmişin kısalığından geliyor. |
+| L12 | İç LLM sunucu adı git geçmişinde | Kod ve dokümanlardan kaldırıldı; eski ortam değişkeni adı geriye uyumluluk için kabul ediliyor. Geçmişi yeniden yazmak force push gerektirir; proje kuralı buna izin vermiyor. |
+| R2 | Challenge tüketildikten sonraki tekrar isteği STEP_UP ve boş challenge döndürüyor | Asıl sonuç `step-up-result` uç noktasında kaydediliyor. Tekrar isteği ilk kararı döndürür; sonucu yansıtmaması tasarım gereği. |
+| R5 | Takılan yazıcı onayları bekletiyor | Onay, transaction'dan önce yazıcının boşalmasını bekliyor; yazıcı takılırsa onay 503 dönmek yerine bekliyor. Yazıcı hataları sınıflandırıldığı ve yeniden deneme sayısı sınırlı olduğu için bu yalnız DB yanıt vermezken olur. Onay yolunda zaman aşımı ve `chain.lock`'un daraltılması sonraki sürüme bırakıldı. |
+| R6, R7 | Bölme yeniden deneme pencereleri toplanıyor; yerel uygulama sırası | Geçici görünen partiye özgü bir hata DLQ'ya düşmeyi ve ack'i yaklaşık 4,5 dk geciktirebiliyor. Bölme, bir işlemin satırlarını karar ve audit satırlarından ayırabiliyor (tur 2'den önce de vardı); ayrılan satırlar DLQ'da kalıyor ve `/api/bus/dlq` üzerinden görülebiliyor, ancak otomatik yeniden işleme yok. İşlem bazında gruplanmış bölme sonraki sürüme bırakıldı. |
+| R8 | METRICS_TOKEN olmadan audit doğrulama alarmı sürekli çalıyor | `METRICS_TOKEN` yokken `/metrics` 404 döner ve Prometheus metrik toplayamaz; monitoring profili token ile çalıştırılmalıdır. Tokensiz kurulumda alarmın susturulması sonraki sürüme bırakıldı. |
+| R9 | Migration 0005 yeniden sayımı | Kod okumasıyla bulundu; yalnız 0005 öncesi yinelenen bekleyen onayı olan kurulumları etkiler. Temiz kurulumda geçerli değil. |
+| R10 | Çevrimiçi profil öğrenmesi TEMIZ etiketini nadiren görüyor | Tek analistin temiz etiketi bilerek öğrenilmiyor (A7). Çevrimdışı etiket satırları etkilenmiyor ve yeniden eğitimde kullanılıyor. |
+| R13 | Küçük skorlama boşlukları | Etkisi düşük; sonraki model sürümünde ele alınacak. |
+| Diğer | Varsayılan `ENVIRONMENT=dev` (kodda), Postgres parolası ve imajların digest ile sabitlenmemesi | Compose ve imaj varsayılan olarak prod modunda açılıyor. Digest sabitleme dağıtım hattına bırakıldı. |
