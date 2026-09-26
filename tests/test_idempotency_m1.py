@@ -191,10 +191,11 @@ async def test_retry_during_pending_answers_processing_without_rescoring(workers
 
 async def test_crashed_owner_blocks_the_id_only_for_one_short_lease(workers) -> None:
     _, b, redis = workers
-    await redis.set("idem:M1-1", f"{PENDING}:{payload_digest(TX)}", px=300)
+    # the lease comfortably outlives the 250 ms pending wait, even on a busy runner
+    await redis.set("idem:M1-1", f"{PENDING}:{payload_digest(TX)}", px=1200)
     with pytest.raises(IngestInProgress):
         await b.ingest(dict(TX))
-    await asyncio.sleep(0.4)
+    await asyncio.sleep(1.3)
     result = await b.ingest(dict(TX))
     assert result is not None and not result.get("duplicate")
 
