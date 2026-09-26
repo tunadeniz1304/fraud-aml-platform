@@ -637,12 +637,17 @@ class CaseService:
             return {status: int(n) for status, n in rows.all()}
 
     # --- analyst actions -----------------------------------------------------------------
-    async def assign(self, case_id: int, assignee: str, actor: str) -> dict[str, Any]:
+    async def assign(
+        self, case_id: int, assignee: str, actor: str, *, role: str | None = None
+    ) -> dict[str, Any]:
         async with self.db.transaction() as session:
             case = await self._case(session, case_id)
             if case.status in CLOSED_STATUSES:
                 raise CaseError("kapalı vaka atanamaz")
             previous = case.assigned_to
+            if previous and previous != assignee:
+                # N1: taking over a colleague's case (and so its TEMIZ closure) is senior-only.
+                _require_senior(role, "başka analiste atanmış vakayı devralmak")
             case.assigned_to = assignee
             if case.status == "YENI":
                 case.status = "INCELENIYOR"
@@ -1206,6 +1211,9 @@ class CaseService:
         case_id = int(approval["target_id"])
         reference = f"SIB-{utcnow():%Y%m%d}-{secrets.token_hex(3).upper()}"
         case = await self._case(tx.session, case_id)
+        if case.decision != "FRAUD" or case.status != "KAPANDI_FRAUD":
+            # N2: the case was reopened or re-decided after the request; nothing is filed
+            raise CaseError("vaka artık FRAUD kararıyla kapalı değil — ŞİB talebini reddedin")
         expected = (approval.get("payload") or {}).get("draft_sha256")
         if not expected or expected != sib_draft_hash(case.sib_draft):
             # A6: the draft changed after the request (or a legacy request

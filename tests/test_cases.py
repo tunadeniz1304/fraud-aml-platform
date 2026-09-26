@@ -300,6 +300,22 @@ class TestAnalystActions:
         closed = await service.decide(case_id, "TEMIZ", "analist_b", role="analist")
         assert closed["status"] == "KAPANDI_TEMIZ"
 
+    async def test_n1_analyst_cannot_take_over_a_colleagues_case(self, service, store):
+        case_id = await service.on_decision(event("N1-1"))
+        await add_decision(store, "N1-1")
+        await service.assign(case_id, "kidemli", "kidemli", role="kidemli_analist")
+        with pytest.raises(MakerCheckerError, match="devralmak"):
+            await service.assign(case_id, "analist_a", "analist_a", role="analist")
+        with pytest.raises(MakerCheckerError, match="atanmış"):
+            await service.decide(case_id, "TEMIZ", "analist_a", role="analist")
+        async with store.db.session() as session:
+            status = (await session.execute(select(Decision.status))).scalar_one()
+        assert status == "BEKLEMEDE"  # nothing released
+        # re-assigning to the current holder is a no-op, and a senior may hand it over
+        await service.assign(case_id, "kidemli", "kidemli", role="analist")
+        moved = await service.assign(case_id, "analist_a", "kidemli", role="kidemli_analist")
+        assert moved["assigned_to"] == "analist_a"
+
     async def test_a7_large_clean_release_needs_a_senior(self, service, store, monkeypatch):
         from app.config import get_settings
 
@@ -390,6 +406,19 @@ class TestMakerChecker:
         assert {a["kind"] for a in case["approvals"]} == {"SIB"}
         with pytest.raises(CaseError, match="onaylanmış"):
             await service.save_sib_draft(case_id, {"x": 1}, "analist")
+
+    async def test_n2_sib_is_not_filed_once_the_case_is_no_longer_fraud(self, service):
+        case_id = await service.on_decision(event("SIB3"))
+        await service.save_sib_draft(case_id, {"supheli": "MUSTERI_1"}, "analist")
+        await service.decide(case_id, "FRAUD", "kidemli", role="kidemli_analist")
+        req = await service.request_approval("SIB", str(case_id), {}, "analist")
+        await service.set_status(case_id, "INCELENIYOR", "kidemli", role="kidemli_analist")
+        await service.decide(case_id, "TEMIZ", "kidemli", role="kidemli_analist")
+        with pytest.raises(CaseError, match="FRAUD"):
+            await service.decide_approval(req["id"], approve=True, actor="admin")
+        case = await service.get_case(case_id)
+        assert case["status"] == "KAPANDI_TEMIZ" and case["sib_status"] != "SIB_ONAYLANDI"
+        assert "masak_reference" not in (case["sib_draft"] or {})
 
     async def test_sib_draft_is_frozen_and_pinned_while_awaiting_approval(self, service, store):
         """A6: the approver signs off exactly the text that is submitted."""

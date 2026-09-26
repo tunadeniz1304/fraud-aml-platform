@@ -177,7 +177,9 @@ async def assign(
     assignee = body.assignee or principal.username
     if assignee != principal.username and not principal.has_role("kidemli_analist"):
         raise HTTPException(status_code=403, detail="Başkasına atama için kıdemli analist gerekli")
-    return await _call(cases_service().assign, case_id, assignee, principal.username)
+    return await _call(
+        cases_service().assign, case_id, assignee, principal.username, role=principal.role
+    )
 
 
 @router.post("/cases/{case_id}/status")
