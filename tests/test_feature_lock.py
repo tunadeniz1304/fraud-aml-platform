@@ -84,6 +84,29 @@ async def test_lease_is_renewed_while_the_body_runs(redis):
     assert await redis.get("fs:lock:C1") is None
 
 
+async def test_redis_errors_while_renewing_or_releasing_do_not_escape(redis, monkeypatch):
+    """N4: the body has already committed; a lease that cannot be renewed or
+    released must not turn a stored decision into an error (the TTL frees it)."""
+    from redis.exceptions import ConnectionError as RedisConnectionError
+
+    store = _store(redis)
+    store.lock_ttl_ms = 60
+    real_eval = redis.eval
+    body_done = False
+
+    async def flaky_eval(script: str, *args: Any) -> Any:
+        if body_done or "PEXPIRE" in script:
+            raise RedisConnectionError("redis gone")
+        return await real_eval(script, *args)
+
+    monkeypatch.setattr(redis, "eval", flaky_eval)
+    async with store.customer_lock("C1"):
+        await asyncio.sleep(0.1)  # a renew attempt fails
+        body_done = True
+    await asyncio.sleep(0.1)
+    assert await redis.get("fs:lock:C1") is None  # expired on its TTL
+
+
 def _tx(tid: str) -> TxView:
     return TxView.from_payload(
         {"transaction_id": tid, "customer_id": "C1", "ts": "2026-09-25T10:00:00", "amount": 10}

@@ -34,6 +34,8 @@ from collections import OrderedDict
 from collections.abc import AsyncIterator
 from typing import Any, Protocol
 
+from redis.exceptions import RedisError
+
 from app.config import get_settings
 from app.features.types import HistEvent, ProfileState, StateSnapshot, TxView
 
@@ -324,12 +326,21 @@ class RedisFeatureStore:
             self._tokens.pop(customer_id, None)
             with contextlib.suppress(asyncio.CancelledError):
                 await renew
-            await self.redis.eval(_UNLOCK_LUA, 1, key, token)
+            try:
+                await self.redis.eval(_UNLOCK_LUA, 1, key, token)
+            except (RedisError, OSError):  # N4: the body already committed; TTL frees it
+                logger.warning("[Features] %s kilidi bırakılamadı (TTL ile düşecek)", customer_id)
 
     async def _renew(self, key: str, token: str) -> None:
+        """Keep the lease alive; a Redis error stops renewing (N4) instead of
+        escaping — ``commit`` is fenced, so a lease lost meanwhile writes nothing."""
         while True:
             await asyncio.sleep(self.lock_ttl_ms / 3000)
-            if not await self.redis.eval(_RENEW_LUA, 1, key, token, self.lock_ttl_ms):
+            try:
+                if not await self.redis.eval(_RENEW_LUA, 1, key, token, self.lock_ttl_ms):
+                    return
+            except (RedisError, OSError):
+                logger.warning("[Features] kilit yenilenemedi: %s", key)
                 return
 
     async def snapshot(self, tx: TxView) -> StateSnapshot:
