@@ -752,7 +752,11 @@ class Pipeline:
         from app.scoring.policy import PolicyEngine
 
         path = self.settings.resolved_transactions_path
-        events = sorted(load_transactions(path), key=lambda t: (t["ts"], t["transaction_id"]))
+        # Rebased like the live demo stream, so time-of-day features share its clock.
+        events = sorted(
+            rebase_timestamps(load_transactions(path)),
+            key=lambda t: (t["ts"], t["transaction_id"]),
+        )
         extractor = FeatureExtractor(MemoryFeatureStore(), self.customers)
         graph, payees, signals = build_signals(self.customers)
         model = self.engine.model
