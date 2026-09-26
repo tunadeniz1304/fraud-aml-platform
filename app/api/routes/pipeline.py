@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -25,6 +26,7 @@ from app.security.deps import ingest_principal, require_role, service_principal
 from app.security.ratelimit import ingest_limit, limiter, principal_rate_key, step_up_limit
 
 router = APIRouter(prefix="/api", tags=["pipeline"])
+logger = logging.getLogger("fraud.api")
 analyst_only = Depends(require_role("analist"))
 #: the audit trail and dead letters carry raw customer data (payloads, reasons)
 senior_only = Depends(require_role("kidemli_analist"))
@@ -155,8 +157,13 @@ async def ingest(
         )
     out = AnalyzedTransactionOut(**result)
     if out.decision == "STEP_UP":
-        # A3: idempotent — a replayed ingest gets the same still-valid challenge
-        out.step_up_challenge_id = await pipeline.issue_step_up(result)
+        # A3: idempotent — a replayed ingest gets the same still-valid challenge.
+        # N5: the decision is already stored; if the challenge store is down the
+        # decision is still returned (challenge id null) and a replay issues it.
+        try:
+            out.step_up_challenge_id = await pipeline.issue_step_up(result)
+        except Exception:
+            logger.exception("[StepUp] challenge verilemedi: %s", out.transaction_id)
     return out
 
 

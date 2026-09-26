@@ -124,6 +124,32 @@ class TestStepUpChallenge:
             late = c.post("/api/transactions", json=_step_up_tx("TX-SU-H1-01"), headers=svc)
             assert late.json().get("step_up_challenge_id") is None
 
+    def test_n5_challenge_store_outage_still_returns_the_stored_decision(
+        self, demo_env: Path, monkeypatch
+    ) -> None:
+        from app.pipeline import Pipeline
+
+        real = Pipeline.issue_step_up
+        store = {"down": True}
+
+        async def flaky(self: Any, event: dict[str, Any]) -> str | None:
+            if store["down"]:
+                raise ConnectionError("challenge store down")
+            return await real(self, event)
+
+        monkeypatch.setattr(Pipeline, "issue_step_up", flaky)
+        svc = {"X-API-Key": SVC}
+        with TestClient(create_app()) as c:
+            first = c.post("/api/transactions", json=_step_up_tx("TX-SU-N5-01"), headers=svc)
+            assert first.status_code == 200, first.text
+            assert first.json()["decision"] == "STEP_UP"
+            assert first.json().get("step_up_challenge_id") is None
+            store["down"] = False
+            # the replay (same payload) gets the stored decision and a fresh challenge
+            again = c.post("/api/transactions", json=_step_up_tx("TX-SU-N5-01"), headers=svc)
+            assert again.status_code == 200
+            assert again.json()["step_up_challenge_id"]
+
     def test_h1_challenge_is_bound_to_its_transaction(self, demo_env: Path) -> None:
         svc = {"X-API-Key": SVC}
         with TestClient(create_app()) as c:
