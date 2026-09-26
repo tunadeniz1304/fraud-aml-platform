@@ -1,4 +1,6 @@
-"""Policy layer (P0.5): one calibrated risk score -> graduated action.
+"""Policy layer (P0.5): one risk score -> graduated action.
+
+Only the stacker output is Platt-calibrated (on validation); thresholds are hand-picked.
 
 ``risk = 1 - (1 - stacker(rule, ml, anomaly)) · Π(1 - w_i · s_i)``
 
