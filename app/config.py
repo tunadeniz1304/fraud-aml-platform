@@ -316,6 +316,9 @@ class Settings(BaseSettings):
     # seeded only when SEED_DEMO_USERS is true; unset → true outside prod, false
     # in prod. A prod process asked to seed them refuses to start.
     seed_demo_users: bool | None = None
+    # personal accounts for any environment: a JSON list of
+    # {username, role, display_name, password_hash} written by scripts/create_user.py
+    users_file: str = ""
     demo_pw_analist: SecretStr = SecretStr("analist123")
     demo_pw_kidemli: SecretStr = SecretStr("kidemli123")
     demo_pw_admin: SecretStr = SecretStr("admin123")

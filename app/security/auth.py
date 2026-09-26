@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import json
 import logging
 import os
 import secrets
@@ -118,13 +119,35 @@ class UserDirectory:
         """Demo users only when ``seed_demo_users``; never in prod."""
         s = settings or get_settings()
         if not s.seed_demo_users:
-            return cls()
-        if s.environment == "prod":
+            directory = cls()
+        elif s.environment == "prod":
             raise RuntimeError(
                 "Prod ortamında demo kullanıcılar (varsayılan parolalı) açılamaz — "
                 "SEED_DEMO_USERS=false yapın"
             )
-        return cls.with_demo_users()
+        else:
+            directory = cls.with_demo_users()
+        if s.users_file:
+            directory.load_file(s.users_file)
+        return directory
+
+    def load_file(self, path: str) -> None:
+        """Personal accounts (pre-hashed) from ``USERS_FILE``; they override demo users."""
+        with open(path, encoding="utf-8") as fh:
+            entries = json.load(fh)
+        for entry in entries:
+            role = entry["role"]
+            if role not in ROLE_RANK or role == "service":
+                raise ValueError(f"USERS_FILE: geçersiz rol {role!r} ({entry.get('username')})")
+            if not str(entry["password_hash"]).startswith("pbkdf2$"):
+                raise ValueError(f"USERS_FILE: {entry['username']} için parola özeti değil")
+            username = entry["username"]
+            if not username or ":" in username:
+                raise ValueError("Kullanıcı adı boş olamaz ve ':' içeremez")
+            self.users[username] = UserRecord(
+                username, role, entry.get("display_name") or username, entry["password_hash"]
+            )
+        logger.info("[Auth] USERS_FILE: %d kullanıcı yüklendi", len(entries))
 
     def add(self, username: str, role: Role, display_name: str, password: str) -> None:
         if not username or ":" in username:

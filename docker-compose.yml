@@ -38,6 +38,9 @@ x-app: &app
     # Demo kullanıcıları (bilinen parolalar) yalnızca açıkça istenirse:
     #   ENVIRONMENT=dev SEED_DEMO_USERS=true docker compose up (prod reddeder)
     SEED_DEMO_USERS: ${SEED_DEMO_USERS:-false}
+    # Kişisel hesaplar: scripts/create_user.py ile üretilen dosya, imaja bağlanmış
+    # olarak (ör. volumes: ./users.json:/run/users.json:ro, USERS_FILE=/run/users.json)
+    USERS_FILE: ${USERS_FILE:-}
     FEATURE_STORE: redis
     DB_AUTO_CREATE: "false"
     LOG_JSON: "true"
